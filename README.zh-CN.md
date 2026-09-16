@@ -10,7 +10,7 @@
 
 ## 平台范围
 
-已有适配实现：微信、抖音/字节、支付宝、淘宝、小米、OPPO、vivo、华为、荣耀、咪咕。
+已有适配实现：B 站、微信、抖音/字节、支付宝、淘宝、小米、OPPO、vivo、华为、荣耀、咪咕。
 微信小程序和淘宝创意互动是独立容器集成。
 SUD、SUD V2、Cocos Runtime 保留运行时接入点，其外部发布工具仍需验证。
 保留 Facebook Instant Games 的 HTML5 模板；百度遗留模板不代表当前支持构建。
@@ -53,6 +53,7 @@ npm run test:platforms
 npm test -- --runInBand
 npm run build:minigame -- WECHAT
 npm run build:minigame -- OPPO
+npm run build:minigame -- BILIBILI
 npm run build:minigame -- WECHAT base,3d,animation,skeletal-animation,gfx-webgl,gfx-webgl2
 npm run build:dev
 npm run build:cli-min
@@ -60,6 +61,8 @@ npm run build:cli-min
 
 `build:minigame` 生成的是引擎包，不是完整游戏项目或厂商上传包。
 资源转换、平台注册和最终项目打包仍由对应 Creator/builder 集成负责。
+B 站本地适配器、发布模板、包校验及待完成的真机验收见
+[接入说明](docs/bilibili_minigame/README.md)和 [API 索引](docs/bilibili_minigame/API.md)。
 
 Creator 需要使用本引擎打过补丁的构建依赖。
 浏览器预览的 `/engine_external/` 接口必须指向本分支的 `external/`；

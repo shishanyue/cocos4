@@ -10,15 +10,23 @@ function spreadPal(engineRoot = path.join(__dirname, '..')) {
 
     // Physical copies are required by relative imports and Creator's quick compiler.
     const patches = [
-        ['input/nodejs/keyboard-input.d.ts', 'jsb.KeyboardEvent', 'Pick<KeyboardEvent, \'keyCode\'>'],
-        ['wasm/wasm-nodejs.js', '/native/external/', '/external/'],
-        ['wasm/wasm-web.js', '${info.native.path}/external/', '${info.typescript.path}/external/'],
+        ['input/nodejs/keyboard-input.d.ts', 'jsb.KeyboardEvent', 'Pick<KeyboardEvent, \'keyCode\'>', 2],
+        ['wasm/wasm-nodejs.js', '/native/external/', '/external/', 2],
+        ['wasm/wasm-web.js', '${info.native.path}/external/', '${info.typescript.path}/external/', 2],
+        ['system-info/enum-type/platform.js', 'Platform["WECHAT_GAME"]="WECHAT_GAME";', 'Platform["WECHAT_GAME"]="WECHAT_GAME";Platform["BILIBILI_MINI_GAME"]="BILIBILI_MINI_GAME";'],
+        ['system-info/enum-type/platform.d.ts', '    WECHAT_GAME = "WECHAT_GAME",', '    WECHAT_GAME = "WECHAT_GAME",\n    BILIBILI_MINI_GAME = "BILIBILI_MINI_GAME",'],
+        ['system-info/minigame/system-info.js', 'import { WECHAT,', 'import { BILIBILI, WECHAT,'],
+        ['system-info/minigame/system-info.js', 'if(WECHAT){currentPlatform=Platform.WECHAT_GAME;}', 'if(BILIBILI){currentPlatform=Platform.BILIBILI_MINI_GAME;}else if(WECHAT){currentPlatform=Platform.WECHAT_GAME;}'],
     ];
     const patchedFiles = new Map();
-    for (const [relative, before, after] of patches) {
-        const text = fs.readFileSync(path.join(source, relative), 'utf8');
-        if (!text.includes(before)) throw new Error(`PAL patch no longer matches: ${relative}`);
+    for (const [relative, before, after, count = 1] of patches) {
+        const text = patchedFiles.get(relative) ?? fs.readFileSync(path.join(source, relative), 'utf8');
+        if (text.split(before).length !== count + 1) throw new Error(`PAL patch no longer matches: ${relative}`);
         patchedFiles.set(relative, text.replaceAll(before, after));
+    }
+    const bilibili = path.join(__dirname, 'platforms/bilibili/pal');
+    for (const file of ['host.ts', 'minigame.ts', 'system-info.ts', 'env.ts', 'wasm.ts']) {
+        if (!fs.statSync(path.join(bilibili, file)).isFile()) throw new Error(`Missing Bilibili PAL: ${file}`);
     }
     fs.rmSync(target, { recursive: true, force: true });
     fs.cpSync(source, target, {
@@ -30,6 +38,7 @@ function spreadPal(engineRoot = path.join(__dirname, '..')) {
         },
     });
     for (const [relative, text] of patchedFiles) fs.writeFileSync(path.join(target, relative), text);
+    fs.cpSync(bilibili, path.join(target, 'bilibili'), { recursive: true });
     console.log('[pal] Prepared mini-game, runtime, Web and Node.js implementations.');
 }
 

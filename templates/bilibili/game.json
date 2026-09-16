@@ -1,0 +1,16 @@
+{
+    "appId": "",
+    "version": "1.0.0",
+    "deviceOrientation": "portrait",
+    "networkTimeout": {
+        "request": 60000,
+        "connectSocket": 60000,
+        "uploadFile": 60000,
+        "downloadFile": 60000
+    },
+    "subpackages": [],
+    "iOSHighPerformance": false,
+    "iOSHighPerformance+": false,
+    "androidHighPerformance": false,
+    "androidHighPerformance+": false
+}

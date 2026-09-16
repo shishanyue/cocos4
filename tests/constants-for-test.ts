@@ -33,6 +33,7 @@ export const RUNTIME_BASED = tryDefineGlobal('CC_RUNTIME_BASED', false);
 export const ALIPAY = tryDefineGlobal('CC_ALIPAY', false);
 export const XIAOMI = tryDefineGlobal('CC_XIAOMI', false);
 export const BYTEDANCE = tryDefineGlobal('CC_BYTEDANCE', false);
+export const BILIBILI = tryDefineGlobal('CC_BILIBILI', false);
 export const HUAWEI = tryDefineGlobal('CC_HUAWEI', false);
 export const OPPO = tryDefineGlobal('CC_OPPO', false);
 export const VIVO = tryDefineGlobal('CC_VIVO', false);

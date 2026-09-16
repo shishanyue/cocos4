@@ -1,0 +1,58 @@
+globalThis.__bilibiliRequire = require;
+globalThis.__bilibiliConfig = require('./game.json');
+<% if (typeof useWebgl2 !== 'undefined' && useWebgl2) { %>
+for (const key of ['androidHighPerformance', 'androidHighPerformance+', 'iOSHighPerformance', 'iOSHighPerformance+']) {
+    if (globalThis.__bilibiliConfig[key] !== true) throw new Error('Bilibili WebGL2 requires game.json option: ' + key);
+}
+<% } %>
+
+// Capture entry parameters before any asynchronous engine or application loading.
+const entry = globalThis.__bilibili = {
+    launchOptions: typeof bl.getLaunchOptionsSync === 'function' ? bl.getLaunchOptionsSync() : {},
+    lastShowOptions: null,
+};
+bl.onShow((options) => { entry.lastShowOptions = options; });
+require('./web-adapter');
+
+<% if (polyfillsBundleFile) { %>
+require(<%- JSON.stringify(polyfillsBundleFile) %>);
+<% } %>
+require(<%- JSON.stringify(systemJsBundleFile) %>);
+const importMapModule = require(<%- JSON.stringify(importMapFile) %>);
+System.warmup({
+    importMap: importMapModule.default || importMapModule,
+    importMapUrl: <%- JSON.stringify(importMapFile) %>,
+    defaultHandler: (url) => require('.' + url),
+    handlers: { 'project:': (url) => require(url) },
+});
+
+let startupFailed = false;
+let launchReported = false;
+let detachLaunchEvents = () => {};
+entry.reportLaunchSuccess = () => {
+    if (startupFailed || launchReported) return;
+    bl.launchSuccess();
+    launchReported = true;
+};
+
+System.import(<%- JSON.stringify(applicationJs) %>).then(({ Application }) => {
+    const application = new Application();
+    return System.import('cc').then((cc) => {
+        require('./engine-adapter')(cc);
+        <% if (typeof autoLaunchSuccess === 'undefined' || autoLaunchSuccess) { %>
+        // The engine's built-in splash is not a successful game-home launch.
+        const rendered = () => entry.reportLaunchSuccess();
+        const launched = () => cc.director.once(cc.Director.EVENT_AFTER_DRAW, rendered);
+        cc.director.once(cc.Director.EVENT_AFTER_SCENE_LAUNCH, launched);
+        detachLaunchEvents = () => {
+            cc.director.off(cc.Director.EVENT_AFTER_SCENE_LAUNCH, launched);
+            cc.director.off(cc.Director.EVENT_AFTER_DRAW, rendered);
+        };
+        <% } %>
+        return Promise.resolve(application.init(cc)).then(() => application.start());
+    });
+}).catch((error) => {
+    startupFailed = true;
+    detachLaunchEvents();
+    console.error('[BILIBILI] Game startup failed:', error);
+});

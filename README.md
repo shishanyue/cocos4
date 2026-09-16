@@ -11,7 +11,7 @@ game-project development, with source references and type-checked examples.
 
 ## Platforms
 
-Implemented adapters include WeChat, ByteDance, Alipay, Taobao, Xiaomi, OPPO,
+Implemented adapters include Bilibili, WeChat, ByteDance, Alipay, Taobao, Xiaomi, OPPO,
 vivo, Huawei, Honor and Migu. WeChat Mini Program and Taobao Creative App have
 separate container integrations. SUD, SUD V2 and Cocos Runtime have runtime
 integration points but require their external publishing tools to be verified.
@@ -60,6 +60,7 @@ npm run test:platforms
 npm test -- --runInBand
 npm run build:minigame -- WECHAT
 npm run build:minigame -- OPPO
+npm run build:minigame -- BILIBILI
 npm run build:minigame -- WECHAT base,3d,animation,skeletal-animation,gfx-webgl,gfx-webgl2
 npm run build:dev
 npm run build:cli-min
@@ -68,6 +69,9 @@ npm run build:cli-min
 `build:minigame` builds an **engine bundle**, not a complete game project or a
 vendor upload package. Asset conversion, platform registration and final game
 packaging still require the corresponding Creator/builder integration.
+For the Bilibili platform's local adapters, templates, package preflight and
+unverified device requirements, see [Bilibili integration](docs/bilibili_minigame/README.md)
+and the [host API reference](docs/bilibili_minigame/API.md).
 
 Creator must use this engine's patched build dependency. Its Web preview
 `/engine_external/` endpoint must serve this fork's `external/` directory;

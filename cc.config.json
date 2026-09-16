@@ -1,6 +1,6 @@
 {
     "$schema": "./cc.config.schema.json",
-    "platforms": ["HTML5", "NODEJS", "WECHAT", "WECHAT_MINI_PROGRAM", "BYTEDANCE", "ALIPAY", "TAOBAO", "TAOBAO_MINIGAME", "XIAOMI", "OPPO", "VIVO", "HUAWEI", "HONOR", "MIGU", "COCOS_RUNTIME", "SUD", "SUDV2"],
+    "platforms": ["HTML5", "NODEJS", "WECHAT", "WECHAT_MINI_PROGRAM", "BILIBILI", "BYTEDANCE", "ALIPAY", "TAOBAO", "TAOBAO_MINIGAME", "XIAOMI", "OPPO", "VIVO", "HUAWEI", "HONOR", "MIGU", "COCOS_RUNTIME", "SUD", "SUDV2"],
     "features": {
         "base": {
             "modules": [
@@ -457,6 +457,16 @@
             }
         },
         {
+            "test": "context.buildTimeConstants && context.buildTimeConstants.BILIBILI",
+            "isVirtualModule": true,
+            "overrides": {
+                "pal/minigame": "pal/bilibili/minigame.ts",
+                "pal/system-info": "pal/bilibili/system-info.ts",
+                "pal/env": "pal/bilibili/env.ts",
+                "pal/wasm": "pal/bilibili/wasm.ts"
+            }
+        },
+        {
             "test": "context.buildTimeConstants && context.buildTimeConstants.RUNTIME_BASED",
             "isVirtualModule": true,
             "overrides": {
@@ -562,6 +572,13 @@
             "comment": "Running in the Wechat's mini program.",
             "type": "boolean",
             "value": false,
+            "internal": false
+        },
+        "BILIBILI": {
+            "comment": "Running in the Bilibili mini game.",
+            "type": "boolean",
+            "value": false,
+            "ccGlobal": true,
             "internal": false
         },
         "XIAOMI": {
@@ -723,7 +740,7 @@
         "MINIGAME": {
             "comment": "Running in mini game.",
             "type": "boolean",
-            "value": "$WECHAT || $WECHAT_MINI_PROGRAM || $XIAOMI || $ALIPAY || $TAOBAO || $TAOBAO_MINIGAME || $BYTEDANCE",
+            "value": "$WECHAT || $WECHAT_MINI_PROGRAM || $BILIBILI || $XIAOMI || $ALIPAY || $TAOBAO || $TAOBAO_MINIGAME || $BYTEDANCE",
             "ccGlobal": true,
             "internal": false
         },

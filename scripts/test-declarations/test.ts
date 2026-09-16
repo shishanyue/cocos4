@@ -1,7 +1,7 @@
 /// <reference path="../../bin/.declarations/cc.d.ts" />
 /// <reference path="../../bin/.declarations/cc.editor.d.ts" />
 
-import { Node, TiledLayer, dragonBones } from 'cc';
+import { Node, TiledLayer, dragonBones, sys } from 'cc';
 import { poseGraphOp } from 'cc/editor/new-gen-anim';
 import { codec } from 'cc/editor/particle-system-2d-utils';
 
@@ -23,3 +23,7 @@ const unpacked: string = codec.unzipBase64('');
 
 declare const context: GPUCanvasContext;
 const texture: GPUTexture = context.getCurrentTexture();
+
+const bilibiliPlatform: typeof sys.platform = sys.Platform.BILIBILI_MINI_GAME;
+// @ts-expect-error Platform identities must not widen to arbitrary strings.
+const invalidPlatform: typeof sys.platform = 'NOT_A_PLATFORM';
