@@ -22,9 +22,8 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import type { IUV, SpriteFrame } from '../../assets/sprite-frame';
-import { Mat4, Color, errorID } from '../../../core';
+import { Mat4, Color } from '../../../core';
 import type { IRenderData, RenderData } from '../../renderer/render-data';
 import type { IBatcher } from '../../renderer/i-batcher';
 import type { Sprite } from '../../components/sprite';
@@ -44,7 +43,6 @@ let topInner: IUV;
 let topOuter: IUV;
 let tempRenderDataLength = 0;
 const tempRenderData: IRenderData[] = [];
-let QUAD_INDICES: Uint16Array | null = null;
 
 function has9SlicedOffsetVertexCount (spriteFrame: SpriteFrame): number {
     if (spriteFrame) {
@@ -104,46 +102,14 @@ class Tiled implements IAssembler {
 
         this.updateVerts(sprite, sizableWidth, sizableHeight, row, col);
 
-        if (JSB && renderData.vertexCount !== row * col * 4) {
-            sprite.renderEntity.colorDirty = true;
-        }
         // update data property
         renderData.resize(row * col * 4, row * col * 6);
-        // update index here
-        if (JSB) {
-            const indexCount = renderData.indexCount;
-            this.createQuadIndices(indexCount);
-            renderData.chunk.setIndexBuffer(QUAD_INDICES!);
-            // may can update color & uv here
-            // need dirty
-            this.updateWorldUVData(sprite);
-            //this.updateColorLate(sprite);
-        }
 
         renderData.updateRenderData(sprite, frame);
     }
 
-    private createQuadIndices (indexCount: number): void {
-        if (!JSB) return;
-        if (indexCount % 6 !== 0) {
-            errorID(16308);
-            return;
-        }
-        const quadCount = indexCount / 6;
-        QUAD_INDICES = new Uint16Array(indexCount);
-        let offset = 0;
-        for (let i = 0; i < quadCount; i++) {
-            QUAD_INDICES[offset++] = 0 + i * 4;
-            QUAD_INDICES[offset++] = 1 + i * 4;
-            QUAD_INDICES[offset++] = 2 + i * 4;
-            QUAD_INDICES[offset++] = 1 + i * 4;
-            QUAD_INDICES[offset++] = 3 + i * 4;
-            QUAD_INDICES[offset++] = 2 + i * 4;
-        }
-    }
-
     // dirty Mark
-    // the real update uv is on updateWorldUVData
+    // UVs are filled with world vertices in fillBuffers.
     updateUVs (sprite: Sprite): void {
         const renderData = sprite.renderData;
         if (!renderData) return;

@@ -104,7 +104,6 @@ declare const Buffer: any;
 
 declare type EnumAlias<EnumT> = EnumT[keyof EnumT];
 
-declare module 'internal:native' {}
 
 /**
  * Only declare on minigame platforms.

@@ -1,0 +1,22 @@
+{
+  "name": "biligame-builder-2x",
+  "version": "0.0.3",
+  "description": "The package template for getting started.",
+  "author": "bilibili小游戏团队",
+  "main": "main.js",
+  "main-menu": {
+    "i18n:MAIN_MENU.package.title/biligame-builder-2x/open": {
+      "message": "biligame-builder-2x:open"
+    }
+  },
+  "panel": {
+    "main": "panel/index.js",
+    "type": "dockable",
+    "title": "biligame-builder-2x",
+    "width": 620,
+    "height": 650
+  },
+  "dependencies": {
+    "axios": "^1.6.7"
+  }
+}

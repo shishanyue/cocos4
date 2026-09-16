@@ -37,8 +37,6 @@ import { CCArmatureDisplay } from './CCArmatureDisplay';
 import { MaterialInstance } from '../render-scene/core/material-instance';
 import { ArmatureSystem } from './ArmatureSystem';
 import { Batcher2D } from '../2d/renderer/batcher-2d';
-import { RenderEntity, RenderEntityType } from '../2d/renderer/render-entity';
-import { RenderDrawInfo } from '../2d/renderer/render-draw-info';
 import { Material, Texture2D } from '../asset/assets';
 import { Node } from '../scene-graph';
 import { builtinResMgr } from '../asset/asset-manager';
@@ -469,7 +467,7 @@ export class ArmatureDisplay extends UIRenderer {
      * transformation with bones.
      * @zh 获取 socket nodes，socket nodes 被注册到组件上，可以随骨骼做同步运动变换。
      */
-    get socketNodes (): Map<string, Node> { return this._socketNodes; }
+    get socketNodes (): globalThis.Map<string, Node> { return this._socketNodes; }
     /**
      * @en The armature is the core of the skeletal animation system.
      * @zh 骨架是骨骼动画系统的核心。
@@ -588,20 +586,13 @@ export class ArmatureDisplay extends UIRenderer {
     protected _enumArmatures: any = Enum({});
     protected _enumAnimations: any = Enum({});
 
-    protected _socketNodes = new Map<string, Node>();
-    protected _cachedSockets = new Map<string, BoneIndex>();
+    protected _socketNodes: globalThis.Map<string, Node> = new Map<string, Node>();
+    protected _cachedSockets: globalThis.Map<string, BoneIndex> = new Map<string, BoneIndex>();
 
     @serializable
     protected _sockets: DragonBoneSocket[] = [];
 
     private _inited;
-    private _drawInfoList: RenderDrawInfo[] = [];
-    private requestDrawInfo (idx: number): RenderDrawInfo {
-        if (!this._drawInfoList[idx]) {
-            this._drawInfoList[idx] = new RenderDrawInfo();
-        }
-        return this._drawInfoList[idx];
-    }
 
     constructor () {
         super();
@@ -624,10 +615,6 @@ export class ArmatureDisplay extends UIRenderer {
      */
     initFactory (): void {
         this._factory = CCFactory.getInstance();
-    }
-
-    onLoad (): void {
-        super.onLoad();
     }
 
     /**
@@ -1522,11 +1509,6 @@ export class ArmatureDisplay extends UIRenderer {
         this._materialCache = {};
     }
 
-    protected createRenderEntity (): RenderEntity {
-        const renderEntity = new RenderEntity(RenderEntityType.DYNAMIC);
-        renderEntity.setUseLocal(false);
-        return renderEntity;
-    }
     /**
      * @en Sets flag for update render data.
      * @zh 标记组件渲染数据更新。

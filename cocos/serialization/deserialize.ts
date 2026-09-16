@@ -22,7 +22,7 @@
  THE SOFTWARE.
 */
 
-import { EDITOR, TEST, PREVIEW, DEBUG, JSB, NODEJS, DEV } from 'internal:constants';
+import { EDITOR, TEST, PREVIEW, DEBUG, NODEJS, DEV } from 'internal:constants';
 import { cclegacy, errorID, getError, js, assertIsTrue } from '../core';
 
 import { deserializeDynamic, DeserializeDynamicOptions, parseUuidDependenciesDynamic } from './deserialize-dynamic';

@@ -22,7 +22,6 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { TextureAtlasData } from '@cocos/dragonbones-js';
 import { ArmatureCache } from './ArmatureCache';
 import { ArmatureDisplay } from './ArmatureDisplay';
@@ -141,7 +140,6 @@ export class DragonBonesAtlasAsset extends Asset {
     }
 
     protected _clear (): void {
-        if (JSB) return;
         if (this._factory) {
             ArmatureCache.sharedCache.resetArmature(this._uuid);
             this._factory.removeTextureAtlasData(this._uuid, true);

@@ -118,8 +118,6 @@ export function validPunctualLightsCulling (pipeline: BasicPipeline, camera: Cam
             validPunctualLights.push(light);
         }
     }
-    // in jsb, std::vector is not synchronized, so we need to assign it manually
-    sceneData.validPunctualLights = validPunctualLights;
 }
 
 export function getCameraUniqueID (camera: Camera): number {

@@ -24,7 +24,7 @@
 
 // @ts-check
 import { ccclass, override } from 'cc.decorator';
-import { EDITOR, NODEJS, ALIPAY, XIAOMI, JSB, TEST, TAOBAO, TAOBAO_MINIGAME, WECHAT_MINI_PROGRAM, BYTEDANCE } from 'internal:constants';
+import { EDITOR, NODEJS, ALIPAY, XIAOMI, TEST, TAOBAO, TAOBAO_MINIGAME, WECHAT_MINI_PROGRAM, BYTEDANCE } from 'internal:constants';
 import { Device, Format, FormatFeatureBit, deviceManager } from '../../gfx';
 import { Asset } from './asset';
 import { PixelFormat } from './asset-enum';
@@ -167,10 +167,6 @@ function isNativeImage (imageSource: ImageSource): imageSource is (HTMLImageElem
         // We're unable to grab the constructors of Alipay native image or canvas object.
         return !('_data' in imageSource);
     }
-    if (JSB && (imageSource as IMemoryImageSource)._compressed === true) {
-        return false;
-    }
-
     return imageSource instanceof HTMLImageElement || imageSource instanceof HTMLCanvasElement || isImageBitmap(imageSource);
 }
 
@@ -683,11 +679,6 @@ export class ImageAsset extends Asset {
         if (this.data && this.data instanceof HTMLImageElement) {
             this.data.src = '';
             this._setRawAsset('');
-            // JSB element should destroy native data.
-            // TODO: Property 'destroy' does not exist on type 'HTMLImageElement'.
-            // maybe we need a higher level implementation called `pal/image`, we provide `destroy` interface here.
-            // issue: https://github.com/cocos/cocos-engine/issues/14646
-            if (JSB) (this.data as any).destroy();
         } else if (isImageBitmap(this.data)) {
             this.data?.close();
         }

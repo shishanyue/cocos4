@@ -40,42 +40,12 @@ for (let i = 0; i < 4; i++) {
  * 可通过 `UI.sliced` 获取该组装器。
  */
 class Sliced implements IAssembler {
-    private QUAD_INDICES!: Uint16Array;
-
     createData (sprite: Sprite): RenderData {
         const renderData: RenderData | null = sprite.requestRenderData()!;
         // 0-4 for local vertex
         renderData.dataLength = 16;
         renderData.resize(16, 54);
-        const quadIndices = this.QUAD_INDICES = new Uint16Array(54);
-        this.createQuadIndices(4, 4);
-        renderData.chunk.setIndexBuffer(quadIndices);
         return renderData;
-    }
-
-    private createQuadIndices (vertexRow: number, vertexCol: number): void {
-        let offset = 0;
-        const quadIndices = this.QUAD_INDICES;
-        for (let curRow = 0; curRow < vertexRow - 1; curRow++) {
-            for (let curCol = 0; curCol < vertexCol - 1; curCol++) {
-                // vid is the index of the left bottom vertex in each rect.
-                const vid = curRow * vertexCol + curCol;
-
-                // left bottom
-                quadIndices[offset++] = vid;
-                // right bottom
-                quadIndices[offset++] = vid + 1;
-                // left top
-                quadIndices[offset++] = vid + vertexCol;
-
-                // right bottom
-                quadIndices[offset++] = vid + 1;
-                // right top
-                quadIndices[offset++] = vid + 1 + vertexCol;
-                // left top
-                quadIndices[offset++] = vid + vertexCol;
-            }
-        }
     }
 
     updateRenderData (sprite: Sprite): void {

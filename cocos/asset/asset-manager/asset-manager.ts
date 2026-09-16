@@ -65,10 +65,6 @@ export interface IAssetManagerOptions {
     importBase?: string;
     /* Only valid on Editor */
     nativeBase?: string;
-    /* Only valid on native */
-    jsbDownloaderMaxTasks?: number;
-    /* Only valid on native */
-    jsbDownloaderTimeout?: number;
 
     /**
      * @zh

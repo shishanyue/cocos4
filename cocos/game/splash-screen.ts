@@ -22,9 +22,9 @@
  THE SOFTWARE.
 */
 
-import { EDITOR, USE_XR } from 'internal:constants';
+import { EDITOR } from 'internal:constants';
 import { Material, MaterialPropertyFull } from '../asset/assets/material';
-import { clamp01, Mat4, Vec2, settings, sys, cclegacy, easing, preTransforms, SettingsCategory } from '../core';
+import { clamp01, Mat4, Vec2, settings, sys, cclegacy, easing, SettingsCategory } from '../core';
 import {
     Sampler, SamplerInfo, Shader, Texture, TextureInfo, Device, InputAssembler, InputAssemblerInfo, Attribute, Buffer,
     BufferInfo, Rect, Color, BufferTextureCopy, CommandBuffer, BufferUsageBit, Format,
@@ -33,8 +33,6 @@ import {
 import { PipelineStateManager } from '../rendering';
 import { SetIndex } from '../rendering/define';
 import { ccwindow, legacyCC } from '../core/global-exports';
-import { XREye } from '../xr/xr-enums';
-import { PipelineRuntime } from '../rendering/custom';
 import { ResolutionPolicy } from '../ui/view';
 
 const v2_0 = new Vec2();
@@ -507,128 +505,76 @@ export class SplashScreen {
     }
 
     private frame (): void {
-        const { device, swapchain, projection, bgMat, logoMat, watermarkMat, settings, quadAssmebler } = this;
-        const { capabilities } = device;
+        const { device, swapchain, bgMat, logoMat, watermarkMat, settings, quadAssmebler } = this;
 
-        if (!sys.isXR || xr.entry.isRenderAllowable()) {
-            const renderSize = sys.isXR ? 2 : 1;
-            for (let xrEye = 0; xrEye < renderSize; xrEye++) {
-                if (USE_XR && sys.isXR) {
-                    xr.entry.renderLoopStart(xrEye);
-                    const xrFov = xr.entry.getEyeFov(xrEye);
-                    // device's fov may be asymmetry
-                    let radioLeft = 1.0;
-                    let radioRight = 1.0;
-                    if (xrEye === XREye.LEFT as number) {
-                        radioLeft = Math.abs(Math.tan(xrFov[0] as number)) / Math.abs(Math.tan(xrFov[1] as number));
-                    } else if (xrEye === XREye.RIGHT as number) {
-                        radioRight = Math.abs(Math.tan(xrFov[1] as number)) / Math.abs(Math.tan(xrFov[0] as number));
-                    }
+        // for legacy pipeline
+        device.enableAutoBarrier(true);
 
-                    Mat4.ortho(
-                        projection,
-                        -radioLeft,
-                        radioRight,
-                        -1,
-                        1,
-                        -1,
-                        1,
-                        capabilities.clipSpaceMinZ,
-                        capabilities.clipSpaceSignY,
-                        swapchain.surfaceTransform,
-                    );
-                    // keep scale to [-1, 1] only use offset
-                    projection.m00 = preTransforms[swapchain.surfaceTransform][0];
-                    projection.m05 = preTransforms[swapchain.surfaceTransform][3] * capabilities.clipSpaceSignY;
-                    if (settings.background!.type === 'custom') {
-                        setMaterialProperty(bgMat, 'u_projection', projection);
-                        bgMat.passes[0].update();
-                    }
-                    if (settings.logo!.type !== 'none') {
-                        setMaterialProperty(logoMat, 'u_projection', projection);
-                        logoMat.passes[0].update();
-                    }
-                    if (settings.logo!.type === 'default' && watermarkMat) {
-                        setMaterialProperty(watermarkMat, 'u_projection', projection);
-                        watermarkMat.passes[0].update();
-                    }
-                }
+        device.acquire([swapchain]);
+        // record command
+        const cmdBuff = this.cmdBuff;
+        const framebuffer = cclegacy.director.root!.mainWindow!.framebuffer as Framebuffer;
+        const renderArea = this.renderArea;
 
-                // for legacy pipeline
-                device.enableAutoBarrier(true);
+        renderArea.width = swapchain.width;
+        renderArea.height = swapchain.height;
 
-                device.acquire([swapchain]);
-                // record command
-                const cmdBuff = this.cmdBuff;
-                const framebuffer = cclegacy.director.root!.mainWindow!.framebuffer as Framebuffer;
-                const renderArea = this.renderArea;
+        cmdBuff.begin();
+        cmdBuff.beginRenderPass(framebuffer.renderPass, framebuffer, renderArea, this.clearColors, 1.0, 0);
+        if (settings.background!.type === 'custom') {
+            const bgPass = bgMat.passes[0];
+            const bgPso = PipelineStateManager.getOrCreatePipelineState(
+                device,
+                bgPass,
+                this.shader,
+                framebuffer.renderPass,
+                quadAssmebler,
+            );
 
-                renderArea.width = swapchain.width;
-                renderArea.height = swapchain.height;
-
-                cmdBuff.begin();
-                cmdBuff.beginRenderPass(framebuffer.renderPass, framebuffer, renderArea, this.clearColors, 1.0, 0);
-                const pipeline = cclegacy.director.root.pipeline as PipelineRuntime;
-                if (settings.background!.type === 'custom') {
-                    const bgPass = bgMat.passes[0];
-                    const bgPso = PipelineStateManager.getOrCreatePipelineState(
-                        device,
-                        bgPass,
-                        this.shader,
-                        framebuffer.renderPass,
-                        quadAssmebler,
-                    );
-
-                    cmdBuff.bindPipelineState(bgPso);
-                    cmdBuff.bindDescriptorSet(SetIndex.MATERIAL, bgPass.descriptorSet);
-                    cmdBuff.bindInputAssembler(quadAssmebler);
-                    cmdBuff.draw(quadAssmebler);
-                }
-
-                if (settings.logo!.type !== 'none') {
-                    const logoPass = logoMat.passes[0];
-                    const logoPso = PipelineStateManager.getOrCreatePipelineState(
-                        device,
-                        logoPass,
-                        this.shader,
-                        framebuffer.renderPass,
-                        quadAssmebler,
-                    );
-
-                    cmdBuff.bindPipelineState(logoPso);
-                    cmdBuff.bindDescriptorSet(SetIndex.MATERIAL, logoPass.descriptorSet);
-                    cmdBuff.bindInputAssembler(quadAssmebler);
-                    cmdBuff.draw(quadAssmebler);
-                }
-
-                if (settings.logo!.type === 'default' && watermarkMat) {
-                    const wartermarkPass = this.watermarkMat.passes[0];
-                    const watermarkPso = PipelineStateManager.getOrCreatePipelineState(
-                        device,
-                        wartermarkPass,
-                        this.shader,
-                        framebuffer.renderPass,
-                        quadAssmebler,
-                    );
-
-                    cmdBuff.bindPipelineState(watermarkPso);
-                    cmdBuff.bindDescriptorSet(SetIndex.MATERIAL, wartermarkPass.descriptorSet);
-                    cmdBuff.bindInputAssembler(quadAssmebler);
-                    cmdBuff.draw(quadAssmebler);
-                }
-
-                cmdBuff.endRenderPass();
-                cmdBuff.end();
-                device.flushCommands([cmdBuff]);
-                device.queue.submit([cmdBuff]);
-                device.present();
-                device.enableAutoBarrier(!legacyCC.rendering);
-
-                if (USE_XR && sys.isXR) {
-                    xr.entry.renderLoopEnd(xrEye);
-                }
-            }
+            cmdBuff.bindPipelineState(bgPso);
+            cmdBuff.bindDescriptorSet(SetIndex.MATERIAL, bgPass.descriptorSet);
+            cmdBuff.bindInputAssembler(quadAssmebler);
+            cmdBuff.draw(quadAssmebler);
         }
+
+        if (settings.logo!.type !== 'none') {
+            const logoPass = logoMat.passes[0];
+            const logoPso = PipelineStateManager.getOrCreatePipelineState(
+                device,
+                logoPass,
+                this.shader,
+                framebuffer.renderPass,
+                quadAssmebler,
+            );
+
+            cmdBuff.bindPipelineState(logoPso);
+            cmdBuff.bindDescriptorSet(SetIndex.MATERIAL, logoPass.descriptorSet);
+            cmdBuff.bindInputAssembler(quadAssmebler);
+            cmdBuff.draw(quadAssmebler);
+        }
+
+        if (settings.logo!.type === 'default' && watermarkMat) {
+            const wartermarkPass = this.watermarkMat.passes[0];
+            const watermarkPso = PipelineStateManager.getOrCreatePipelineState(
+                device,
+                wartermarkPass,
+                this.shader,
+                framebuffer.renderPass,
+                quadAssmebler,
+            );
+
+            cmdBuff.bindPipelineState(watermarkPso);
+            cmdBuff.bindDescriptorSet(SetIndex.MATERIAL, wartermarkPass.descriptorSet);
+            cmdBuff.bindInputAssembler(quadAssmebler);
+            cmdBuff.draw(quadAssmebler);
+        }
+
+        cmdBuff.endRenderPass();
+        cmdBuff.end();
+        device.flushCommands([cmdBuff]);
+        device.queue.submit([cmdBuff]);
+        device.present();
+        device.enableAutoBarrier(!legacyCC.rendering);
     }
 
     private destroy (): void {

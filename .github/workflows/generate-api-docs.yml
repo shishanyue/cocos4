@@ -10,10 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       target_tag:
-        description: 'The ref (branch or tag) to build API docs'
+        description: 'The Web-only ref (branch or tag) to build API docs; defaults to the workflow ref'
         type: string
-        default: 'v3.8.4'
-        required: true
+        required: false
 
 jobs:
   build-api-doc:
@@ -26,14 +25,10 @@ jobs:
 
     - name: Get ref
       id: step-id-get-ref
+      env:
+        ENGINE_REF: ${{ github.event.inputs.target_tag || github.ref }}
       run: |
-        if [ "${{ github.event_name }}" = 'workflow_dispatch' ]; then
-          echo "Get ref from workflow_dispatch"
-          echo "ENGINE_REF=${{ github.event.inputs.target_tag }}" >> $GITHUB_OUTPUT
-        else
-          echo "Get ref from push"
-          echo "ENGINE_REF=${{ github.ref }}" >> $GITHUB_OUTPUT
-        fi
+        echo "ENGINE_REF=$ENGINE_REF" >> "$GITHUB_OUTPUT"
 
     - name: Show ref
       run: |
@@ -104,9 +99,8 @@ jobs:
 
     - name: Download external libraries
       run: |
-        EXT_VERSION=`grep checkout native/external-config.json | awk -F'"' '{print $4}'`
-        echo "EXT_VERSION: ${EXT_VERSION}"
-        git clone --branch $EXT_VERSION --depth 1 https://github.com/cocos/cocos-engine-external native/external
+        node .github/workflows/get-external-version.js
+        npm run setup:external
 
     - name: Install Cocos Engine
       run: |
@@ -139,4 +133,3 @@ jobs:
       with: 
         name: Cocos-Creator-API
         path: Cocos-Creator-API.json
-

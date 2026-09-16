@@ -22,7 +22,6 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import type { SpriteFrame } from '../../assets';
 import { Mat4, Vec2 } from '../../../core';
 import type { IRenderData, RenderData } from '../../renderer/render-data';
@@ -43,7 +42,6 @@ const _intersectPoint_1: Vec2[] = [new Vec2(), new Vec2(), new Vec2(), new Vec2(
 const _intersectPoint_2: Vec2[] = [new Vec2(), new Vec2(), new Vec2(), new Vec2()];
 const _center = new Vec2();
 const _triangles: Vec2[] = [new Vec2(), new Vec2(), new Vec2(), new Vec2()];
-let QUAD_INDICES: Uint16Array | null = null;
 
 function _calcIntersectedPoints (
     left: number,
@@ -369,32 +367,12 @@ class RadialFilled implements IAssembler {
                     endAngle += PI_2;
                 }
             }
-            // hack for native when offset is 0
+            // Discard stale vertices when the fill produces no triangles.
             if (offset === 0) {
                 renderData.dataLength = 0;
             }
             renderData.resize(offset, offset);
-            if (JSB) {
-                const indexCount = renderData.indexCount;
-                this.createQuadIndices(indexCount);
-                renderData.chunk.setIndexBuffer(QUAD_INDICES!);
-                // may can update color & uv here
-                // need dirty
-                this.updateWorldUVData(sprite);
-                //this.updateColorLate(sprite);
-                sprite.renderEntity.colorDirty = true;
-            }
             renderData.updateRenderData(sprite, frame);
-        }
-    }
-
-    private createQuadIndices (indexCount: number): void {
-        if (!JSB) return;
-        QUAD_INDICES = null;
-        QUAD_INDICES = new Uint16Array(indexCount);
-        let offset = 0;
-        for (let i = 0; i < indexCount; i++) {
-            QUAD_INDICES[offset++] = i;
         }
     }
 
@@ -422,20 +400,6 @@ class RadialFilled implements IAssembler {
         }
         meshBuffer.indexOffset += renderData.indexCount;
         meshBuffer.setDirty();
-    }
-
-    private updateWorldUVData (sprite: Sprite): void {
-        if (!JSB) return;
-        const renderData = sprite.renderData;
-        if (!renderData) return;
-        const stride = renderData.floatStride;
-        const dataList: IRenderData[] = renderData.data;
-        const vData = renderData.chunk.vb;
-        for (let i  = 0; i < dataList.length; i++) {
-            const offset = i * stride;
-            vData[offset + 3] = dataList[i].u;
-            vData[offset + 4] = dataList[i].v;
-        }
     }
 
     // only for TS
@@ -468,7 +432,7 @@ class RadialFilled implements IAssembler {
     }
 
     // dirty Mark
-    // the real update uv is on updateWorldUVData
+    // UVs are filled with world vertices in fillBuffers.
     updateUVs (sprite: Sprite): void {
         const renderData = sprite.renderData;
         if (!renderData) return;

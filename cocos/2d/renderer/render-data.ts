@@ -22,19 +22,16 @@
  THE SOFTWARE.
 */
 
-import { DEBUG, JSB } from 'internal:constants';
 import { director } from '../../game/director';
 import { Material } from '../../asset/assets/material';
 import { TextureBase } from '../../asset/assets/texture-base';
-import { Color, Pool, RecyclePool, murmurhash2_32_gc, assert, assertIsTrue } from '../../core';
+import { Color, RecyclePool, murmurhash2_32_gc, assertIsTrue } from '../../core';
 import { SpriteFrame } from '../assets/sprite-frame';
 import { UIRenderer } from '../framework/ui-renderer';
 import { StaticVBAccessor, StaticVBChunk } from './static-vb-accessor';
 import { getAttributeStride, vfmtPosUvColor } from './vertex-format';
 import { Buffer, BufferInfo, BufferUsageBit, Device, Attribute, InputAssembler, InputAssemblerInfo, MemoryUsageBit } from '../../gfx';
-import { RenderDrawInfo, RenderDrawInfoType } from './render-draw-info';
 import { Batcher2D } from './batcher-2d';
-import { RenderEntity, RenderEntityType } from './render-entity';
 import type { MeshBuffer } from './mesh-buffer';
 
 /**
@@ -71,23 +68,7 @@ export class BaseRenderData {
         return this._vertexFormat;
     }
 
-    get drawInfoType (): RenderDrawInfoType {
-        return this._drawInfoType;
-    }
-    set drawInfoType (type: RenderDrawInfoType) {
-        this._drawInfoType = type;
-        if (JSB && this._renderDrawInfo) {
-            this._renderDrawInfo.setDrawInfoType(type);
-        }
-    }
-
     public chunk: StaticVBChunk = null!;
-
-    // entity for native
-    protected _renderDrawInfo: RenderDrawInfo = null!;
-    public get renderDrawInfo (): RenderDrawInfo {
-        return this._renderDrawInfo;
-    }
 
     protected _material: Material | null = null;
     get material (): Material | null {
@@ -95,9 +76,6 @@ export class BaseRenderData {
     }
     set material (val: Material | null) {
         this._material = val;
-        if (JSB && this._renderDrawInfo) {
-            this._renderDrawInfo.setMaterial(val!);
-        }
     }
 
     protected _dataHash = 0;
@@ -106,9 +84,6 @@ export class BaseRenderData {
     }
     set dataHash (val: number) {
         this._dataHash = val;
-        if (JSB && this._renderDrawInfo) {
-            this._renderDrawInfo.setDataHash(val);
-        }
     }
 
     public _isMeshBuffer = false;
@@ -117,13 +92,6 @@ export class BaseRenderData {
     protected _ic = 0;
     protected _floatStride = 0;
     protected _vertexFormat = vfmtPosUvColor;
-    protected _drawInfoType: RenderDrawInfoType = RenderDrawInfoType.COMP;
-    protected _multiOwner = false;
-    get multiOwner (): boolean { return this._multiOwner; }
-    set multiOwner (val) {
-        this._multiOwner = val;
-    }
-
     protected _batcher: Batcher2D | null = null;
     get batcher (): Batcher2D {
         if (!this._batcher) {
@@ -139,81 +107,6 @@ export class BaseRenderData {
 
     public isValid (): false | StaticVBAccessor {
         return this._ic > 0 && this.chunk.vertexAccessor;
-    }
-
-    // it should be invoked at where a render data is allocated.
-    public initRenderDrawInfo (comp: UIRenderer, drawInfoType: RenderDrawInfoType = RenderDrawInfoType.COMP): void {
-        if (JSB) {
-            const renderEntity: RenderEntity = comp.renderEntity;
-
-            if (renderEntity.renderEntityType === RenderEntityType.STATIC) {
-                if (!this._renderDrawInfo) {
-                    // initialization should be in native
-                    const drawInfo = renderEntity.getStaticRenderDrawInfo();
-                    if (drawInfo) {
-                        this._renderDrawInfo = drawInfo;
-                    }
-                }
-            } else if (this.multiOwner === false) {
-                if (!this._renderDrawInfo) {
-                    this._renderDrawInfo = new RenderDrawInfo();
-                    // for no resize() invoking components
-                    //this.setRenderDrawInfoAttributes();
-                    renderEntity.addDynamicRenderDrawInfo(this._renderDrawInfo);
-                }
-            }
-
-            this.drawInfoType = drawInfoType;
-            this.setRenderDrawInfoAttributes();
-        }
-    }
-
-    /**
-     * @deprecated Please use RenderEntity.clearRenderDrawInfos instead.
-     */
-    public removeRenderDrawInfo (comp: UIRenderer): void {
-        if (JSB) {
-            const renderEntity: RenderEntity = comp.renderEntity;
-            if (renderEntity.renderEntityType === RenderEntityType.DYNAMIC) {
-                renderEntity.removeDynamicRenderDrawInfo();
-            } else if (renderEntity.renderEntityType === RenderEntityType.STATIC) {
-                renderEntity.clearStaticRenderDrawInfos();
-            }
-        }
-    }
-
-    /**
-     * @engineInternal
-     * @mangle
-     */
-    protected setRenderDrawInfoAttributes (): void {
-        if (JSB) {
-            const renderDrawInfo = this._renderDrawInfo;
-            if (!renderDrawInfo) {
-                return;
-            }
-            const chunk = this.chunk;
-            if (chunk) {
-                renderDrawInfo.setBufferId(chunk.bufferId);
-                renderDrawInfo.setVertexOffset(chunk.vertexOffset);
-                renderDrawInfo.setVB(chunk.vb);
-                // TODO: on TS 4.2, argument of type 'Readonly<Uint16Array>' is not assignable to parameter of type 'Uint16Array'.
-                renderDrawInfo.setIB(chunk.ib as Uint16Array);
-                const meshBuffer = chunk.meshBuffer;
-                if (meshBuffer) {
-                    renderDrawInfo.setIndexOffset(meshBuffer.indexOffset);
-                    renderDrawInfo.setVData(meshBuffer.vData.buffer);
-                    renderDrawInfo.setIData(meshBuffer.iData.buffer);
-                }
-            }
-            renderDrawInfo.setVBCount(this._vc);
-            renderDrawInfo.setIBCount(this._ic);
-
-            renderDrawInfo.setDataHash(this.dataHash);
-            renderDrawInfo.setIsMeshBuffer(this._isMeshBuffer);
-            renderDrawInfo.setMaterial(this.material!);
-            renderDrawInfo.setDrawInfoType(this._drawInfoType);
-        }
     }
 }
 
@@ -262,8 +155,6 @@ export class RenderData extends BaseRenderData {
 
             data.length = length;
         }
-
-        this.syncRender2dBuffer();
     }
 
     get data (): IRenderData[] {
@@ -276,9 +167,6 @@ export class RenderData extends BaseRenderData {
     }
     set vertDirty (val: boolean) {
         this._vertDirty = val;
-        if (JSB && this._renderDrawInfo && val) {
-            this._renderDrawInfo.setVertDirty(val);
-        }
     }
 
     protected _textureHash = 0;
@@ -293,15 +181,6 @@ export class RenderData extends BaseRenderData {
 
     public set frame (val: SpriteFrame | TextureBase | null) {
         this._frame = val;
-        if (JSB && this._renderDrawInfo) {
-            if (this._frame) {
-                this._renderDrawInfo.setTexture(this._frame.getGFXTexture());
-                this._renderDrawInfo.setSampler(this._frame.getGFXSampler());
-            } else {
-                this._renderDrawInfo.setTexture(null);
-                this._renderDrawInfo.setSampler(null);
-            }
-        }
     }
     public get frame (): SpriteFrame | TextureBase | null {
         return this._frame;
@@ -340,79 +219,11 @@ export class RenderData extends BaseRenderData {
         // renderData always have chunk
         this.chunk = this._accessor.allocateChunk(vertexCount, indexCount)!;
         this.updateHash();
-
-        if (JSB && this.multiOwner === false && this._renderDrawInfo) {
-            const renderDrawInfo = this._renderDrawInfo;
-            const chunk = this.chunk;
-            const meshBuffer = chunk.meshBuffer;
-            // for sync vData and iData address to native
-            renderDrawInfo.setDrawInfoType(this._drawInfoType);
-            renderDrawInfo.setBufferId(chunk.bufferId);
-            renderDrawInfo.setVertexOffset(chunk.vertexOffset);
-            renderDrawInfo.setIndexOffset(meshBuffer.indexOffset);
-            renderDrawInfo.setVB(chunk.vb);
-            // TODO: on TS 4.2, argument of type 'Readonly<Uint16Array>' is not assignable to parameter of type 'Uint16Array'.
-            renderDrawInfo.setIB(chunk.ib as Uint16Array);
-            renderDrawInfo.setVData(meshBuffer.vData.buffer);
-            renderDrawInfo.setIData(meshBuffer.iData.buffer);
-            renderDrawInfo.setVBCount(this._vc);
-            renderDrawInfo.setIBCount(this._ic);
-        }
     }
 
     public updateSize (vertexCount: number, indexCount: number): void {
         this._vc = vertexCount;
         this._ic = indexCount;
-    }
-
-    /** @mangle */
-    protected override setRenderDrawInfoAttributes (): void {
-        if (JSB) {
-            if (!this._renderDrawInfo) {
-                return;
-            }
-            this._renderDrawInfo.setAccId(this._accessor.id);
-            super.setRenderDrawInfoAttributes();
-            this._renderDrawInfo.setTexture(this.frame ? this.frame.getGFXTexture() : null);
-            this._renderDrawInfo.setSampler(this.frame ? this.frame.getGFXSampler() : null);
-        }
-    }
-    /**
-     * @internal
-     * @mangle
-     */
-    public fillDrawInfoAttributes (drawInfo: RenderDrawInfo): void {
-        if (JSB) {
-            if (!drawInfo) {
-                return;
-            }
-            drawInfo.setDrawInfoType(this._drawInfoType);
-            drawInfo.setAccAndBuffer(this._accessor.id, this.chunk.bufferId);
-            drawInfo.setVertexOffset(this.chunk.vertexOffset);
-            drawInfo.setIndexOffset(this.chunk.meshBuffer.indexOffset);
-            drawInfo.setVB(this.chunk.vb);
-            // TODO: on TS 4.2, argument of type 'Readonly<Uint16Array>' is not assignable to parameter of type 'Uint16Array'.
-            drawInfo.setIB(this.chunk.ib as Uint16Array);
-            drawInfo.setVData(this.chunk.meshBuffer.vData.buffer);
-            drawInfo.setIData(this.chunk.meshBuffer.iData.buffer);
-            drawInfo.setVBCount(this._vc);
-            drawInfo.setIBCount(this._ic);
-            drawInfo.setDataHash(this.dataHash);
-            drawInfo.setIsMeshBuffer(this._isMeshBuffer);
-        }
-    }
-
-    // Initial advance render data for native
-    /** @mangle */
-    protected syncRender2dBuffer (): void {
-        if (JSB && this.multiOwner === false) {
-            if (!this._renderDrawInfo) {
-                return;
-            }
-            this.renderDrawInfo.setStride(this.floatStride);
-            this.renderDrawInfo.setVBCount(this.dataLength);
-            this.renderDrawInfo.initRender2dBuffer();
-        }
     }
 
     public resizeAndCopy (vertexCount: number, indexCount: number): void {
@@ -469,10 +280,6 @@ export class RenderData extends BaseRenderData {
             this.material = comp.getRenderMaterial(0)!;
             this.passDirty = false;
             this.hashDirty = true;
-
-            if (JSB && this._renderDrawInfo) {
-                this._renderDrawInfo.setMaterial(this.material);
-            }
         }
         if (this.nodeDirty) {
             const renderScene = comp.node.scene ? comp._getRenderScene() : null;
@@ -488,29 +295,9 @@ export class RenderData extends BaseRenderData {
             this.textureHash = frame.getHash();
             this.textureDirty = false;
             this.hashDirty = true;
-
-            if (JSB && this._renderDrawInfo) {
-                this._renderDrawInfo.setTexture(this.frame ? this.frame.getGFXTexture() : null);
-                this._renderDrawInfo.setSampler(this.frame ? this.frame.getGFXSampler() : null);
-            }
         }
         if (this.hashDirty) {
             this.updateHash();
-
-            if (JSB && this._renderDrawInfo) {
-                this._renderDrawInfo.setDataHash(this.dataHash);
-            }
-        }
-
-        // Hack Do not update pre frame
-        if (JSB && this.multiOwner === false) {
-            if (DEBUG) {
-                if (this._renderDrawInfo && this._renderDrawInfo.render2dBuffer) {
-                    assert(this._renderDrawInfo.render2dBuffer.length === this._floatStride * this._data.length, 'Vertex count doesn\'t match.');
-                }
-            }
-            // sync shared buffer to native
-            this._renderDrawInfo.fillRender2dBuffer(this._data);
         }
     }
 
@@ -530,9 +317,6 @@ export class RenderData extends BaseRenderData {
         this.frame = null;
         this.textureHash = 0;
         this.dataHash = 0;
-        if (JSB && this._renderDrawInfo) {
-            this._renderDrawInfo.clear();
-        }
     }
     public static createStaticVBAccessor (attributes: Attribute[], vCount?: number, iCount?: number): StaticVBAccessor {
         const device = director.root!.device;
@@ -602,8 +386,6 @@ export class MeshRenderData extends BaseRenderData {
     // only for graphics
     public lastFilledIndex = 0;
     public lastFilledVertex = 0;
-
-    public frame: SpriteFrame | null = null;
 
     private _byteLength = 0;
     private _vertexBuffers: Buffer[] = [];
@@ -777,48 +559,6 @@ export class MeshRenderData extends BaseRenderData {
         this.iData = new Uint16Array(iCount);
         if (oldIData) {
             this.iData.set(oldIData, 0);
-        }
-    }
-
-    public override setRenderDrawInfoAttributes (): void {
-        if (JSB) {
-            const renderDrawInfo = this._renderDrawInfo;
-            if (!renderDrawInfo) {
-                return;
-            }
-            renderDrawInfo.setVData(this.vData.buffer);
-            renderDrawInfo.setIData(this.iData.buffer);
-            renderDrawInfo.setVBCount(this._vc);
-            renderDrawInfo.setIBCount(this._ic);
-            renderDrawInfo.setVertexOffset(this.vertexStart);
-            renderDrawInfo.setIndexOffset(this.indexStart);
-
-            renderDrawInfo.setIsMeshBuffer(this._isMeshBuffer);
-            renderDrawInfo.setMaterial(this.material!);
-            const frame = this.frame;
-            if (frame) {
-                renderDrawInfo.setTexture(frame.getGFXTexture());
-                renderDrawInfo.setSampler(frame.getGFXSampler());
-            }
-        }
-    }
-
-    /**
-     * only for particle2d
-     * @engineInternal
-     * @mangle
-     */
-    public particleInitRenderDrawInfo (entity: RenderEntity): void {
-        if (JSB) {
-            if (entity.renderEntityType === RenderEntityType.STATIC) {
-                if (!this._renderDrawInfo) {
-                    // initialization should be in native
-                    const drawInfo = entity.getStaticRenderDrawInfo();
-                    if (drawInfo) {
-                        this._renderDrawInfo = drawInfo;
-                    }
-                }
-            }
         }
     }
 }

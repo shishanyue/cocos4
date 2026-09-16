@@ -3,7 +3,7 @@
  * This is a declaration file for 'DebugInfos.json'
  * which is generated from 'EngineErrorMap.md'.
  * You may run cli command
- * `gulp build-debug-infos` or `npx gulp build-debug-infos` to generate the json file.
+ * `npm run build:debug-infos` to generate the json file.
  */
 
 /**

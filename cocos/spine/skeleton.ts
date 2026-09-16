@@ -21,7 +21,7 @@
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  THE SOFTWARE.
 */
-import { EDITOR_NOT_IN_PREVIEW, JSB } from 'internal:constants';
+import { EDITOR_NOT_IN_PREVIEW } from 'internal:constants';
 import { ccclass, executeInEditMode, help, menu, serializable, type, override, displayOrder, editable, visible } from 'cc.decorator';
 import { Material, Texture2D } from '../asset/assets';
 import { error, errorID, logID, warnID } from '../core/platform/debug';
@@ -37,7 +37,6 @@ import { MaterialInstance } from '../render-scene';
 import { assetManager, builtinResMgr } from '../asset/asset-manager';
 import { legacyCC } from '../core/global-exports';
 import { SkeletonSystem } from './skeleton-system';
-import { RenderEntity, RenderEntityType } from '../2d/renderer/render-entity';
 import { AttachUtil } from './attach-util';
 import spine from './lib/spine-core';
 import { VertexEffectDelegate } from './vertex-effect-delegate';
@@ -335,11 +334,9 @@ export class Skeleton extends UIRenderer {
         this._endEntry = { animation: { name: '' }, trackIndex: 0 } as spine.TrackEntry;
         this._startSlotIndex = -1;
         this._endSlotIndex = -1;
-        if (!JSB) {
-            this._instance = new spine.SkeletonInstance();
-            this._instance.dtRate = this._timeScale * timeScale;
-            this._instance.isCache = this.isAnimationCached();
-        }
+        this._instance = new spine.SkeletonInstance();
+        this._instance.dtRate = this._timeScale * timeScale;
+        this._instance.isCache = this.isAnimationCached();
         this.attachUtil = new AttachUtil();
     }
 
@@ -736,7 +733,7 @@ export class Skeleton extends UIRenderer {
         //if (this._cacheMode == SpineAnimationCacheMode.PRIVATE_CACHE) this._animCache?.destroy();
         this._animCache = null;
         SkeletonSystem.getInstance().remove(this);
-        if (!JSB && this._instance) {
+        if (this._instance) {
             this._instance.destroy();
             this._instance = null;
         }
@@ -1078,7 +1075,7 @@ export class Skeleton extends UIRenderer {
         this._markForUpdateRenderData();
         if (this.paused) return;
         if (this.isAnimationCached()) {
-            // On realTime mode, dt is multiplied at native side.
+            // Realtime playback applies the time scale through SkeletonInstance.dtRate.
             dt *= this._timeScale * timeScale;
             if (this._isAniComplete) {
                 if (this._animationQueue.length === 0 && !this._headAniInfo) {
@@ -1346,11 +1343,6 @@ export class Skeleton extends UIRenderer {
         super.destroyRenderData();
     }
 
-    protected createRenderEntity (): RenderEntity {
-        const renderEntity = new RenderEntity(RenderEntityType.DYNAMIC);
-        renderEntity.setUseLocal(true);
-        return renderEntity;
-    }
     /**
      * @en Mark to re-update the rendering data, usually used to force refresh the display.
      * @zh 标记重新更新渲染数据，一般用于强制刷新显示。
@@ -1636,10 +1628,8 @@ export class Skeleton extends UIRenderer {
     protected _updateUseTint (): void {
         this._cleanMaterialCache();
         this.destroyRenderData();
-        if (!JSB) {
-            if (!this.isAnimationCached()) {
-                this._instance!.setUseTint(this._useTint);
-            }
+        if (!this.isAnimationCached()) {
+            this._instance!.setUseTint(this._useTint);
         }
         const assembler = this._assembler;
         if (assembler && assembler.createData && this._skeleton) {
@@ -1678,7 +1668,7 @@ export class Skeleton extends UIRenderer {
             }
             if (this.isAnimationCached()) {
                 warnID(16418);
-            } else if (!JSB) {
+            } else {
                 this._instance!.setDebugMode(true);
             }
         } else if (this._debugRenderer) {

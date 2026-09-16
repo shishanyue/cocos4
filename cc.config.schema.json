@@ -5,6 +5,13 @@
     "Config": {
       "additionalProperties": false,
       "properties": {
+        "platforms": {
+          "description": "Allowed engine build targets, including internal browser/editor hosts.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
         "constants": {
           "$ref": "#/definitions/IConstantConfig",
           "description": "The constants config for engine and user."
@@ -63,6 +70,7 @@
         }
       },
       "required": [
+        "platforms",
         "features",
         "includes",
         "constants",

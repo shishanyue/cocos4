@@ -25,7 +25,7 @@
  THE SOFTWARE.
 */
 
-import { EDITOR, MINIGAME, NATIVE, PREVIEW, RUNTIME_BASED } from 'internal:constants';
+import { EDITOR, MINIGAME, PREVIEW, RUNTIME_BASED } from 'internal:constants';
 import { legacyCC } from '../global-exports';
 import { settings, SettingsCategory } from '../settings';
 import { Orientation } from '../../../pal/screen-adapter/enum-type';
@@ -1136,7 +1136,7 @@ const macro: Macro = {
     BATCHER2D_MEM_INCREMENT: 144,
     CUSTOM_PIPELINE_NAME: 'Builtin',
     init () {
-        if (NATIVE || MINIGAME || RUNTIME_BASED) {
+        if (MINIGAME || RUNTIME_BASED) {
             this.CLEANUP_IMAGE_CACHE = true;
         }
         const defaultValues = settings.querySettings(SettingsCategory.ENGINE, 'macros');

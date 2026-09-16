@@ -22,7 +22,6 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { UIRenderer } from '../2d/framework/ui-renderer';
 import { warnID } from '../core/platform/debug';
 import { UIMeshRenderer } from '../2d';
@@ -79,9 +78,6 @@ export class NodeUIProperties {
      */
     public setOpacity (v: number): void { this._opacity = v; }
     public get opacity (): number {
-        if (JSB) {
-            this._opacity = (this._node as any)._getFinalOpacity();
-        }
         return this._opacity;
     }
 
@@ -94,11 +90,6 @@ export class NodeUIProperties {
     set localOpacity (val) {
         this._localOpacity = val;
         this.colorDirty = true;
-        if (JSB) {
-            const node = this._node as any;
-            node._colorDirty = true;
-            node._setLocalOpacity(val);
-        }
     }
 
     public colorDirty = true;

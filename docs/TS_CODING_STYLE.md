@@ -9,7 +9,7 @@ There are also some project related background need to be clarified:
 3. [ESLint](https://eslint.org/) is strongly recommended for all engine developers.
 4. [VSCode](https://code.visualstudio.com/) is suggested for TypeScript coding.
 5. In web runtime environments, the engine is fully running compiled TypeScript codes with some WebAssembly modules like physics engine.
-6. In native runtime environments, the TypeScript codes are running based on the C++ codes and the JavaScript binding.
+6. This fork has no native application or JSB backend. Shared WASM code remains a separate dependency.
 
 ## Naming Rules
 

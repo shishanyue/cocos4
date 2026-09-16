@@ -35,7 +35,6 @@ import { TTFUtils } from './ttfUtils';
 import type { IRenderData, RenderData } from '../../renderer/render-data';
 
 const WHITE = Color.WHITE.clone();
-const QUAD_INDICES = Uint16Array.from([0, 1, 2, 1, 3, 2]);
 
 /**
  * ttf 组装器
@@ -71,7 +70,6 @@ export class TTF extends TTFUtils implements IAssembler {
             Color.toArray(vData, WHITE, offset);
             offset += stride;
         }
-        renderData.chunk.setIndexBuffer(QUAD_INDICES);
         return renderData;
     }
 

@@ -26,8 +26,8 @@
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  THE SOFTWARE.
 */
-import { EDITOR, NATIVE, NODEJS, PREVIEW, TEST } from 'internal:constants';
-import { assert, settings, SettingsCategory, cclegacy } from '../../core';
+import { EDITOR, NODEJS, PREVIEW, TEST } from 'internal:constants';
+import { cclegacy } from '../../core';
 import { fetchPipeline, pipeline } from './shared';
 import Task from './task';
 
@@ -117,12 +117,7 @@ if ((EDITOR || PREVIEW || NODEJS) && !TEST) {
                     }
                 }
             } else {  
-                let previewServer = '';
-                if (NATIVE) {
-                    previewServer = settings.querySettings<string>(SettingsCategory.PATH, 'previewServer') || '';
-                    assert(Boolean(previewServer));
-                }
-                text = await fetchText(`${previewServer}/query-extname/${uuid}`) as string;
+                text = await fetchText(`/query-extname/${uuid}`) as string;
             }
             cache[uuid] = text;
             if (resolveMap[uuid]) {

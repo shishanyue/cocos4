@@ -23,9 +23,9 @@ export const EDITOR = tryDefineGlobal('CC_EDITOR', false);
 export const PREVIEW = tryDefineGlobal('CC_PREVIEW', !EDITOR);
 export const DEV = tryDefineGlobal('CC_DEV', true); // (CC_EDITOR && !CC_BUILD) || CC_PREVIEW || CC_TEST
 export const DEBUG = tryDefineGlobal('CC_DEBUG', true); // CC_DEV || Debug Build
-export const JSB = tryDefineGlobal('CC_JSB', defined('jsb'));
-export const NATIVE = JSB;
-export const HTML5 = !(EDITOR && NATIVE);
+export const JSB = false;
+export const NATIVE = false;
+export const HTML5 = true;
 // @ts-expect-error: 'wx' is wechat namespace.
 export const WECHAT = tryDefineGlobal('CC_WECHAT', !!(defined('wx') && (wx.getSystemInfoSync || wx.getSharedCanvas)));
 export const MINIGAME = tryDefineGlobal('CC_MINIGAME', false);

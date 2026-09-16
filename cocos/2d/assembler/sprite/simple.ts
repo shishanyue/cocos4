@@ -34,8 +34,6 @@ import type { Sprite } from '../../components';
 import { dynamicAtlasManager } from '../../utils/dynamic-atlas/atlas-manager';
 import type { StaticVBChunk } from '../../renderer/static-vb-accessor';
 
-const QUAD_INDICES = Uint16Array.from([0, 1, 2, 1, 3, 2]);
-
 /**
  * simple 组装器
  * 可通过 `UI.simple` 获取该组装器。
@@ -45,7 +43,6 @@ class Simple implements IAssembler {
         const renderData = sprite.requestRenderData();
         renderData.dataLength = 4;
         renderData.resize(4, 6);
-        renderData.chunk.setIndexBuffer(QUAD_INDICES);
         return renderData;
     }
 

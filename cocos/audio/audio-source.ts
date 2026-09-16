@@ -273,11 +273,11 @@ export class AudioSource extends Component {
     /**
      * @en
      * Get PCM data from specified channel.
-     * Currently it is only available in Native platform and Web Audio (including Web and ByteDance platforms).
+     * Currently it is only available in Web Audio (including Web and ByteDance platforms).
      *
      * @zh
      * 通过指定的通道获取音频的 PCM data。
-     * 目前仅在原生平台和 Web Audio（包括 Web 和 字节平台）中可用。
+     * 目前仅在 Web Audio（包括 Web 和 字节平台）中可用。
      *
      * @param channelIndex The channel index. 0 is left channel, 1 is right channel.
      * @returns A Promise to get the PCM data after audio is loaded.
@@ -312,11 +312,11 @@ export class AudioSource extends Component {
     /**
      * @en
      * Get the sample rate of audio.
-     * Currently it is only available in Native platform and Web Audio (including Web and ByteDance platforms).
+     * Currently it is only available in Web Audio (including Web and ByteDance platforms).
      *
      * @zh
      * 获取音频的采样率。
-     * 目前仅在原生平台和 Web Audio（包括 Web 和 字节平台）中可用。
+     * 目前仅在 Web Audio（包括 Web 和 字节平台）中可用。
      *
      * @returns A Promise to get the sample rate after audio is loaded.
      */

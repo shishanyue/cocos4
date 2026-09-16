@@ -22,7 +22,6 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { Mat4, Quat, Vec3, cclegacy } from '../../core';
 import { IAnimInfo, JointAnimationInfo } from './skeletal-animation-utils';
 import { Node } from '../../scene-graph/node';
@@ -190,9 +189,6 @@ export class SkeletalAnimationState extends AnimationState {
         if (curFrame === info.data[0]) { return; }
         info.data[0] = curFrame;
         info.dirty = true;
-        if (JSB) {
-            info.dirtyForJSB[0] = 1;
-        }
         for (let i = 0; i < this._sockets.length; ++i) {
             const { target, frames } = this._sockets[i];
             const { pos, rot, scale } = frames[curFrame]; // ratio guaranteed to be in [0, 1]

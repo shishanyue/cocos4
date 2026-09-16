@@ -219,5 +219,5 @@ export class WebView extends Component {
     }
 }
 
-// TODO Since jsb adapter does not support import cc, put it on internal first and adjust it later.
+// Platform adapters replace the implementation through the internal namespace.
 legacyCC.internal.WebView = WebView;

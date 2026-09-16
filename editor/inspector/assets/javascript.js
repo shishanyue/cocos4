@@ -46,15 +46,6 @@ exports.template = /* html */`
         </ui-prop>
         <ui-prop>
             <ui-label slot="label"
-                tooltip="i18n:ENGINE.assets.javascript.loadPluginInNativeTip"
-                value="i18n:ENGINE.assets.javascript.loadPluginInNative"
-            ></ui-label>
-            <ui-checkbox slot="content"
-                id="load-plugin-in-native"
-            ></ui-checkbox>
-        </ui-prop>
-        <ui-prop>
-            <ui-label slot="label"
                 tooltip="i18n:ENGINE.assets.javascript.loadPluginInMiniGameTip"
                 value="i18n:ENGINE.assets.javascript.loadPluginInMiniGame"
             ></ui-label>
@@ -106,7 +97,6 @@ exports.$ = {
     detail: '.detail',
     loadPluginInEditorCheckBox: '#load-plugin-in-editor',
     loadPluginInWebCheckBox: '#load-plugin-in-web',
-    loadPluginInNativeCheckBox: '#load-plugin-in-native',
     loadPluginInMiniGameCheckBox: '#load-plugin-in-mini-game',
     simulateGlobals: '#simulateGlobals',
     simulateGlobalsInput: '#simulateGlobalsInput',
@@ -125,7 +115,6 @@ const Elements = {
                         const defaultConfig = {
                             loadPluginInEditor: false,
                             loadPluginInWeb: true,
-                            loadPluginInNative: true,
                             loadPluginInMiniGame: true,
                         };
                         meta.userData = Object.assign(defaultConfig, meta.userData);
@@ -213,16 +202,6 @@ const Elements = {
             this.$.loadPluginInWebCheckBox.value = this.meta.userData.loadPluginInWeb ?? true;
             updateElementInvalid.call(this, this.$.loadPluginInWebCheckBox, 'loadPluginInWeb');
             updateElementReadonly.call(this, this.$.loadPluginInWebCheckBox);
-        },
-    },
-    loadPluginInNativeCheckBox: {
-        ready() {
-            this.$.loadPluginInNativeCheckBox.addEventListener('confirm', this.change.bind(this, 'loadPluginInNative'));
-        },
-        update() {
-            this.$.loadPluginInNativeCheckBox.value = this.meta.userData.loadPluginInNative ?? true;
-            updateElementInvalid.call(this, this.$.loadPluginInNativeCheckBox, 'loadPluginInNative');
-            updateElementReadonly.call(this, this.$.loadPluginInNativeCheckBox);
         },
     },
     loadPluginInMiniGameCheckBox: {

@@ -26,7 +26,6 @@
 import * as bits from './bits';
 
 import './deprecated';
-import './math-native-ext';
 /**
  * Export module bits.
  */

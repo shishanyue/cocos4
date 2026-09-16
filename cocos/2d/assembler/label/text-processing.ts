@@ -21,7 +21,6 @@
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  THE SOFTWARE.
 */
-import { ANDROID, JSB } from 'internal:constants';
 import { Texture2D } from '../../../asset/assets';
 import { WrapMode } from '../../../asset/assets/asset-enum';
 import { cclegacy, Color, Rect, Vec2 } from '../../../core';
@@ -197,11 +196,6 @@ export class TextProcessing {
         }
 
         style.actualFontSize = style.fontSize * this._fontScale;
-        if (ANDROID) {
-            // Android restriction only accepts integer font sizes
-            style.actualFontSize = Math.floor(style.actualFontSize);
-            this._fontScale = style.actualFontSize / style.fontSize;
-        }
         const paragraphedStrings = inputString.split('\n');
 
         const _splitStrings = outputLayoutData.parsedString = paragraphedStrings;
@@ -564,9 +558,6 @@ export class TextProcessing {
             const uploadAgain = canvas.width !== 0 && canvas.height !== 0;
 
             if (uploadAgain) {
-                const oldGfxTexture = tex.getGFXTexture();
-                const oldGfxSampler = tex.getGFXSampler();
-
                 tex.reset({
                     width: canvas.width,
                     height: canvas.height,
@@ -579,16 +570,7 @@ export class TextProcessing {
                     outputRenderData.texture._calculateUV();
                 }
                 if (cclegacy.director.root && cclegacy.director.root.batcher2D) {
-                    if (JSB) {
-                        // NOTE: Release the old descriptor set cache referenced by old gfx texture and sampler.
-                        // We should not release the new generated `tex.getGFXTexture()` and `tex.getGFXSampler()`
-                        // since `tex.reset(...)` will reset `gfxTexture` and `gfxSampler`.
-                        // The other non-JSB branch uses `tex.getHash()` which returns the hash value that will not be
-                        // changed after `tex.reset(...)`, so there will be no problems for non-JSB branch.
-                        (cclegacy.director.root.batcher2D as Batcher2D)._releaseDescriptorSetCache(oldGfxTexture, oldGfxSampler);
-                    } else {
-                        (cclegacy.director.root.batcher2D as Batcher2D)._releaseDescriptorSetCache(tex.getHash());
-                    }
+                    (cclegacy.director.root.batcher2D as Batcher2D)._releaseDescriptorSetCache(tex.getHash());
                 }
             }
         }

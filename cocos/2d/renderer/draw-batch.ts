@@ -59,7 +59,6 @@ export class DrawBatch2D {
     public visFlags: number = UI_VIS_FLAG;
     public inputAssembler: InputAssembler | null = null;
     public descriptorSet: DescriptorSet | null = null;
-    //private declare _nativeObj: any;
 
     public destroy (ui: IBatcher): void {
         this._passes = [];

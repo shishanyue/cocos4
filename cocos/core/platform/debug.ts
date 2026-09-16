@@ -23,7 +23,7 @@
 */
 
 /* eslint-disable no-console */
-import { EDITOR, JSB, DEV, DEBUG } from 'internal:constants';
+import { EDITOR, DEV, DEBUG } from 'internal:constants';
 import debugInfos from '../../../DebugInfos';
 import { legacyCC, ccwindow, VERSION } from '../global-exports';
 
@@ -186,7 +186,6 @@ export function _resetDebugSetting (mode: DebugMode): void {
     } else if (console) {
         // Log to console.
 
-        // For JSB
         if (!console.error) {
             console.error = console.log;
         }
@@ -201,7 +200,7 @@ export function _resetDebugSetting (mode: DebugMode): void {
             // use bind to avoid pollute call stacks
             ccError = console.error.bind(console);
         } else {
-            ccError = JSB ? console.error : (...data: unknown[]): void => console.error.apply(console, data);
+            ccError = (...data: unknown[]): void => console.error.apply(console, data);
         }
         ccAssert = (condition: boolean, message?: unknown, ...optionalParams: unknown[]): void => {
             if (!condition) {
@@ -222,16 +221,14 @@ export function _resetDebugSetting (mode: DebugMode): void {
             // use bind to avoid pollute call stacks
             ccWarn = console.warn.bind(console);
         } else {
-            ccWarn = JSB ? console.warn : (...data: unknown[]): void => console.warn.apply(console, data);
+            ccWarn = (...data: unknown[]): void => console.warn.apply(console, data);
         }
     }
 
     if (EDITOR) {
         ccLog = console.log.bind(console);
     } else if (mode <= DebugMode.INFO) {
-        if (JSB) {
-            ccLog = console.log;
-        } else if (console.log.bind) {
+        if (console.log.bind) {
             // use bind to avoid pollute call stacks
             ccLog = console.log.bind(console);
         } else {
@@ -253,7 +250,7 @@ export function _throw (error_: any): any {
     } else {
         const stack = error_.stack;
         if (stack) {
-            error(JSB ? (`${error_}\n${stack}`) : stack);
+            error(stack);
         } else {
             error(error_);
         }

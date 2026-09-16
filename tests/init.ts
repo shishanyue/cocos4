@@ -8,20 +8,14 @@ jest.mock(
         if (!config.constantOverrides) {
             return actual;
         }
+        if (config.constantOverrides.NATIVE || config.constantOverrides.JSB) {
+            throw new Error('Native constants cannot be enabled in mini-game tests');
+        }
         return {
             ...actual,
             ...config.constantOverrides,
         };
     },
-    { virtual: true, },
-);
-
-jest.mock(
-    'internal:native',
-    () => ({
-        __esModule: true,
-        default: {}
-    }),
     { virtual: true, },
 );
 
@@ -76,7 +70,6 @@ jest.mock(
 // Mock external wasm module here
 [
     'external:emscripten/bullet/bullet.release.wasm.wasm',
-    'external:emscripten/webgpu/webgpu_wasm.wasm',
     'external:emscripten/webgpu/glslang.wasm',
     'external:emscripten/physx/physx.release.wasm.wasm',
     'external:emscripten/spine/3.8/spine.wasm',

@@ -1,4 +1,4 @@
-name: <Native> Generate Emsdk Cache
+name: <Web> Generate Emsdk Cache
 
 on:
   workflow_dispatch:
@@ -6,7 +6,7 @@ on:
       emsdk_version:
         description: 'Emsdk version'
         type: string
-        default: '3.1.45'
+        default: '3.1.41'
         required: true
 
 jobs:

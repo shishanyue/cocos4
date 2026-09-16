@@ -489,8 +489,6 @@ export class Simulator {
         }
 
         renderData.material = this.sys.getRenderMaterial(0); // hack
-        renderData.frame = this.sys._renderSpriteFrame; // hack
-        renderData.setRenderDrawInfoAttributes();
 
         if (particles.length === 0 && !this.active && !this.readyToPlay) {
             this.finished = true;
@@ -513,9 +511,5 @@ export class Simulator {
             buffer[offset++] = vId + 3;
             buffer[offset++] = vId + 2;
         }
-    }
-
-    public initDrawInfo (): void {
-        this.renderData?.setRenderDrawInfoAttributes();
     }
 }

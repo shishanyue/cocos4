@@ -24,19 +24,12 @@
 */
 
 import { ccclass, help, executionOrder, menu, executeInEditMode } from 'cc.decorator';
-import { DEBUG, JSB } from 'internal:constants';
 import { ModelRenderer } from '../../misc/model-renderer';
 import { RenderPriority } from '../../rendering/define';
 import { IBatcher } from '../renderer/i-batcher';
 import { Stage } from '../renderer/stencil-manager';
 import { Component } from '../../scene-graph/component';
-import { NativeUIModelProxy } from '../renderer/native-2d';
-import { uiRendererManager } from '../framework/ui-renderer-manager';
-import { RenderEntity, RenderEntityType } from '../renderer/render-entity';
-import { MeshRenderData, RenderData } from '../renderer/render-data';
-import { assert, cclegacy, warnID } from '../../core';
-import { RenderDrawInfoType } from '../renderer/render-draw-info';
-import type { UIRenderer } from '../framework/ui-renderer';
+import { cclegacy, warnID } from '../../core';
 
 /**
  * @en
@@ -56,14 +49,6 @@ import type { UIRenderer } from '../framework/ui-renderer';
 @menu('UI/UIMeshRenderer')
 @executeInEditMode
 export class UIMeshRenderer extends Component {
-    constructor () {
-        super();
-        this._renderEntity = new RenderEntity(RenderEntityType.DYNAMIC);
-        if (JSB) {
-            this._UIModelNativeProxy = new NativeUIModelProxy();
-        }
-    }
-
     /**
      * @en Get the model component on this node
      * @zh 获取同节点的 model 组件
@@ -74,24 +59,8 @@ export class UIMeshRenderer extends Component {
 
     private _modelComponent: ModelRenderer | null = null;
 
-    //nativeObj
-    private declare _UIModelNativeProxy: NativeUIModelProxy;
-    protected declare _renderEntity: RenderEntity;
-    public _dirtyVersion = -1;
-    public _internalId = -1;
-
     public __preload (): void {
         this.node._uiProps.uiComp = this;
-    }
-
-    onEnable (): void {
-        uiRendererManager.addRenderer(this);
-        this._markForUpdateRenderData();
-    }
-
-    onDisable (): void {
-        uiRendererManager.removeRenderer(this);
-        this.renderEntity.enabled = this._canRender();
     }
 
     public onLoad (): void {
@@ -104,14 +73,9 @@ export class UIMeshRenderer extends Component {
             warnID(16378, this.node ? this.node.name : '');
             return;
         }
-        if (JSB) {
-            this._UIModelNativeProxy.attachNode(this.node);
-        }
-        this.renderEntity.setNode(this.node);
     }
 
     public onDestroy (): void {
-        this.renderEntity.setNode(null);
         if (this.node._uiProps.uiComp === this) {
             this.node._uiProps.uiComp = null;
         }
@@ -157,46 +121,6 @@ export class UIMeshRenderer extends Component {
     }
 
     /**
-     * @deprecated Since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    // Native updateAssembler
-    public updateRenderer (): void {
-        if (JSB) {
-            this.renderEntity.enabled = this._canRender();
-            if (this._modelComponent) {
-                const models = this._modelComponent._collectModels();
-                this._modelComponent._detachFromScene(); // JSB
-                // clear models
-                this._UIModelNativeProxy.clearModels();
-                this._renderEntity.clearDynamicRenderDrawInfos();
-                for (let i = 0; i < models.length; i++) {
-                    if (models[i].enabled) {
-                        this._uploadRenderData(i);
-                        this._UIModelNativeProxy.updateModels(models[i]);
-                    }
-                }
-                this._UIModelNativeProxy.attachDrawInfo();
-            }
-        }
-    }
-
-    private _uploadRenderData (index: number): void {
-        if (JSB) {
-            const renderData = MeshRenderData.add();
-            // TODO: here we weirdly use UIMeshRenderer as UIRenderer
-            // please fix the type @holycanvas
-            // issue: https://github.com/cocos/cocos-engine/issues/14637
-            renderData.initRenderDrawInfo(this as unknown as UIRenderer, RenderDrawInfoType.MODEL);
-            // TODO: MeshRenderData and RenderData are both sub class of BaseRenderData, here we weirdly use MeshRenderData as RenderData
-            // please fix the type @holycanvas
-            // issue: https://github.com/cocos/cocos-engine/issues/14637
-            this._renderData = renderData as unknown as RenderData;
-            // eslint-disable-next-line @typescript-eslint/no-unsafe-argument
-            this._renderData.material = this._modelComponent!.getMaterialInstance(index);
-        }
-    }
-
-    /**
      * @en Post render data submission procedure, it's executed after assembler updated for all children.
      * It may assemble some extra render data to the geometry buffers, or it may only change some render states.
      * Don't call it unless you know what you are doing.
@@ -210,12 +134,11 @@ export class UIMeshRenderer extends Component {
     }
 
     public update (): void {
-        if (JSB) {
-            if (this._modelComponent) {
-                this._markForUpdateRenderData();
-            }
-        }
         this._fitUIRenderQueue();
+    }
+
+    public _markForUpdateRenderData (): void {
+        // Shared UI lifecycle hook; model meshes do not use 2D vertex render data.
     }
 
     private _fitUIRenderQueue (): void {
@@ -244,25 +167,6 @@ export class UIMeshRenderer extends Component {
     /**
      * @deprecated Since v3.7.0, this is an engine private interface that will be removed in the future.
      */
-    // interface
-    public markForUpdateRenderData (enable = true): void {
-        this._markForUpdateRenderData(enable);
-    }
-
-    /**
-     * An internal method that marks the render data of the current component as modified so that the render data is recalculated.
-     * Adding this method is to minify the function name by `@mangle` since this method is frequently used in the engine.
-     * To keep the compatibility, the original method is still kept.
-     * @engineInternal
-     * @mangle
-     */
-    public _markForUpdateRenderData (enable = true): void {
-        uiRendererManager.markDirtyRenderer(this);
-    }
-
-    /**
-     * @deprecated Since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
     public stencilStage: Stage = Stage.DISABLED;
 
     /**
@@ -279,28 +183,6 @@ export class UIMeshRenderer extends Component {
     // eslint-disable-next-line @typescript-eslint/no-empty-function
     public setTextureDirty (): void {
         // No behavior for this component
-    }
-
-    protected _canRender (): boolean {
-        return (this.enabled && this._modelComponent !== null);
-    }
-
-    /**
-     * @deprecated Since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    get renderEntity (): RenderEntity {
-        if (DEBUG) {
-            assert(Boolean(this._renderEntity), 'this._renderEntity should not be invalid');
-        }
-        return this._renderEntity;
-    }
-
-    protected _renderData: RenderData | null = null;
-    /**
-     * @deprecated Since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    get renderData (): RenderData | null {
-        return this._renderData;
     }
 }
 

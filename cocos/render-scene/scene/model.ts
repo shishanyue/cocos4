@@ -587,17 +587,6 @@ export class Model {
     protected _reflectionProbeType = ReflectionProbeType.NONE;
 
     /**
-     * @internal
-     * @en native object
-     * @zh 原生对象
-     */
-
-    /**
-     * @internal
-     * @en return native object
-     * @zh 返回原生对象
-     */
-    /**
      * @en Constructor to create an empty model
      * @zh 创建一个空模型
      */

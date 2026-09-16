@@ -71,9 +71,6 @@
                 "category": {
                     "type": "string"
                 },
-                "cmakeConfig": {
-                    "type": "string"
-                },
                 "default": {
                     "type": "boolean"
                 },
@@ -174,4 +171,3 @@
     },
     "type": "object"
 }
-

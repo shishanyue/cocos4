@@ -21,9 +21,9 @@
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  THE SOFTWARE.
 */
-import { EDITOR, JSB } from 'internal:constants';
+import { EDITOR } from 'internal:constants';
 import { ccclass, editable, executeInEditMode, menu, serializable, type } from 'cc.decorator';
-import { Vec3, Mat4, geometry, CCInteger, CCFloat, warn, error } from '../../core';
+import { Vec3, Mat4, CCInteger, CCFloat, warn, error } from '../../core';
 import { Node } from '../../scene-graph/node';
 import { Component } from '../../scene-graph/component';
 import { MeshRenderer } from '../framework/mesh-renderer';
@@ -470,13 +470,8 @@ export class LODGroup extends Component {
                         continue;
                     }
                     renderer.model?.updateWorldBound();
-                    let worldBounds = renderer.model?.worldBounds;
+                    const worldBounds = renderer.model?.worldBounds;
                     if (worldBounds) {
-                        if (JSB) {
-                            const center = worldBounds.center;
-                            const halfExtents = worldBounds.halfExtents;
-                            worldBounds = geometry.AABB.create(center.x, center.y, center.z, halfExtents.x, halfExtents.y, halfExtents.z);
-                        }
                         worldBounds.getBoundary(minPos, maxPos);
 
                         if (boundsMin) {

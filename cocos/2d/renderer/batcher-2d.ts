@@ -22,7 +22,7 @@
  THE SOFTWARE.
 */
 
-import { DEBUG, JSB, USE_SORTING_2D } from 'internal:constants';
+import { DEBUG, USE_SORTING_2D } from 'internal:constants';
 import { Camera, Model } from '../../render-scene/scene';
 import type { UIStaticBatch } from '../components/ui-static-batch';
 import { Material } from '../../asset/assets/material';
@@ -44,13 +44,12 @@ import { getAttributeStride, vfmt, vfmtPosUvColor } from './vertex-format';
 import { updateOpacity } from '../assembler/utils';
 import { BaseRenderData, MeshRenderData } from './render-data';
 import { UIMeshRenderer } from '../components/ui-mesh-renderer';
-import { NativeBatcher2d } from './native-2d';
 import { MeshBuffer } from './mesh-buffer';
 import { scene } from '../../render-scene';
 import { builtinResMgr } from '../../asset/asset-manager';
 import { RenderingSubMesh } from '../../asset/assets';
 import { IAssembler } from './base';
-import { RenderEntityFillColorType } from './render-entity';
+import { RenderEntityFillColorType } from './rendering-types';
 import type { Director } from '../../game/director';
 
 let sorting2DCount = 0;
@@ -60,11 +59,6 @@ let sorting2DCount = 0;
  */
 export function _setSorting2DCount (v: number): void {
     sorting2DCount = v;
-    if (JSB) {
-        // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-        // @ts-expect-error
-        n2d.Batcher2d.setSorting2DCount(v);
-    }
 }
 
 const _dsInfo = new DescriptorSetInfo(null!);
@@ -86,11 +80,6 @@ const recordedRendererInfoPool = new RecyclePool<RecordedRendererInfo>(() => ({
  * @zh UI 渲染流程
  */
 export class Batcher2D implements IBatcher {
-    protected declare _nativeObj: NativeBatcher2d;
-    public get nativeObj (): NativeBatcher2d  {
-        return this._nativeObj;
-    }
-
     get currBufferAccessor (): StaticVBAccessor {
         if (this._staticVBBuffer) return this._staticVBBuffer;
         // create if not set
@@ -204,16 +193,6 @@ export class Batcher2D implements IBatcher {
         }
     }
 
-    private syncRootNodesToNative (): void {
-        if (JSB) {
-            const rootNodes: Node[] = [];
-            for (const screen of this._screens) {
-                rootNodes.push(screen.node);
-            }
-            this._nativeObj.syncRootNodesToNative(rootNodes);
-        }
-    }
-
     /**
      * @en
      * Add the managed Canvas.
@@ -227,9 +206,6 @@ export class Batcher2D implements IBatcher {
     public addScreen (comp: RenderRoot2D): void {
         this._screens.push(comp);
         this._screens.sort(this._screenSort);
-        if (JSB) {
-            this.syncRootNodesToNative();
-        }
     }
 
     /**
@@ -245,16 +221,10 @@ export class Batcher2D implements IBatcher {
             return;
         }
         this._screens.splice(idx, 1);
-        if (JSB) {
-            this.syncRootNodesToNative();
-        }
     }
 
     public sortScreens (): void {
         this._screens.sort(this._screenSort);
-        if (JSB) {
-            this.syncRootNodesToNative();
-        }
     }
 
     public getFirstRenderCamera (node: Node): Camera | null {
@@ -271,10 +241,6 @@ export class Batcher2D implements IBatcher {
     }
 
     public update (): void {
-        if (JSB) {
-            return;
-        }
-
         const screens = this._screens;
         let offset = 0;
         for (let i = 0; i < screens.length; ++i) {
@@ -320,9 +286,7 @@ export class Batcher2D implements IBatcher {
     }
 
     public uploadBuffers (): void {
-        if (JSB) {
-            this._nativeObj.uploadBuffers();
-        } else if (this._batches.length > 0) {
+        if (this._batches.length > 0) {
             const length = this._meshDataArray.length;
             for (let i = 0; i < length; i++) {
                 this._meshDataArray[i].uploadBuffers();
@@ -338,42 +302,38 @@ export class Batcher2D implements IBatcher {
     }
 
     public reset (): void {
-        if (JSB) {
-            this._nativeObj.reset();
-        } else {
-            for (let i = 0; i < this._batches.length; ++i) {
-                const batch = this._batches.array[i];
-                if (batch.isStatic) {
-                    continue;
-                }
+        for (let i = 0; i < this._batches.length; ++i) {
+            const batch = this._batches.array[i];
+            if (batch.isStatic) {
+                continue;
+            }
 
-                batch.clear();
-                this._drawBatchPool.free(batch);
-            }
-            // Reset buffer accessors
-            for (const accessor of this._bufferAccessors.values()) {
-                accessor.reset();
-            }
-            const length = this._meshDataArray.length;
-            for (let i = 0; i < length; i++) {
-                this._meshDataArray[i].freeIAPool();
-            }
-            this._meshDataArray.length = 0;
-            this._staticVBBuffer = null;
-
-            this._currBID = -1;
-            this._indexStart = 0;
-            this._currHash = 0;
-            this._currLayer = 0;
-            this._currRenderData = null;
-            this._currMaterial = this._emptyMaterial;
-            this._currTexture = null;
-            this._currSampler = null;
-            this._currComponent = null;
-            this._currTransform = null;
-            this._batches.clear();
-            StencilManager.sharedManager!.reset();
+            batch.clear();
+            this._drawBatchPool.free(batch);
         }
+        // Reset buffer accessors
+        for (const accessor of this._bufferAccessors.values()) {
+            accessor.reset();
+        }
+        const length = this._meshDataArray.length;
+        for (let i = 0; i < length; i++) {
+            this._meshDataArray[i].freeIAPool();
+        }
+        this._meshDataArray.length = 0;
+        this._staticVBBuffer = null;
+
+        this._currBID = -1;
+        this._indexStart = 0;
+        this._currHash = 0;
+        this._currLayer = 0;
+        this._currRenderData = null;
+        this._currMaterial = this._emptyMaterial;
+        this._currTexture = null;
+        this._currSampler = null;
+        this._currComponent = null;
+        this._currTransform = null;
+        this._batches.clear();
+        StencilManager.sharedManager!.reset();
     }
 
     /**
@@ -990,12 +950,8 @@ export class Batcher2D implements IBatcher {
      * @engineInternal
      * @mangle
      */
-    public _releaseDescriptorSetCache (textureHash: number | Texture | null, sampler: Sampler | null = null): void {
-        if (JSB) {
-            this._nativeObj.releaseDescriptorSetCache(textureHash as Texture, sampler as Sampler);
-        } else {
-            this._descriptorSetCache.releaseDescriptorSetCache(textureHash as number);
-        }
+    public _releaseDescriptorSetCache (textureHash: number): void {
+        this._descriptorSetCache.releaseDescriptorSetCache(textureHash);
     }
 
     // Mask use
@@ -1071,14 +1027,6 @@ export class Batcher2D implements IBatcher {
             this._batches.push(curDrawBatch);
         }
         stencilManager.enableMask();
-    }
-
-    //sync mesh buffer to naive
-    public syncMeshBuffersToNative (accId: number, buffers: MeshBuffer[]): void {
-        if (JSB) {
-            const nativeBuffers = buffers.map((buf) => buf.nativeObj);
-            this._nativeObj.syncMeshBuffersToNative(accId, nativeBuffers);
-        }
     }
 }
 
@@ -1174,13 +1122,11 @@ class LocalDescriptorSet  {
             Mat4.invert(m4_1, worldMatrix);
             Mat4.transpose(m4_1, m4_1);
 
-            if (!JSB) {
-                // fix precision lost of webGL on android device
-                // scale worldIT mat to around 1.0 by product its sqrt of determinant.
-                const det = Mat4.determinant(m4_1);
-                const factor = 1.0 / Math.sqrt(det);
-                Mat4.multiplyScalar(m4_1, m4_1, factor);
-            }
+            // fix precision lost of webGL on android device
+            // scale worldIT mat to around 1.0 by product its sqrt of determinant.
+            const det = Mat4.determinant(m4_1);
+            const factor = 1.0 / Math.sqrt(det);
+            Mat4.multiplyScalar(m4_1, m4_1, factor);
             Mat4.toArray(this._localData!, m4_1, UBOLocalEnum.MAT_WORLD_IT_OFFSET);
             this._localBuffer!.update(this._localData!);
             this._transformUpdate = false;

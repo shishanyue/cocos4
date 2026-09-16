@@ -4,12 +4,12 @@ version: 2
 jobs:
   test:
     docker:
-      - image: circleci/node:12.13
+      - image: cimg/node:18.20
     steps:
       - checkout
-      - run: sudo npm install -g gulp
-      - run: npm install
-      - run: gulp build-debug-infos
+      - run: npm ci
+      - run: npm run setup:external
+      - run: npm run test:platforms
       - run: npm test
 
 workflows:

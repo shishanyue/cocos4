@@ -95,29 +95,9 @@ jobs:
       - name: Download external libraries
         shell: bash
         run: |
-          set -x
-          EXT_VERSION=`node ./.github/workflows/get-native-external-version.js`
-          PRECLONE_EXTERNAL="E:/preclone/cocos-engine-external"
-          if [ ! -d $PRECLONE_EXTERNAL ]; then
-              mkdir -p $PRECLONE_EXTERNAL
-              git clone https://github.com/cocos/cocos-engine-external $PRECLONE_EXTERNAL
-          else
-              echo "directory $PRECLONE_EXTERNAL is ready"
-          fi
-          if [ ! -d native/external ]; then
-              mkdir native/external
-          fi
-          git -C $PRECLONE_EXTERNAL reset --hard
-          git -C $PRECLONE_EXTERNAL fetch --all --prune
-          git -C $PRECLONE_EXTERNAL archive --format=tar $EXT_VERSION | tar -C native/external -xf -
-      
-      - name: Generate bindings
-        run: |
-          cd ./native/tools/swig-config
-          echo "Create auto-generated jsbinding glue codes."
-          node genbindings.js &&
-          git status
-      
+          node .github/workflows/get-external-version.js
+          npm run setup:external
+
       - name: npm install
         run: |
           npm -v
@@ -250,32 +230,9 @@ jobs:
       - name: Download external libraries
         shell: bash
         run: |
-          set -x
-          EXT_VERSION=`node ./.github/workflows/get-native-external-version.js`
-          PRECLONE_EXTERNAL="/Users/admin/Documents/actions-runner/preclone/cocos-engine-external"
-          if [ ! -d $PRECLONE_EXTERNAL ]; then
-              echo "create directory $PRECLONE_EXTERNAL"
-              # remove all sub-folders
-              rm -rf /Users/admin/Documents/actions-runner/preclone
-              mkdir -p $PRECLONE_EXTERNAL
-              git clone https://github.com/cocos/cocos-engine-external $PRECLONE_EXTERNAL
-          else
-              echo "directory $PRECLONE_EXTERNAL is ready"
-          fi
-          if [ ! -d native/external ]; then
-              mkdir native/external
-          fi
-          git -C $PRECLONE_EXTERNAL reset --hard
-          git -C $PRECLONE_EXTERNAL fetch --all --prune
-          git -C $PRECLONE_EXTERNAL archive --format=tar $EXT_VERSION | tar -C native/external -xf -
-      
-      - name: Generate bindings
-        run: |
-          cd ./native/tools/swig-config
-          echo "Create auto-generated jsbinding glue codes."
-          node genbindings.js &&
-          git status
-      
+          node .github/workflows/get-external-version.js
+          npm run setup:external
+
       - name: npm install
         run: |
           npm -v
@@ -424,29 +381,9 @@ jobs:
       - name: Download external libraries
         shell: bash
         run: |
-          set -x
-          EXT_VERSION=`node ./.github/workflows/get-native-external-version.js`
-          PRECLONE_EXTERNAL="E:/preclone/cocos-engine-external"
-          if [ ! -d $PRECLONE_EXTERNAL ]; then
-              mkdir -p $PRECLONE_EXTERNAL
-              git clone https://github.com/cocos/cocos-engine-external $PRECLONE_EXTERNAL
-          else
-              echo "directory $PRECLONE_EXTERNAL is ready"
-          fi
-          if [ ! -d native/external ]; then
-              mkdir native/external
-          fi
-          git -C $PRECLONE_EXTERNAL reset --hard
-          git -C $PRECLONE_EXTERNAL fetch --all --prune
-          git -C $PRECLONE_EXTERNAL archive --format=tar $EXT_VERSION | tar -C native/external -xf -
-      
-      - name: Generate bindings
-        run: |
-          cd ./native/tools/swig-config
-          echo "Create auto-generated jsbinding glue codes."
-          node genbindings.js &&
-          git status
-      
+          node .github/workflows/get-external-version.js
+          npm run setup:external
+
       - name: npm install
         run: |
           npm -v
@@ -578,32 +515,9 @@ jobs:
       - name: Download external libraries
         shell: bash
         run: |
-          set -x
-          EXT_VERSION=`node ./.github/workflows/get-native-external-version.js`
-          PRECLONE_EXTERNAL="/Users/admin/Documents/actions-runner/preclone/cocos-engine-external"
-          if [ ! -d $PRECLONE_EXTERNAL ]; then
-              echo "create directory $PRECLONE_EXTERNAL"
-              # remove all sub-folders
-              rm -rf /Users/admin/Documents/actions-runner/preclone
-              mkdir -p $PRECLONE_EXTERNAL
-              git clone https://github.com/cocos/cocos-engine-external $PRECLONE_EXTERNAL
-          else
-              echo "directory $PRECLONE_EXTERNAL is ready"
-          fi
-          if [ ! -d native/external ]; then
-              mkdir native/external
-          fi
-          git -C $PRECLONE_EXTERNAL reset --hard
-          git -C $PRECLONE_EXTERNAL fetch --all --prune
-          git -C $PRECLONE_EXTERNAL archive --format=tar $EXT_VERSION | tar -C native/external -xf -
-      
-      - name: Generate bindings
-        run: |
-          cd ./native/tools/swig-config
-          echo "Create auto-generated jsbinding glue codes."
-          node genbindings.js &&
-          git status
-      
+          node .github/workflows/get-external-version.js
+          npm run setup:external
+
       - name: npm install
         run: |
           npm -v

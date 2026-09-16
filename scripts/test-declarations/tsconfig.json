@@ -1,14 +1,11 @@
 {
   "compilerOptions": {
-    "target": "es2016",
-    "module": "commonjs",
-    "allowSyntheticDefaultImports": true,
-    "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
+    "target": "ES2017",
+    "lib": ["ES2017", "DOM"],
+    "types": [],
     "strict": true,
-    "skipLibCheck": true,
-    "types": [
-      "../../bin/.declarations"
-    ]
-  }
+    "noImplicitAny": false,
+    "noEmit": true
+  },
+  "files": ["test.ts"]
 }

@@ -24,7 +24,7 @@
 */
 
 import { ccclass, help, executeInEditMode, executionOrder, menu, requireComponent, tooltip, displayOrder, type, serializable } from 'cc.decorator';
-import { EDITOR_NOT_IN_PREVIEW, JSB, MINIGAME, RUNTIME_BASED, USE_XR } from 'internal:constants';
+import { EDITOR_NOT_IN_PREVIEW, MINIGAME, RUNTIME_BASED, USE_XR } from 'internal:constants';
 import { UITransform } from '../../2d/framework';
 import { SpriteFrame } from '../../2d/assets/sprite-frame';
 import { Component } from '../../scene-graph/component';
@@ -812,7 +812,7 @@ export class EditBox extends Component {
 
 // this equals to sys.isBrowser
 // now we have no web-adapter yet
-if (typeof window === 'object' && typeof document === 'object' && !MINIGAME && !JSB && !RUNTIME_BASED) {
+if (typeof window === 'object' && typeof document === 'object' && !MINIGAME && !RUNTIME_BASED) {
     EditBox._EditBoxImpl = EditBoxImpl;
 }
 

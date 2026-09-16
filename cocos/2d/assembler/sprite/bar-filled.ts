@@ -32,7 +32,6 @@ import type { StaticVBChunk } from '../../renderer/static-vb-accessor';
 
 const FillType = Sprite.FillType;
 const m = new Mat4();
-const QUAD_INDICES = Uint16Array.from([0, 1, 2, 1, 3, 2]);
 
 /**
  * barFilled 组装器
@@ -206,7 +205,6 @@ class BarFilled implements IAssembler {
         // 0-4 for local vertex
         renderData.dataLength = 4;
         renderData.resize(4, 6);
-        renderData.chunk.setIndexBuffer(QUAD_INDICES);
 
         // not need
         renderData.data.forEach((data) => { data.z = 0; });

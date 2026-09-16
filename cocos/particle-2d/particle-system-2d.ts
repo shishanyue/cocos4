@@ -507,7 +507,6 @@ export class ParticleSystem2D extends UIRenderer {
     public set positionType (val) {
         this._positionType = val;
         this._updateMaterial();
-        this._updatePositionType();
     }
 
     /**
@@ -757,7 +756,6 @@ export class ParticleSystem2D extends UIRenderer {
     public onEnable (): void {
         super.onEnable();
         this._updateMaterial();
-        this._updatePositionType();
     }
 
     public onDestroy (): void {
@@ -855,12 +853,9 @@ export class ParticleSystem2D extends UIRenderer {
         }
         if (this._assembler && this._assembler.createData) {
             const simulator = this._simulator;
-            let renderData = simulator.renderData;
-            if (!renderData) {
-                renderData = simulator.renderData = this._assembler.createData(this) as MeshRenderData;
+            if (!simulator.renderData) {
+                simulator.renderData = this._assembler.createData(this) as MeshRenderData;
                 simulator.uvFilled = 0;
-                renderData.particleInitRenderDrawInfo(this.renderEntity); // Make sure renderEntity and renderData are both from simulator.
-                simulator.initDrawInfo();
             }
         }
     }
@@ -1235,19 +1230,6 @@ export class ParticleSystem2D extends UIRenderer {
             render.commitComp(this, this._simulator.renderData, this._renderSpriteFrame, this._assembler, this.node);
         } else {
             render.commitComp(this, this._simulator.renderData, this._renderSpriteFrame, this._assembler, null);
-        }
-    }
-
-    protected _updatePositionType (): void {
-        if (this._positionType === PositionType.RELATIVE) {
-            this._renderEntity.setRenderTransform(this.node.parent);
-            this._renderEntity.setUseLocal(true);
-        } else if (this.positionType === PositionType.GROUPED) {
-            this._renderEntity.setRenderTransform(this.node);
-            this._renderEntity.setUseLocal(true);
-        } else {
-            this._renderEntity.setRenderTransform(null);
-            this._renderEntity.setUseLocal(false);
         }
     }
 }

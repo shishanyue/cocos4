@@ -1,4 +1,3 @@
-import { JSB } from 'internal:constants';
 import { Vec2, Vec3, Vec4, Color, Size, Rect, Quat, Mat4, assertIsTrue, ValueType } from '../../core';
 import type { IRuntimeFileData } from '../deserialize';
 
@@ -112,18 +111,9 @@ export function deserializeBuiltinValueType (data: IRuntimeFileData, owner: any,
 export function deserializeBuiltinValueTypeInto (data: IRuntimeFileData, owner: any, key: string, value: ValueTypeData): void {
     const typeIndex = value[0];
     assertIsTrue(typeIndex >= 0 && typeIndex < constructorMap.length);
-    if (JSB) {
-        // The native layer type corresponding to the BuiltinValueTypes has not been exported exclude Color,
-        // so we need to set to native after value changed.
-        const tmp = owner[key];
-        const setter = setterMap[typeIndex] as Setter<typeof tmp>;
-        setter(tmp, value);
-        owner[key] = tmp;
-    } else {
-        const object = owner[key];
-        const setter = setterMap[typeIndex] as Setter<typeof object>;
-        setter(object, value);
-    }
+    const object = owner[key];
+    const setter = setterMap[typeIndex] as Setter<typeof object>;
+    setter(object, value);
 }
 
 export {};

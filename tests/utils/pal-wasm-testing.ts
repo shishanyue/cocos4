@@ -33,13 +33,13 @@ export async function instantiateWasm (wasmUrl: string, importObject: WebAssembl
 export async function fetchBuffer (binaryUrl: string): Promise<ArrayBuffer> {
     const relativePathToExternal = /^external:(.*)/.exec(binaryUrl)?.[1];
     if (relativePathToExternal) {
-        const externalHome = join(__dirname, '..', '..', 'native', 'external');
+        const externalHome = join(__dirname, '..', '..', 'external');
         const path = join(externalHome, relativePathToExternal);
         try {
             const content = readFileSync(path);
-            return content.buffer;
+            return content.buffer.slice(content.byteOffset, content.byteOffset + content.byteLength);
         } catch (err) {
-            throw new Error(`Unable to fetch buffer from ${binaryUrl}`, { cause: error });
+            throw new Error(`Unable to fetch buffer from ${binaryUrl}: ${String(err)}`);
         }
     }
 
@@ -50,4 +50,9 @@ export async function ensureWasmModuleReady() {
     return Promise.resolve();
 }
 
-checkPalIntegrity<typeof import('@pal/wasm')>(withImpl<typeof import('./pal-wasm-testing')>());
+export async function fetchUrl(binaryUrl: string): Promise<string> {
+    if (!binaryUrl.startsWith('external:')) throw new Error(`Don't know how to fetch url ${binaryUrl}`);
+    return join(__dirname, '..', '..', 'external', binaryUrl.slice('external:'.length));
+}
+
+checkPalIntegrity<typeof import('pal/wasm')>(withImpl<typeof import('./pal-wasm-testing')>());

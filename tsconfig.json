@@ -26,8 +26,6 @@
     "types": [
       "./@types/globals",
       "./@types/consts",
-      "./@types/jsb",
-      "./@types/box2d-jsb",
       "./@types/editor-extends",
       "./@types/webGL.extras",
       "./@types/webGL2.extras",
@@ -36,13 +34,13 @@
       "./node_modules/@types/jest/index",
 
       // external types
-      "./native/external/emscripten/external-wasm",
-      "./native/external/emscripten/bullet/bullet",
-      "./native/external/emscripten/physx/physx",
-      "./native/external/emscripten/webgpu/webgpu",
-      "./native/external/emscripten/spine/spine",
-      "./native/external/emscripten/meshopt/meshopt_decoder",
-      "./native/external/emscripten/box2d/box2d",
+      "./external/emscripten/external-wasm",
+      "./external/emscripten/bullet/bullet",
+      "./external/emscripten/physx/physx",
+      "./external/emscripten/webgpu/webgpu",
+      "./external/emscripten/spine/spine",
+      "./external/emscripten/meshopt/meshopt_decoder",
+      "./external/emscripten/box2d/box2d",
 
       // pal
       "./@types/pal/system-info",

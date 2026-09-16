@@ -26,8 +26,6 @@ import * as distance from './distance';
 
 import './deprecated';
 
-import './geometry-native-ext';
-
 export { default as enums } from './enums';
 export { distance };
 export { default as intersect } from './intersect';

@@ -24,7 +24,6 @@
 */
 
 import { ccclass, help, executionOrder, menu, tooltip, type, visible, override, editable, serializable } from 'cc.decorator';
-import { JSB } from 'internal:constants';
 import { builtinResMgr } from '../../asset/asset-manager';
 import { InstanceMaterialType, UIRenderer } from '../framework/ui-renderer';
 import { director } from '../../game/director';
@@ -36,8 +35,6 @@ import { Impl } from '../assembler/graphics/webgl/impl';
 import { Material, RenderingSubMesh } from '../../asset/assets';
 import { Format, PrimitiveMode, Attribute, Device, BufferUsageBit, BufferInfo, MemoryUsageBit, deviceManager } from '../../gfx';
 import { vfmtPosColor, getAttributeStride, getComponentPerVertex } from '../renderer/vertex-format';
-import { NativeUIModelProxy } from '../renderer/native-2d';
-import { RenderEntity, RenderEntityType } from '../renderer/render-entity';
 import type { GraphicsAssembler } from '../assembler/graphics/webgl/graphics-assembler';
 
 const attributes = vfmtPosColor.concat([
@@ -225,22 +222,10 @@ export class Graphics extends UIRenderer {
 
     private _graphicsUseSubMeshes: RenderingSubMesh[] = [];
 
-    //nativeObj
-    protected declare _graphicsNativeProxy: NativeUIModelProxy;
-    /**
-     * @deprecated since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    get graphicsNativeProxy (): NativeUIModelProxy {
-        return this._graphicsNativeProxy;
-    }
-
     constructor () {
         super();
         this._instanceMaterialType = InstanceMaterialType.ADD_COLOR;
-        this.impl = new Impl(this);
-        if (JSB) {
-            this._graphicsNativeProxy = new NativeUIModelProxy();
-        }
+        this.impl = new Impl();
     }
 
     public onRestore (): void {
@@ -250,14 +235,8 @@ export class Graphics extends UIRenderer {
     }
 
     public onLoad (): void {
-        super.onLoad();
-        if (JSB) {
-            this._graphicsNativeProxy.initModel(this.node);
-            this.model = this._graphicsNativeProxy.getModel();
-        } else {
-            this.model = director.root!.createModel(scene.Model);
-            this.model.node = this.model.transform = this.node;
-        }
+        this.model = director.root!.createModel(scene.Model);
+        this.model.node = this.model.transform = this.node;
         this._flushAssembler();
     }
 
@@ -269,30 +248,23 @@ export class Graphics extends UIRenderer {
     protected override get _keepRenderData (): boolean {
         // Graphics is a retained-mode renderer: its MeshRenderData is the result of the
         // user's previous fill()/stroke() calls. Destroying it here would leave Impl's
-        // render-data list pointing at cleared geometry, so re-enabling the node on native
-        // platforms would require the user to draw the paths again. Keep it attached to the
-        // disabled RenderEntity; clear() and onDestroy() remain the owning release points.
+        // render-data list pointing at cleared geometry. Keep it until clear() or onDestroy().
         return true;
     }
 
     public onDestroy (): void {
         this._sceneGetter = null;
-        if (JSB) {
-            this._graphicsNativeProxy.destroy();
+        if (this.model) {
+            director.root!.destroyModel(this.model);
             this.model = null;
-        } else {
-            if (this.model) {
-                director.root!.destroyModel(this.model);
-                this.model = null;
-            }
+        }
 
-            const subMeshLength = this._graphicsUseSubMeshes.length;
-            if (subMeshLength > 0) {
-                for (let i = 0; i < subMeshLength; ++i) {
-                    this._graphicsUseSubMeshes[i].destroy();
-                }
-                this._graphicsUseSubMeshes.length = 0;
+        const subMeshLength = this._graphicsUseSubMeshes.length;
+        if (subMeshLength > 0) {
+            for (let i = 0; i < subMeshLength; ++i) {
+                this._graphicsUseSubMeshes[i].destroy();
             }
+            this._graphicsUseSubMeshes.length = 0;
         }
 
         if (this.impl) {
@@ -556,9 +528,7 @@ export class Graphics extends UIRenderer {
 
         this.impl.clear();
         this._isDrawing = false;
-        if (JSB) {
-            this._graphicsNativeProxy.clear();// need native
-        } else if (this.model) {
+        if (this.model) {
             for (let i = 0; i < this.model.subModels.length; i++) {
                 const subModel = this.model.subModels[i];
                 const ia = subModel.inputAssembler;
@@ -726,35 +696,7 @@ export class Graphics extends UIRenderer {
             return false;
         }
 
-        if (JSB) {
-            return this._isDrawing;
-        } else {
-            return !!this.model && this._isDrawing;
-        }
-    }
-
-    /**
-     * @deprecated since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    public updateRenderer (): void {
-        super.updateRenderer();
-        if (JSB) {
-            if (this._isNeedUploadData) {
-                if (this.impl) {
-                    const renderDataList = this.impl.getRenderDataList();
-                    for (let i = 0; i < renderDataList.length; i++) {
-                        renderDataList[i].setRenderDrawInfoAttributes();
-                    }
-                    this._graphicsNativeProxy.activeSubModels();
-                }
-                this._graphicsNativeProxy.uploadData();
-                this._isNeedUploadData = false;
-            }
-        }
-    }
-
-    protected createRenderEntity (): RenderEntity {
-        return new RenderEntity(RenderEntityType.DYNAMIC);
+        return !!this.model && this._isDrawing;
     }
 }
 

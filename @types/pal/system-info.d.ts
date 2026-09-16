@@ -20,7 +20,6 @@ declare module 'pal/system-info' {
         public get isLittleEndian (): boolean;
         /**
          * Platform is a spacial field which is related to the build platform you choose on the Builder Panel in Cocos Creator.
-         * It may point to an OS like Android or iOS.
          * It may point to a phone brand like vivo or OPPO.
          * Also it may point to an app channel like WeChat or ByteDance.
          */
@@ -44,10 +43,8 @@ declare module 'pal/system-info' {
         public hasFeature (feature: Feature): boolean;
         public getBatteryLevel (): number;
 
-        public triggerGC (): void;
         public openURL (url: string): void;
         public now (): number;
-        public restartJSVM (): void;
         /*
          * Trigger to exit the game
          */

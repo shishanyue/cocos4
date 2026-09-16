@@ -24,7 +24,7 @@
 */
 
 import { ccclass, help, executionOrder, menu, displayOrder, visible, multiline, type, serializable, editable } from 'cc.decorator';
-import { BYTEDANCE, EDITOR, JSB } from 'internal:constants';
+import { BYTEDANCE, EDITOR } from 'internal:constants';
 import { minigame } from 'pal/minigame';
 import { BitmapFont, Font, SpriteFrame } from '../assets';
 import { ImageAsset, Texture2D } from '../../asset/assets';
@@ -43,7 +43,6 @@ import type { RenderData } from '../renderer/render-data';
 import type { LetterFont } from '../assembler/label/letter-font';
 import type { TTF } from '../assembler/label/ttf';
 
-const tempColor = Color.WHITE.clone();
 /**
  * @en Enum for horizontal text alignment.
  *
@@ -979,20 +978,6 @@ export class Label extends UIRenderer {
     protected _updateColor (): void {
         super._updateColor();
         this._markForUpdateRenderData();
-    }
-
-    /**
-     * @deprecated since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    public setEntityColor (color: Color): void {
-        if (JSB) {
-            if (this._font instanceof BitmapFont) {
-                this._renderEntity.color = color;
-            } else {
-                tempColor.set(255, 255, 255, color.a);
-                this._renderEntity.color = tempColor;
-            }
-        }
     }
 
     protected _canRender (): boolean {

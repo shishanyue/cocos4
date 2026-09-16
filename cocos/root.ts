@@ -268,7 +268,6 @@ export class Root {
     private _useDeferredPipeline = false;
     private _cumulativeTime = 0;
     private _frameTime = 0;
-    private declare _naitveObj: any;
     private _cameraList: Camera[] = [];
 
     /**

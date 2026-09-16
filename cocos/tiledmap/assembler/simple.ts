@@ -22,17 +22,13 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { Mat4, Size, Vec3 } from '../../core/math';
 import type { IAssembler } from '../../2d/renderer/base';
 import type { IBatcher } from '../../2d/renderer/i-batcher';
 import { TiledLayer, TiledRenderData, TiledTile } from '..';
 import { GID, MixedGID, RenderOrder, TiledGrid, TileFlag } from '../tiled-types';
-import { director, DirectorEvent } from '../../game';
-import { StaticVBAccessor } from '../../2d/renderer/static-vb-accessor';
 import { vfmtPosUvColor } from '../../2d/renderer/vertex-format';
-import { BaseRenderData, RenderData } from '../../2d/renderer/render-data';
-import { RenderDrawInfoType } from '../../2d/renderer/render-draw-info';
+import { RenderData } from '../../2d/renderer/render-data';
 import type { Texture2D } from '../../asset/assets';
 import type { Node } from '../../scene-graph';
 
@@ -62,29 +58,11 @@ let _curLayer: TiledLayer;
 
 let flipTexture: (grid: TiledGrid, gid: MixedGID) => void;
 
-let _accessor: StaticVBAccessor = null!;
 /**
  * simple 组装器
  * 可通过 `UI.simple` 获取该组装器。
  */
 class Simple implements IAssembler {
-    private ensureAccessor (): void {
-        if (!_accessor) {
-            const device = director.root!.device;
-            const batcher = director.root!.batcher2D;
-            _accessor = new StaticVBAccessor(device, vfmtPosUvColor);
-            //batcher.registerBufferAccessor(Number.parseInt('TILED-MAP', 36), _accessor);
-        }
-    }
-
-    createData (layer: TiledLayer): BaseRenderData {
-        if (JSB) {
-            this.ensureAccessor();
-        }
-
-        return null as unknown as BaseRenderData;
-    }
-
     fillBuffers (layer: TiledLayer, renderer: IBatcher): void {
         if (!layer || layer.tiledDataArray.length === 0) return;
 
@@ -153,9 +131,6 @@ class Simple implements IAssembler {
             }
             comp.setCullingDirty(false);
             comp.setUserNodeDirty(false);
-        }
-        if (JSB) {
-            comp.prepareDrawData();
         }
     }
 
@@ -310,12 +285,7 @@ function packRenderData (): void {
     const vbCount = 4 * _fillCount;
     const ibCount = 6 * _fillCount;
     const tiledData = _curLayer.requestTiledRenderData();
-    if (JSB) {
-        tiledData.renderData = RenderData.add(vfmtPosUvColor, _accessor);
-        tiledData.renderData.drawInfoType = RenderDrawInfoType.MIDDLEWARE;
-    } else {
-        tiledData.renderData = RenderData.add(vfmtPosUvColor);
-    }
+    tiledData.renderData = RenderData.add(vfmtPosUvColor);
     tiledData.texture = _curTexture;
     const rd = tiledData.renderData;
     rd.resize(vbCount, ibCount);

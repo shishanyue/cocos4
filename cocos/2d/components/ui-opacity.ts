@@ -23,7 +23,7 @@
 */
 
 import { ccclass, disallowMultiple, editable, executeInEditMode, executionOrder, help, menu, serializable, tooltip } from 'cc.decorator';
-import { EDITOR_NOT_IN_PREVIEW, JSB } from 'internal:constants';
+import { EDITOR_NOT_IN_PREVIEW } from 'internal:constants';
 import { Component } from '../../scene-graph/component';
 import { clamp } from '../../core';
 

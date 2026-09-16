@@ -987,10 +987,8 @@ const Elements = {
             Elements.scene.skyboxReflectionConvolution.call(panel);
             // skyBox 逻辑 end
 
-            panel.dump._globals.octree.displayName = 'Octree Scene Culling';
-            panel.dump._globals.octree.editor = { help: 'i18n:cc.OctreeCulling' };
-            panel.dump._globals.octree.help = panel.getHelpUrl(panel.dump._globals.octree.editor);
-            panel.$.sceneOctree.render(panel.dump._globals.octree);
+            // Keep old scene data readable without exposing the removed native culler.
+            panel.$.sceneOctree.hidden = true;
 
             panel.dump._globals.skin.displayName = 'Skin';
             panel.dump._globals.skin.editor = { help: 'i18n:cc.Skin' };

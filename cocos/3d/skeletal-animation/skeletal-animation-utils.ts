@@ -22,7 +22,7 @@
  THE SOFTWARE.
 */
 
-import { EDITOR, JSB } from 'internal:constants';
+import { EDITOR } from 'internal:constants';
 import type { AnimationClip } from '../../animation/animation-clip';
 import { SkelAnimDataHub } from './skeletal-animation-data-hub';
 import { getWorldTransformUntilRoot } from '../../animation/transform-utils';
@@ -452,7 +452,6 @@ export interface IAnimInfo {
     buffer: Buffer;
     data: Float32Array;
     dirty: boolean;
-    dirtyForJSB: Uint8Array;
     currentClip: AnimationClip | null;
 }
 
@@ -476,7 +475,7 @@ export class JointAnimationInfo {
         ));
         const data = new Float32Array([0, 0, 0, 0]);
         buffer.update(data);
-        const info = { buffer, data, dirty: false, dirtyForJSB: new Uint8Array([0]), currentClip: null };
+        const info = { buffer, data, dirty: false, currentClip: null };
 
         this._pool.set(nodeID, info);
         return info;
@@ -494,9 +493,6 @@ export class JointAnimationInfo {
         info.data[0] = 0; // reset default frame 0
         info.buffer.update(info.data);
         info.dirty = false;
-        if (JSB) {
-            info.dirtyForJSB[0] = 0;
-        }
         return info;
     }
 

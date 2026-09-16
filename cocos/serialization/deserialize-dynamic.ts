@@ -23,7 +23,7 @@
  THE SOFTWARE.
 */
 
-import { EDITOR, NODEJS, TEST, DEV, DEBUG, JSB, PREVIEW, SUPPORT_JIT } from 'internal:constants';
+import { EDITOR, NODEJS, TEST, DEV, DEBUG, PREVIEW, SUPPORT_JIT } from 'internal:constants';
 import { cclegacy, js, misc, CCClass, ENUM_TAG, BITMASK_TAG, sys, error, assertIsTrue, CustomSerializable, DeserializationContext, deserializeTag, SerializationInput, errorID } from '../core';
 import { MissingScript } from '../misc/missing-script';
 import { Details } from './deserialize';
@@ -130,7 +130,7 @@ function compileDeserializeJIT (self: _Deserializer, klass: CCClassConstructor<u
         }
 
         sources.push(`prop=d${accessorToGet};`);
-        sources.push(`if(typeof ${JSB ? '(prop)' : 'prop'}!=="undefined"){`);
+        sources.push('if(typeof prop!=="undefined"){');
 
         // function undefined object(null) string boolean number
         const defaultValue = CCClass.getDefault(attrs[propName + POSTFIX_DEFAULT]);
@@ -143,9 +143,7 @@ function compileDeserializeJIT (self: _Deserializer, klass: CCClassConstructor<u
                 compileObjectTypeJit(sources, defaultValue, accessorToSet, propNameLiteralToSet, true);
             }
         } else {
-            sources.push(`${`if(typeof ${JSB ? '(prop)' : 'prop'}!=="object"){`
-                             + 'o'}${accessorToSet}=prop;`
-                         + `}else{`);
+            sources.push(`if(typeof prop!=="object"){o${accessorToSet}=prop;}else{`);
             compileObjectTypeJit(sources, defaultValue, accessorToSet, propNameLiteralToSet, false);
             sources.push('}');
         }

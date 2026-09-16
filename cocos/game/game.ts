@@ -23,7 +23,7 @@
  THE SOFTWARE.
 */
 
-import { DEBUG, EDITOR, NATIVE, PREVIEW, TEST, EDITOR_NOT_IN_PREVIEW, WECHAT, USE_XR, NODEJS } from 'internal:constants';
+import { DEBUG, EDITOR, PREVIEW, TEST, EDITOR_NOT_IN_PREVIEW, WECHAT, USE_XR, NODEJS } from 'internal:constants';
 import { systemInfo } from 'pal/system-info';
 import { findCanvas, loadJsFile } from 'pal/env';
 import { Pacer } from 'pal/pacer';
@@ -33,7 +33,6 @@ import { EventTarget, AsyncDelegate, sys, macro, VERSION, cclegacy, screen, sett
     assert, garbageCollectionManager, DebugMode, warn, log, _resetDebugSetting, errorID, logID,
     SettingsCategory,
     Settings } from '../core';
-import { input } from '../input';
 import { deviceManager, LegacyRenderMode } from '../gfx';
 import { SplashScreen } from './splash-screen';
 import { Layers, Node } from '../scene-graph';
@@ -190,11 +189,9 @@ export interface IGameConfig {
 export class Game extends EventTarget {
     /**
      * @en Event triggered when game hide to background.<br>
-     * Please note that this event is not 100% guaranteed to be fired on Web platform,<br>
-     * on native platforms, it corresponds to enter background event, os status bar or notification center may not trigger this event.
+     * Please note that this event is not 100% guaranteed to be fired on Web platform.<br>
      * @zh 游戏进入后台时触发的事件。<br>
      * 请注意，在 WEB 平台，这个事件不一定会 100% 触发，这完全取决于浏览器的回调行为。<br>
-     * 在原生平台，它对应的是应用被切换到后台事件，下拉菜单和上拉状态栏等不一定会触发这个事件，这取决于系统行为。
      * @example
      * ```ts
      * import { game } from 'cc';
@@ -207,19 +204,15 @@ export class Game extends EventTarget {
 
     /**
      * @en Event triggered when game back to foreground<br>
-     * Please note that this event is not 100% guaranteed to be fired on Web platform,<br>
-     * on native platforms, it corresponds to enter foreground event.
+     * Please note that this event is not 100% guaranteed to be fired on Web platform.<br>
      * @zh 游戏进入前台运行时触发的事件。<br>
      * 请注意，在 WEB 平台，这个事件不一定会 100% 触发，这完全取决于浏览器的回调行为。<br>
-     * 在原生平台，它对应的是应用被切换到前台事件。
      */
     public static readonly EVENT_SHOW: string = 'game_on_show';
 
     /**
      * @en Event triggered when system in low memory status.<br>
-     * This event is only triggered on native iOS/Android platform.
      * @zh 程序在内存不足时触发的事件。<br>
-     * 该事件只会在 iOS/Android 平台触发。
      */
     public static readonly EVENT_LOW_MEMORY: string = 'game_on_low_memory';
 
@@ -577,14 +570,12 @@ export class Game extends EventTarget {
      * @en Pause the game main loop. This will pause:
      * - game logic execution
      * - rendering process
-     * - input event dispatching (excluding Web and Minigame platforms)
      *
      * This is different with `director.pause()` which only pause the game logic execution.
      *
      * @zh 暂停游戏主循环。包含：
      * - 游戏逻辑
      * - 渲染
-     * - 输入事件派发（Web 和小游戏平台除外）
      *
      * 这点和只暂停游戏逻辑的 `director.pause()` 不同。
      */
@@ -602,7 +593,6 @@ export class Game extends EventTarget {
      */
     public resume (): void {
         if (!this._paused) { return; }
-        input._clearEvents();
         this._paused = false;
         this._pacer?.start();
         this.emit(Game.EVENT_RESUME);
@@ -921,16 +911,6 @@ export class Game extends EventTarget {
         }
         const globalXR = globalThis.__globalXR;
         globalXR.webxrCompatible = querySettings(SettingsCategory.XR, 'webxrCompatible') ?? false;
-
-        if (sys.isXR) {
-            // XrEntry must not be destroyed
-            xr.entry = xr.XrEntry.getInstance();
-
-            const xrMSAA = querySettings(SettingsCategory.RENDERING, 'msaa') ?? 1;
-            const xrRenderingScale = querySettings(SettingsCategory.RENDERING, 'renderingScale') ?? 1.0;
-            xr.entry.setMultisamplesRTT(xrMSAA);
-            xr.entry.setRenderingScale(xrRenderingScale);
-        }
     }
 
     private _compatibleWithOldParams (config: IGameConfig): void {
@@ -993,7 +973,7 @@ export class Game extends EventTarget {
     private _loadCCEScripts (): Promise<void> {
         return new Promise<void>((resolve, reject): void => {
             // Since there is no script in the bundle during preview, we need to load the user's script in the following way
-            if (PREVIEW && !TEST && !EDITOR && !NATIVE && !NODEJS) {
+            if (PREVIEW && !TEST && !EDITOR && !NODEJS) {
                 const bundleName = 'cce:/internal/x/prerequisite-imports';
                 import(bundleName).then((): void => resolve(), (reason): void => reject(reason));
             } else if ((EDITOR || NODEJS) && globalThis.cce && globalThis.cce.Script) {

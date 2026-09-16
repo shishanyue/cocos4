@@ -130,12 +130,12 @@ export interface PipelineRuntime {
     /**
      * @en Get shading scale.
      * Shading scale affects shading texels per pixel.
-     * Currently it affects classic native forward pipeline and builtin custom pipeline.
+     * Currently it affects the builtin custom pipeline.
      * Users can change the size of the render targets according to the shading scale,
      * when writing their own custom pipelines.
      * To change screen size, please check director.root.resize.
      * @zh 获得渲染倍率(ShadingScale)，每像素(pixel)绘制的纹素(texel)会根据渲染倍率进行调整。
-     * 目前仅对原有原生Forward管线以及内置自定义管线生效。
+     * 目前对内置自定义管线生效。
      * 用户编写自定义管线时，可以根据渲染倍率进行渲染目标尺寸大小的调整。
      * 如果要修改屏幕大小，详见director.root.resize。
      */
@@ -205,13 +205,11 @@ export enum PipelineType {
     /**
      * @en Standard render pipeline.
      * Standard render pipeline supports compute shader and subpass rendering.
-     * It works well on Tile-based GPUs and is available on all native platforms.
-     * Vulkan, GLES3 and Metal backends are supported.
+     * This interface is retained for pipeline tooling; support depends on the selected Web backend.
      * The corresponding interface is {@link Pipeline}
      * @zh 标准渲染管线.
      * 标准渲染管线支持计算着色器(Compute Shader)与次通道渲染(Subpass rendering)。
-     * 能充分利用Tile-based GPU，支持所有原生平台并对移动平台特别优化。
-     * 支持Vulkan、GLES3、Metal图形后端。
+     * 保留此接口供管线工具使用，实际能力取决于选择的 Web 图形后端。
      * 对应接口为{@link Pipeline}
      */
     STANDARD,

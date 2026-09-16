@@ -23,7 +23,6 @@
  THE SOFTWARE.
 */
 
-import { USE_XR } from 'internal:constants';
 import { MeshRenderer } from '../3d/framework/mesh-renderer';
 import { createMesh } from '../3d/misc';
 import { Material } from '../asset/assets/material';
@@ -33,7 +32,7 @@ import { Node } from '../scene-graph/node';
 import { ICounterOption } from './counter';
 import { PerfCounter } from './perf-counter';
 import { Pass } from '../render-scene';
-import { preTransforms, System, sys, cclegacy, settings, warnID, SettingsCategory, CCObjectFlags, Color } from '../core';
+import { preTransforms, System, cclegacy, settings, warnID, SettingsCategory, CCObjectFlags, Color } from '../core';
 import { Root } from '../root';
 import { director, DirectorEvent, Game, game } from '../game';
 import { ccwindow } from '../core/global-exports';
@@ -536,10 +535,7 @@ export class Profiler extends System {
         const clipSpaceSignY = this._device!.capabilities.clipSpaceSignY;
         if (surfaceTransform !== this.offsetData[3]) {
             const preTransform = preTransforms[surfaceTransform];
-            let x = -0.9; let y = -0.9 * clipSpaceSignY;
-            if (USE_XR && sys.isXR) {
-                x = -0.5; y = -0.5 * clipSpaceSignY;
-            }
+            const x = -0.9; const y = -0.9 * clipSpaceSignY;
             this.offsetData[0] = x * preTransform[0] + y * preTransform[2];
             this.offsetData[1] = x * preTransform[1] + y * preTransform[3];
             this.offsetData[2] = this._eachNumWidth;
@@ -588,8 +584,7 @@ export class Profiler extends System {
 
         const device = this._device!;
         (profilerStats.draws.counter as PerfCounter).value = device.numDrawCalls;
-        // Native (JSB) devices expose no dispatch stats yet; WebGPU does. Treat missing as 0.
-        (profilerStats.dispatches.counter as PerfCounter).value = device.numDispatches ?? 0;
+        (profilerStats.dispatches.counter as PerfCounter).value = device.numDispatches;
         (profilerStats.instances.counter as PerfCounter).value = device.numInstances;
         (profilerStats.bufferMemory.counter as PerfCounter).value = device.memoryStatus.bufferSize / (1024 * 1024);
         (profilerStats.textureMemory.counter as PerfCounter).value = device.memoryStatus.textureSize / (1024 * 1024);

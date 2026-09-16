@@ -30,7 +30,6 @@
 import { DEBUG, EDITOR, BUILD, TEST, EDITOR_NOT_IN_PREVIEW } from 'internal:constants';
 import { SceneAsset } from '../asset/assets/scene-asset';
 import { System, EventTarget, Scheduler, js, errorID, error, assertID, warnID, macro, CCObject, CCObjectFlags, cclegacy, isValid } from '../core';
-import { input } from '../input';
 import { Root } from '../root';
 import { Node, NodeEventType, Scene } from '../scene-graph';
 import { ComponentScheduler } from '../scene-graph/component-scheduler';
@@ -767,9 +766,6 @@ export class Director extends EventTarget {
     public tick (dt: number): void {
         if (!this._invalid) {
             this.emit(DirectorEvent.BEGIN_FRAME);
-            if (!EDITOR_NOT_IN_PREVIEW) {
-                input._frameDispatchEvents();
-            }
 
             // Update
             if (!this._paused) {

@@ -22,13 +22,12 @@
  THE SOFTWARE.
 */
 
-import { SUPPORT_JIT, EDITOR, TEST, JSB, EDITOR_NOT_IN_PREVIEW, NODEJS } from 'internal:constants';
+import { SUPPORT_JIT, EDITOR, TEST, EDITOR_NOT_IN_PREVIEW, NODEJS } from 'internal:constants';
 import * as js from '../utils/js';
 import { CCClass } from './class';
 import { errorID, warnID } from '../platform/debug';
 import { legacyCC } from '../global-exports';
 import { EditorExtendableObject, editorExtrasTag } from './editor-extras-tag';
-import { copyAllProperties } from '../utils/js';
 
 // definitions for CCObjectFlags
 
@@ -313,12 +312,6 @@ class CCObject implements EditorExtendableObject {
             deferredDestroyTimer = setTimeout(CCObject._deferredDestroy);
         }
 
-        if (JSB) {
-            // TODO: `_destroy` method only implemented on native @dumganhar
-            // issue: https://github.com/cocos/cocos-engine/issues/14644
-            (this as any)._destroy();
-        }
-
         return true;
     }
 
@@ -377,14 +370,6 @@ class CCObject implements EditorExtendableObject {
         ((this as any)._onPreDestroy)?.();
 
         if (!EDITOR_NOT_IN_PREVIEW) {
-            /*Native properties cannot be reset by _destruct, because the native properties are hung on the prototype and
-             *hasOwnProperty's detection cannot be passed.
-             */
-            // TODO: `destruct` is only implemented on native @dumganhar
-            // issue: https://github.com/cocos/cocos-engine/issues/14644
-            if (JSB && (this as any).destruct) {
-                (this as any).destruct();
-            }
             this._destruct();
         }
 
@@ -663,19 +648,6 @@ if (EDITOR || TEST || NODEJS) {
         obj._objFlags &= ~CCObjectFlags.ToDestroy;
         js.array.fastRemove(objectsToDestroy, obj);
     });
-}
-
-declare const jsb: any;
-
-if (JSB) {
-    copyAllProperties(CCObject, jsb.CCObject, ['prototype', 'length', 'name']);
-    copyAllProperties(
-        CCObject.prototype,
-        jsb.CCObject.prototype,
-        ['constructor', 'name', 'hideFlags', 'isValid'],
-    );
-
-    (CCObject as unknown as any) = jsb.CCObject;
 }
 
 legacyCC.Object = CCObject;

@@ -36,9 +36,6 @@ import { screen } from './screen';
 import { macro } from './macro';
 import type { View } from '../../ui/view';
 
-// TODO: the type Storage conflicts with the one on OH platform.
-type Storage = any;
-
 export declare namespace sys {
     /**
      * @en
@@ -111,7 +108,7 @@ export const sys = {
      * @en Whether the running platform is native app.
      * @zh 指示运行平台是否是原生平台。
      */
-    isNative: systemInfo.isNative,
+    isNative: false,
 
     /**
      * @en Whether the running platform is browser.
@@ -242,19 +239,8 @@ export const sys = {
     },
 
     /**
-     * @en Forces the garbage collection, only available in native platforms.
-     * @zh 强制进行 JS 内存垃圾回收，尽在原生平台有效。
-     */
-    garbageCollect (): void {
-        systemInfo.triggerGC();
-    },
-
-    /**
-     * @en Check whether an object is valid,
-     * In web engine, it will return true if the object exist
-     * In native engine, it will return true if the JS object and the correspond native object are both valid
-     * @zh 检查一个对象是否非空或在原生平台有效，
-     * 在 Web 平台，只要对象非空或非 Undefined 就会返回 true，在原生平台，我们会检查当前 JS 对象和其绑定的原生对象是否都有效。
+     * @en Check whether an object is neither null nor undefined.
+     * @zh 检查对象是否既非 null 也非 undefined。
      * @param obj @zh 校验的对象。@en The object to be checked.
      */
     isObjectValid (obj: any): boolean {
@@ -311,10 +297,9 @@ export const sys = {
             .then((): any => systemInfo.init())
             .then((): void => {
                 try {
-                    let localStorage: Storage = sys.localStorage = window.localStorage;
+                    const localStorage: Storage = sys.localStorage = window.localStorage;
                     localStorage.setItem('storage', '');
                     localStorage.removeItem('storage');
-                    localStorage = null;
                 } catch (e) {
                     const warn = function warn (...args: any): any {
                         warnID(5200);
@@ -348,22 +333,13 @@ export const sys = {
     },
 
     /**
-     * @en Restart the JS VM, only available in native platforms.
-     * @zh 重启JS虚拟机，仅仅在原生平台有效。
-     * @private
-     */
-    restartVM (): void {
-        systemInfo.restartJSVM();
-    },
-
-    /**
      * @en
      * Returns the safe area of the screen (in design resolution) based on the game view coordinate system.
      * If the screen is not notched, this method returns a Rect of the same size as visibleSize by default.
-     * Currently supports Android, iOS and WeChat, ByteDance Mini Game platform.
+     * Availability depends on the mini-game host's screen adapter.
      * @zh
      * 返回基于游戏视图坐标系的手机屏幕安全区域（设计分辨率为单位），如果不是异形屏将默认返回一个和 visibleSize 一样大的 Rect。
-     * 目前支持安卓、iOS 原生平台和微信、字节小游戏平台。
+     * 是否支持由小游戏宿主的屏幕适配实现决定。
      * @method getSafeAreaRect
      * @param [symmetric=true] @zh 基于屏幕对称的 Rect。 @en Rect that is symmetric based on the screen.
      * @return {Rect}

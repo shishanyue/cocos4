@@ -22,10 +22,9 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { IConfig, FontAtlas, type BitmapFont } from '../../assets/bitmap-font';
 import { SpriteFrame } from '../../assets/sprite-frame';
-import { Rect, errorID } from '../../../core';
+import { Rect } from '../../../core';
 import { Label, Overflow, CacheMode } from '../../components/label';
 import { UITransform } from '../../framework/ui-transform';
 import { LetterAtlas, shareLabelInfo } from './font-utils';
@@ -44,7 +43,6 @@ let _uiTrans: UITransform | null = null;
 
 let _fntConfig: IConfig | null = null;
 let _spriteFrame: SpriteFrame | null = null;
-let QUAD_INDICES: Uint16Array | null = null;
 
 export class BmfontUtils {
     updateProcessingData (
@@ -132,33 +130,19 @@ export class BmfontUtils {
                 comp.string,
                 this.generateVertexData,
             );
-            let isResized = false;
             if (renderData.dataLength !== outputRenderData.quadCount) {
                 this.resetRenderData(comp);
                 renderData.dataLength = outputRenderData.quadCount;
                 renderData.resize(renderData.dataLength, renderData.dataLength / 2 * 3);
-                isResized = true;
             }
             const datalist = renderData.data;
             for (let i = 0, l = outputRenderData.quadCount; i < l; i++) {
                 datalist[i] = outputRenderData.vertexBuffer[i];
             }
 
-            const indexCount = renderData.indexCount;
-            this.createQuadIndices(indexCount);
-            renderData.chunk.setIndexBuffer(QUAD_INDICES!);
-
             _comp.actualFontSize = style.actualFontSize;
             _uiTrans.setContentSize(outputLayoutData.nodeContentSize);
             this.updateUVs(comp);// dirty need
-            // It is reasonable that the '_comp.node._uiProps.colorDirty' interface should be used.
-            // But this function is not called when just modifying the opacity.
-            // So the value of '_comp.node._uiProps.colorDirty' does not change.
-            // And _uiProps.colorDirty is synchronized with renderEntity.colorDirty.
-            if (JSB && (_comp.renderEntity.colorDirty || isResized)) {
-                this.updateColor(comp); // dirty need
-                _comp.node._uiProps.colorDirty = false;
-            }
 
             renderData.vertDirty = false;
             _comp = null;
@@ -185,29 +169,6 @@ export class BmfontUtils {
             vData[vertexOffset] = vert.u;
             vData[vertexOffset + 1] = vert.v;
             vertexOffset += stride;
-        }
-    }
-
-    updateColor (label: Label): void {
-        const renderData = label.renderData;
-        if (JSB && renderData) {
-            const vertexCount = renderData.vertexCount;
-            if (vertexCount === 0) return;
-            const vData = renderData.chunk.vb;
-            const stride = renderData.floatStride;
-            let colorOffset = 5;
-            const color = label.color;
-            const colorR = color.r / 255;
-            const colorG = color.g / 255;
-            const colorB = color.b / 255;
-            const colorA = color.a / 255;
-            for (let i = 0; i < vertexCount; i++) {
-                vData[colorOffset] = colorR;
-                vData[colorOffset + 1] = colorG;
-                vData[colorOffset + 2] = colorB;
-                vData[colorOffset + 3] = colorA;
-                colorOffset += stride;
-            }
         }
     }
 
@@ -312,23 +273,5 @@ export class BmfontUtils {
         _spriteFrame = null;
         shareLabelInfo.hash = '';
         shareLabelInfo.margin = 0;
-    }
-
-    protected createQuadIndices (indexCount: number): void {
-        if (indexCount % 6 !== 0) {
-            errorID(16308);
-            return;
-        }
-        const quadCount = indexCount / 6;
-        QUAD_INDICES = new Uint16Array(indexCount);
-        let offset = 0;
-        for (let i = 0; i < quadCount; i++) {
-            QUAD_INDICES[offset++] = 0 + i * 4;
-            QUAD_INDICES[offset++] = 1 + i * 4;
-            QUAD_INDICES[offset++] = 2 + i * 4;
-            QUAD_INDICES[offset++] = 1 + i * 4;
-            QUAD_INDICES[offset++] = 3 + i * 4;
-            QUAD_INDICES[offset++] = 2 + i * 4;
-        }
     }
 }

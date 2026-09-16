@@ -24,13 +24,13 @@
 */
 
 import { ccclass, executeInEditMode, serializable, playOnFocus, menu, help, editable, type } from 'cc.decorator';
-import { EDITOR_NOT_IN_PREVIEW, JSB } from 'internal:constants';
+import { EDITOR_NOT_IN_PREVIEW } from 'internal:constants';
 import { UIRenderer } from '../2d/framework';
 import { Texture2D } from '../asset/assets/texture-2d';
 import type { IBatcher } from '../2d/renderer/i-batcher';
 import { Vec2 } from '../core';
 import type { RenderData } from '../2d/renderer/render-data';
-import { RenderEntityFillColorType } from '../2d/renderer/render-entity';
+import { RenderEntityFillColorType } from '../2d/renderer/rendering-types';
 
 export class Point {
     public point = new Vec2();
@@ -197,9 +197,6 @@ export class MotionStreak extends UIRenderer {
             if (this._assembler && this._assembler.createData) {
                 this._renderData = this._assembler.createData(this) as RenderData;
                 this._renderData.material = this.material;
-                if (JSB) {
-                    this._renderData.renderDrawInfo.setVertexPositionInWorld(true);
-                }
                 this._updateColor();
             }
         }

@@ -22,24 +22,14 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { Device, BufferUsageBit, MemoryUsageBit, Attribute, Buffer, BufferInfo, InputAssembler, InputAssemblerInfo, Feature } from '../../gfx';
 import { getAttributeStride } from './vertex-format';
 import { sys, getError, warnID, assertIsTrue } from '../../core';
-import { NativeUIMeshBuffer } from './native-2d';
 
 interface IIARef {
     ia: InputAssembler;
     vertexBuffers: Buffer[];
     indexBuffer: Buffer;
-}
-
-enum MeshBufferSharedBufferView {
-    byteOffset,
-    vertexOffset,
-    indexOffset,
-    dirty,
-    count,
 }
 
 const IA_POOL_USED_SCALE = 1 / 2;
@@ -74,9 +64,6 @@ export class MeshBuffer {
     }
     set byteOffset (val: number) {
         this._byteOffset = val;
-        if (JSB) {
-            this._sharedBuffer[MeshBufferSharedBufferView.byteOffset] = val;
-        }
     }
 
     protected _vertexOffset = 0;
@@ -90,9 +77,6 @@ export class MeshBuffer {
     }
     set vertexOffset (val: number) {
         this._vertexOffset = val;
-        if (JSB) {
-            this._sharedBuffer[MeshBufferSharedBufferView.vertexOffset] = val;
-        }
     }
 
     protected _indexOffset = 0;
@@ -106,9 +90,6 @@ export class MeshBuffer {
     }
     set indexOffset (val: number) {
         this._indexOffset = val;
-        if (JSB) {
-            this._sharedBuffer[MeshBufferSharedBufferView.indexOffset] = val;
-        }
     }
 
     protected _dirty = false;
@@ -122,9 +103,6 @@ export class MeshBuffer {
     }
     set dirty (val: boolean) {
         this._dirty = val;
-        if (JSB) {
-            this._sharedBuffer[MeshBufferSharedBufferView.dirty] = val ? 1 : 0;
-        }
     }
 
     protected _floatsPerVertex = 0;
@@ -151,10 +129,6 @@ export class MeshBuffer {
     }
     set vData (val: Float32Array) {
         this._vData = val;
-        //还得看是否需要共享.buffer
-        if (JSB) {
-            this._nativeObj.vData = val;
-        }
     }
 
     protected _iData: Uint16Array = null!;
@@ -168,9 +142,6 @@ export class MeshBuffer {
     }
     set iData (val: Uint16Array) {
         this._iData = val;
-        if (JSB) {
-            this._nativeObj.iData = val;
-        }
     }
 
     private _vertexFormatBytes = 0;
@@ -182,58 +153,6 @@ export class MeshBuffer {
     private _iaPool: IIARef[] = [];
     private _iaInfo: InputAssemblerInfo = null!;
     private _nextFreeIAHandle = 0;
-
-    //nativeObj
-    protected declare _nativeObj: NativeUIMeshBuffer;
-    /**
-     * @en Native object.
-     * @zh 原生对象。
-     * @deprecated since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    get nativeObj (): NativeUIMeshBuffer {
-        return this._nativeObj;
-    }
-
-    //sharedBuffer
-    protected declare _sharedBuffer: Uint32Array;
-    /**
-     * @en Native shared buffer.
-     * @zh 原生共享缓冲。
-     * @deprecated since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    get sharedBuffer (): Uint32Array {
-        return this._sharedBuffer;
-    }
-
-    /**
-     * @en Initial native shared buffer.
-     * @zh 初始化原生共享缓冲。
-     * @deprecated since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    public initSharedBuffer (): void {
-        if (JSB) {
-            this._sharedBuffer = new Uint32Array(MeshBufferSharedBufferView.count);
-        }
-    }
-
-    /**
-     * @en Synchronized native shared buffer.
-     * @zh 同步原生共享缓冲。
-     * @deprecated since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    public syncSharedBufferToNative (): void {
-        if (JSB) {
-            this._nativeObj.syncSharedBufferToNative(this._sharedBuffer);
-        }
-    }
-
-    constructor () {
-        if (JSB) {
-            this._nativeObj = new NativeUIMeshBuffer();
-            this.initSharedBuffer();
-            this.syncSharedBufferToNative();
-        }
-    }
 
     /**
      * @en Initialize mesh buffer.
@@ -263,9 +182,6 @@ export class MeshBuffer {
         }
         // Initialize the first ia
         this._iaPool.push(this.createNewIA(device));
-        if (JSB) {
-            this._nativeObj.initialize(attrs);
-        }
     }
 
     /**

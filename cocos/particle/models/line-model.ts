@@ -22,7 +22,6 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { RenderingSubMesh } from '../../asset/assets/rendering-sub-mesh';
 import { DRAW_INFO_SIZE, Buffer, Attribute, BufferInfo, DrawInfo,
     AttributeName, BufferUsageBit, Format, FormatInfos, MemoryUsageBit, PrimitiveMode } from '../../gfx';
@@ -58,9 +57,6 @@ export class LineModel extends scene.Model {
 
     constructor () {
         super();
-        if (JSB) {
-            (this as any)._registerListeners();
-        }
         this.type = scene.ModelType.LINE;
         this._capacity = 100;
     }

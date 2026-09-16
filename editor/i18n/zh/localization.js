@@ -886,10 +886,6 @@ module.exports = link(mixin({
                 label: '动画',
                 description: '动画系统。',
             },
-            network: {
-                label: '网络',
-                description: '网络模块。',
-            },
         },
         core: {
             label: "核心功能",
@@ -995,10 +991,6 @@ module.exports = link(mixin({
             label: "基于 Box2D-wasm 的 2D 物理系统",
             description: "基于 Box2D-wasm 的 2D 物理系统支持。",
         },
-        physics_2d_box2d_jsb: {
-            label: "基于 Box2D JSB 的 2D 物理系统",
-            description: "基于 Box2D JSB 的 2D 物理系统支持。",
-        },
         intersection_2d: {
             label: "2D 相交检测算法",
             description: "包含用于二维相交检测的算法。",
@@ -1051,10 +1043,6 @@ module.exports = link(mixin({
             label: "Tiled 地图",
             description: "Tiled 地图支持。",
         },
-        vendor_google: {
-            label: "Vendor Google",
-            description: "Vendor Google 支持.",
-        },
         spine: {
             label: "Spine 动画",
             description: "Spine 动画支持。",
@@ -1089,7 +1077,7 @@ module.exports = link(mixin({
         },
         xr: {
             label: "XR",
-            description: "启用 XR 功能系统。",
+            description: "启用 WebXR 支持。",
         },
         custom_pipeline: {
             label: "新渲染管线",
@@ -1102,14 +1090,6 @@ module.exports = link(mixin({
         legacy_pipeline: {
             label: "原渲染管线",
             description: "原有的渲染管线，在后续的版本中会被移除。",
-        },
-        websocket: {
-            label: "WebSocket",
-            description: "对原生启用 WebSocket。其中iOS/macOS使用SocketRocket实现, Android使用OkHttp实现, Windows使用libwebsockets实现。",
-        },
-        websocket_server: {
-            label: "WebSocket Server",
-            description: "对原生启用 WebSocket Server。注意: 必须同时启用 WebSocket。",
         },
         flags: {
             spine: {

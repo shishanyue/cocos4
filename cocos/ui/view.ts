@@ -26,7 +26,7 @@
 */
 
 import '../core/data/class';
-import { MINIGAME, JSB, RUNTIME_BASED, EDITOR } from 'internal:constants';
+import { MINIGAME, RUNTIME_BASED, EDITOR } from 'internal:constants';
 import { screenAdapter } from 'pal/screen-adapter';
 import { Eventify } from '../core/event';
 import { rect, Rect, size, Size, Vec2 } from '../core/math';
@@ -171,12 +171,9 @@ export class View extends Eventify(System) {
      * Sets the orientation of the game, it can be landscape, portrait or auto.
      * When set it to landscape or portrait, and screen w/h ratio doesn't fit,
      * `view` will automatically rotate the game canvas using CSS.
-     * Note that this function doesn't have any effect in native,
-     * in native, you need to set the application orientation in native project settings
      * @zh 设置游戏屏幕朝向，它能够是横版，竖版或自动。
      * 当设置为横版或竖版，并且屏幕的宽高比例不匹配时，
      * `view` 会自动用 CSS 旋转游戏场景的 canvas，
-     * 这个方法不会对 native 部分产生任何影响，对于 native 而言，你需要在应用设置中的设置排版。
      * @param orientation - Possible values: macro.ORIENTATION_LANDSCAPE | macro.ORIENTATION_PORTRAIT | macro.ORIENTATION_AUTO
      */
     public setOrientation (orientation: number): void {
@@ -290,10 +287,8 @@ export class View extends Eventify(System) {
     /**
      * @en
      * Returns the canvas size of the view.<br/>
-     * On native platforms, it returns the screen size since the view is a fullscreen view.<br/>
      * On web, it returns the size of the canvas element.
      * @zh 返回视图中 canvas 的尺寸。
-     * 在 native 平台下，它返回全屏视图下屏幕的尺寸。
      * 在 Web 平台下，它返回 canvas 元素尺寸。
      *
      * @deprecated since v3.4.0, please use screen.windowSize instead.
@@ -305,10 +300,8 @@ export class View extends Eventify(System) {
     /**
      * @en
      * Returns the frame size of the view in CSS pixels.<br/>
-     * On native platforms, it returns the screen size since the view is a fullscreen view.<br/>
      * On web, it returns the size of the canvas's outer DOM element.
      * @zh 以 CSS 像素尺寸返回视图中边框尺寸。
-     * 在 native 平台下，它返回全屏视图下屏幕的尺寸。
      * 在 web 平台下，它返回 canvas 元素的外层 DOM 元素尺寸。
      *
      * @deprecated since v3.4.0, getting size in CSS pixels is not recommended, please use screen.windowSize instead.
@@ -323,10 +316,8 @@ export class View extends Eventify(System) {
 
     /**
      * @en Setting the frame size of the view in CSS pixels.
-     * On native, it sets the frame size of view.<br/>
      * On web, it sets the size of the canvas's outer DOM element.
      * @zh 以 CSS 像素尺寸设置视图中边框尺寸。
-     * 在 native 平台下，设置视图框架尺寸。
      * 在 web 平台下，设置 canvas 外层 DOM 元素尺寸。
      * @param {Number} width
      * @param {Number} height
@@ -389,7 +380,6 @@ export class View extends Eventify(System) {
         if (resolutionPolicy instanceof ResolutionPolicy) {
             this._resolutionPolicy = resolutionPolicy;
         } else {
-            // Ensure compatibility with JSB
             const _locPolicy = ResolutionPolicy;
             if (resolutionPolicy === _locPolicy.EXACT_FIT) {
                 this._resolutionPolicy = this._rpExactFit;
@@ -509,7 +499,7 @@ export class View extends Eventify(System) {
      * @deprecated since v3.6.0
      */
     public setRealPixelResolution (width: number, height: number, resolutionPolicy: ResolutionPolicy|number): void {
-        if (!JSB && !RUNTIME_BASED && !MINIGAME) {
+        if (!RUNTIME_BASED && !MINIGAME) {
             // Set body width to the exact pixel resolution
             document.documentElement.style.width = `${width}px`;
             document.body.style.width = `${width}px`;

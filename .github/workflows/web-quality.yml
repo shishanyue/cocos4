@@ -22,8 +22,8 @@ jobs:
 
       - name: Download external
         run: |
-          EXT_VERSION=`node ./.github/workflows/get-native-external-version.js`
-          git clone --branch $EXT_VERSION --depth 1 https://github.com/cocos/cocos-engine-external native/external
+          node .github/workflows/get-external-version.js
+          npm run setup:external
 
       - run: npm ci
 

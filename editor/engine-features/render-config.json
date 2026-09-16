@@ -176,7 +176,6 @@
                 },
                 "physics-physx": {
                     "label": "i18n:ENGINE.features.physics_physx.label",
-                    "cmakeConfig": "USE_PHYSICS_PHYSX",
                     "description": "i18n:ENGINE.features.physics_physx.description",
                     "isNativeModule": true,
                     "flags": {
@@ -223,14 +222,6 @@
                 "physics-2d-builtin": {
                     "label": "i18n:ENGINE.features.physics_2d_builtin.label",
                     "description": "i18n:ENGINE.features.physics_2d_builtin.description"
-                },
-                "physics-2d-box2d-jsb": {
-                    "isNativeModule": true,
-                    "cmakeConfig": "USE_BOX2D_JSB",
-                    "label": "i18n:ENGINE.features.physics_2d_box2d_jsb.label",
-                    "description": "i18n:ENGINE.features.physics_2d_box2d_jsb.description",
-                    "envCondition": "$NATIVE",
-                    "fallback": "physics-2d-box2d-wasm"
                 }
             }
         },
@@ -264,7 +255,6 @@
             "default": false,
             "label": "i18n:ENGINE.features.occlusion_query.label",
             "description": "i18n:ENGINE.features.occlusion_query.description",
-            "cmakeConfig": "USE_OCCLUSION_QUERY",
             "enginePlugin": false,
             "category": "3d",
             "dependencies": [
@@ -275,7 +265,6 @@
             "default": false,
             "label": "i18n:ENGINE.features.geometry_renderer.label",
             "description": "i18n:ENGINE.features.geometry_renderer.description",
-            "cmakeConfig": "USE_GEOMETRY_RENDERER",
             "enginePlugin": true,
             "category": "3d",
             "dependencies": [
@@ -286,7 +275,6 @@
             "default": false,
             "label": "i18n:ENGINE.features.debug_renderer.label",
             "description": "i18n:ENGINE.features.debug_renderer.description",
-            "cmakeConfig": "USE_DEBUG_RENDERER",
             "enginePlugin": false,
             "category": "3d",
             "dependencies": [
@@ -307,21 +295,18 @@
             "default": true,
             "label": "i18n:ENGINE.features.audio.label",
             "description": "i18n:ENGINE.features.audio.description",
-            "cmakeConfig": "USE_AUDIO",
             "enginePlugin": true
         },
         "video": {
             "default": true,
             "label": "i18n:ENGINE.features.video.label",
             "description": "i18n:ENGINE.features.video.description",
-            "cmakeConfig": "USE_VIDEO",
             "enginePlugin": true
         },
         "webview": {
             "default": true,
             "label": "i18n:ENGINE.features.webview.label",
             "description": "i18n:ENGINE.features.webview.description",
-            "cmakeConfig": "USE_WEBVIEW",
             "enginePlugin": true
         },
         "tween": {
@@ -329,22 +314,6 @@
             "label": "i18n:ENGINE.features.tween.label",
             "description": "i18n:ENGINE.features.tween.description",
             "enginePlugin": true
-        },
-        "websocket": {
-            "default": true,
-            "label": "i18n:ENGINE.features.websocket.label",
-            "description": "i18n:ENGINE.features.websocket.description",
-            "cmakeConfig": "USE_SOCKET",
-            "enginePlugin": false,
-            "category": "network"
-        },
-        "websocket-server": {
-            "default": false,
-            "label": "i18n:ENGINE.features.websocket_server.label",
-            "description": "i18n:ENGINE.features.websocket_server.description",
-            "cmakeConfig": "USE_WEBSOCKET_SERVER",
-            "enginePlugin": false,
-            "category": "network"
         },
         "terrain": {
             "default": true,
@@ -376,16 +345,6 @@
                 "2d"
             ]
         },
-        "vendor-google": {
-            "default": false,
-            "label": "i18n:ENGINE.features.vendor_google.label",
-            "description": "i18n:ENGINE.features.vendor_google.description",
-            "enginePlugin": false,
-            "isNativeModule": true,
-            "cmakeConfig": "USE_VENDOR",
-            "hidden": true,
-            "envCondition": "$ANDROID"
-        },
         "spine": {
             "label": "i18n:ENGINE.features.spine.label",
             "description": "i18n:ENGINE.features.spine.description",
@@ -396,7 +355,6 @@
             "options": {
                 "spine-3.8": {
                     "enginePlugin": true,
-                    "cmakeConfig": "USE_SPINE_3_8",
                     "default": true,
                     "isNativeModule": true,
                     "label": "i18n:ENGINE.features.spine_38.label",
@@ -412,7 +370,6 @@
                 },
                 "spine-4.2": {
                     "enginePlugin": true,
-                    "cmakeConfig": "USE_SPINE_4_2",
                     "default": false,
                     "isNativeModule": true,
                     "label": "i18n:ENGINE.features.spine_42.label",
@@ -432,7 +389,6 @@
             "default": true,
             "label": "i18n:ENGINE.features.dragon_bones.label",
             "description": "i18n:ENGINE.features.dragon_bones.description",
-            "cmakeConfig": "USE_DRAGONBONES",
             "enginePlugin": true,
             "category": "2d",
             "dependencies": [
@@ -488,7 +444,7 @@
             "label": "i18n:ENGINE.features.xr.label",
             "description": "i18n:ENGINE.features.xr.description",
             "enginePlugin": false,
-            "envCondition": "$NATIVE || $HTML5"
+            "envCondition": "$HTML5"
         }
     },
     "categories": {
@@ -511,11 +467,6 @@
         "animation": {
             "label": "i18n:ENGINE.features.categories.animation.label",
             "description": "i18n:ENGINE.features.categories.animation.description",
-            "checkable": true
-        },
-        "network": {
-            "label": "i18n:ENGINE.features.categories.network.label",
-            "description": "i18n:ENGINE.features.categories.network.description",
             "checkable": true
         }
     }

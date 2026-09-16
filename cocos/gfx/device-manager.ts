@@ -23,7 +23,7 @@
  THE SOFTWARE.
 */
 
-import { EDITOR, JSB } from 'internal:constants';
+import { EDITOR } from 'internal:constants';
 import { cclegacy, getError, sys, screen, settings, errorID, Settings } from '../core';
 import { BindingMappingInfo, DeviceInfo, SwapchainInfo } from './base/define';
 import { Device } from './base/device';
@@ -151,37 +151,32 @@ export class DeviceManager {
         const deviceInfo = new DeviceInfo(bindingMappingInfo);
         // WebGL or WebGPU context created successfully
         if (this._renderType === RenderType.WEBGL || this._renderType === RenderType.WEBGPU) {
-            if (JSB && (globalThis as any).gfx) {
-                this._gfxDevice = gfx.DeviceManager.create(deviceInfo);
-            } else {
-                let useWebGL2 = (!!globalThis.WebGL2RenderingContext);
-                const userAgent = globalThis.navigator.userAgent.toLowerCase();
-                // UC browser implementation doesn't conform to WebGL2 standard
-                if (sys.browserType === BrowserType.UC) {
-                    useWebGL2 = false;
-                }
-                Device.canvas = canvas!;
-                if (this._renderType === RenderType.WEBGPU && cclegacy.WebGPUDevice) {
-                    return new Promise<boolean>((resolve, reject) => {
-                        this._tryInitializeWebGPUDevice(cclegacy.WebGPUDevice, deviceInfo).then((val) => {
-                            this._initSwapchain();
-                            resolve(val);
-                        }).catch((err) => {
-                            reject(err);
-                        });
-                    });
-                }
-                if (useWebGL2 && cclegacy.WebGL2Device) {
-                    this._tryInitializeDeviceSync(cclegacy.WebGL2Device, deviceInfo);
-                }
-                if (cclegacy.WebGLDevice) {
-                    this._tryInitializeDeviceSync(cclegacy.WebGLDevice, deviceInfo);
-                }
-                if (cclegacy.EmptyDevice) {
-                    this._tryInitializeDeviceSync(cclegacy.EmptyDevice, deviceInfo);
-                }
-                this._initSwapchain();
+            let useWebGL2 = (!!globalThis.WebGL2RenderingContext);
+            // UC browser implementation doesn't conform to WebGL2 standard
+            if (sys.browserType === BrowserType.UC) {
+                useWebGL2 = false;
             }
+            Device.canvas = canvas!;
+            if (this._renderType === RenderType.WEBGPU && cclegacy.WebGPUDevice) {
+                return new Promise<boolean>((resolve, reject) => {
+                    this._tryInitializeWebGPUDevice(cclegacy.WebGPUDevice, deviceInfo).then((val) => {
+                        this._initSwapchain();
+                        resolve(val);
+                    }).catch((err) => {
+                        reject(err);
+                    });
+                });
+            }
+            if (useWebGL2 && cclegacy.WebGL2Device) {
+                this._tryInitializeDeviceSync(cclegacy.WebGL2Device, deviceInfo);
+            }
+            if (cclegacy.WebGLDevice) {
+                this._tryInitializeDeviceSync(cclegacy.WebGLDevice, deviceInfo);
+            }
+            if (cclegacy.EmptyDevice) {
+                this._tryInitializeDeviceSync(cclegacy.EmptyDevice, deviceInfo);
+            }
+            this._initSwapchain();
         } else if (this._renderType === RenderType.HEADLESS && cclegacy.EmptyDevice) {
             this._tryInitializeDeviceSync(cclegacy.EmptyDevice, deviceInfo);
             this._initSwapchain();

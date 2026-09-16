@@ -43,6 +43,9 @@ export interface IAssembler {
     update? (comp: UIRenderer, dt: number): void;
     resetAssemblerData? (data: any): void;
     removeData? (data: BaseRenderData): void;
+    // Graphics builds retained geometry through drawing commands rather than per-frame updates.
+    stroke? (comp: UIRenderer): void;
+    fill? (comp: UIRenderer): void;
 }
 
 /**

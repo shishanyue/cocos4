@@ -42,10 +42,6 @@ import {
 export class RasterizerState {
     declare private _token: never; // to make sure all usages must be an instance of this exact class, not assembled from plain object
 
-    get native (): RasterizerState {
-        return this;
-    }
-
     constructor (
         public isDiscard: boolean = false,
         public polygonMode: PolygonMode = PolygonMode.FILL,
@@ -90,9 +86,6 @@ export class RasterizerState {
 export class DepthStencilState {
     declare private _token: never; // to make sure all usages must be an instance of this exact class, not assembled from plain object
 
-    get native (): DepthStencilState {
-        return this;
-    }
     constructor (
         public depthTest: boolean = true,
         public depthWrite: boolean = true,
@@ -187,10 +180,6 @@ export class BlendTarget {
 export class BlendState {
     declare private _token: never; // to make sure all usages must be an instance of this exact class, not assembled from plain object
 
-    get native (): BlendState {
-        return this;
-    }
-
     constructor (
         public isA2C: boolean = false,
         public isIndepend: boolean = false,
@@ -199,9 +188,7 @@ export class BlendState {
     ) {}
 
     /**
-     * @en Should use this function to set target, or it will not work
-     * on native platforms, as native can not support this feature,
-     * such as `blendState[i] = target;`.
+     * @en Copy the target state into the blend target at the given index.
      *
      * @param index The index to set target.
      * @param target The target to be set.

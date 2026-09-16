@@ -23,7 +23,7 @@
  THE SOFTWARE.
 */
 
-import { DEV, JSB } from 'internal:constants';
+import { DEV } from 'internal:constants';
 import {
     CCObject,
     CCObjectFlags,
@@ -40,7 +40,6 @@ import {
 import { Prefab } from '../scene-graph/prefab';
 import { Node } from '../scene-graph/node';
 import { Component } from '../scene-graph/component';
-import { updateChildrenForDeserialize } from '../core/utils/jsb-utils';
 
 const Destroyed = CCObjectFlags.Destroyed;
 const PersistentMask = CCObjectFlags.PersistentMask;
@@ -127,9 +126,6 @@ export function instantiate (original: any, internalForce?: boolean): any {
             cclegacy.game._isCloning = true;
             clone = original._instantiate(null, true);
             cclegacy.game._isCloning = false;
-            if (JSB) {
-                updateChildrenForDeserialize(clone as Node);
-            }
             // eslint-disable-next-line @typescript-eslint/no-unsafe-return
             return clone;
         } else if (original instanceof cclegacy.Asset) {
@@ -140,9 +136,6 @@ export function instantiate (original: any, internalForce?: boolean): any {
     cclegacy.game._isCloning = true;
     clone = doInstantiate(original);
     cclegacy.game._isCloning = false;
-    if (JSB) {
-        updateChildrenForDeserialize(clone as Node);
-    }
     // eslint-disable-next-line @typescript-eslint/no-unsafe-return
     return clone;
 }

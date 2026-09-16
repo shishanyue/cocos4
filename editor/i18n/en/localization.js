@@ -908,10 +908,6 @@ module.exports = link(mixin({
                 label: 'Animation',
                 description: 'Animation System.',
             },
-            network: {
-                label: 'Network',
-                description: 'Network Module.',
-            },
         },
         core: {
             label: "Core",
@@ -1017,10 +1013,6 @@ module.exports = link(mixin({
             label: "Box2D-wasm Based 2D Physics System",
             description: "2D Physics system that based on Box2D-wasm.",
         },
-        physics_2d_box2d_jsb: {
-            label: "Box2D-JSB Based 2D Physics System",
-            description: "2D Physics system that based on Box2D-JSB.",
-        },
         intersection_2d: {
             label: "2D Intersection Algorithms",
             description: "Include 2D intersection algorithms.",
@@ -1073,10 +1065,6 @@ module.exports = link(mixin({
             label: "Tiled Map",
             description: "Tiled map support.",
         },
-        vendor_google: {
-            label: "Vendor Google",
-            description: "Vendor support.",
-        },
         spine: {
             label: "Spine Animation",
             description: "Spine Animation support.",
@@ -1111,7 +1099,7 @@ module.exports = link(mixin({
         },
         xr: {
             label: "XR",
-            description: "Enable the XR function system",
+            description: "Enable WebXR support",
         },
         custom_pipeline: {
             label: "Render Pipeline (New)",
@@ -1124,14 +1112,6 @@ module.exports = link(mixin({
         legacy_pipeline: {
             label: "Render Pipeline (Legacy)",
             description: "The render pipeline used in previous versions. This pipeline will be deprecated in future versions.",
-        },
-        websocket: {
-            label: "WebSocket",
-            description: "Enable WebSocket for native. For implementation, iOS/macOS uses SocketRocket, Android uses OkHttp, and Windows uses libwebsockets.",
-        },
-        websocket_server: {
-            label: "WebSocket Server",
-            description: "Enable WebSocket Server for native. Note: WebSocket must also be enabled.",
         },
         flags: {
             spine: {

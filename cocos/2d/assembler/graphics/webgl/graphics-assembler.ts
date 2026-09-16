@@ -21,7 +21,6 @@
  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
  THE SOFTWARE.
 */
-import { JSB } from 'internal:constants';
 import { Color, Vec3 } from '../../../../core';
 import { IAssembler } from '../../../renderer/base';
 import { MeshRenderData } from '../../../renderer/render-data';
@@ -73,14 +72,6 @@ function clamp (v: number, minNum: number, maxNum: number): number {
  * 可通过 `UI.graphicsAssembler` 获取该组装器。
  */
 export class GraphicsAssembler implements IAssembler {
-    updateRenderData (graphics: Graphics): void {
-        if (JSB) {
-            if (graphics.renderData) {
-                graphics.renderData.material = graphics.getMaterialInstance(0);
-            }
-        }
-    }
-
     private getRenderData (graphics: Graphics, vertexCount: number): MeshRenderData | null {
         if (!_impl) {
             return null;

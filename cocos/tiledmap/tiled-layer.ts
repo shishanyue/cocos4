@@ -42,8 +42,6 @@ import {
 } from './tiled-types';
 import { fillTextureGrids } from './tiled-utils';
 import { NodeEventType } from '../scene-graph/node-event';
-import { RenderEntity, RenderEntityType } from '../2d/renderer/render-entity';
-import { RenderDrawInfo, RenderDrawInfoType } from '../2d/renderer/render-draw-info';
 import { Texture2D } from '../asset/assets';
 import { director } from '../game';
 import { Camera } from '../render-scene/scene';
@@ -198,15 +196,6 @@ export class TiledLayer extends UIRenderer {
     get tiledDataArray (): TiledDataArray { return this._tiledDataArray; }
     get leftDownToCenterX (): number { return this._leftDownToCenterX; }
     get leftDownToCenterY (): number { return this._leftDownToCenterY; }
-
-    private _drawInfoList: RenderDrawInfo[] = [];
-    private requestDrawInfo (idx: number): RenderDrawInfo {
-        if (!this._drawInfoList[idx]) {
-            this._drawInfoList[idx] = new RenderDrawInfo();
-            this._drawInfoList[idx].setDrawInfoType(RenderDrawInfoType.MIDDLEWARE);
-        }
-        return this._drawInfoList[idx];
-    }
 
     constructor () {
         super();
@@ -1488,7 +1477,6 @@ export class TiledLayer extends UIRenderer {
         const assembler = TiledLayer.Assembler.getAssembler(this);
         if (this._assembler !== assembler) {
             this._assembler = assembler;
-            this._assembler.createData!(this);
         }
         if (this._tiledDataArray.length === 0) {
             this._markForUpdateRenderData();
@@ -1522,69 +1510,5 @@ export class TiledLayer extends UIRenderer {
             }
         }
         this.node._static = true;
-    }
-
-    protected createRenderEntity (): RenderEntity {
-        return new RenderEntity(RenderEntityType.CROSSED);
-    }
-
-    private fillIndicesBuffer (renderData: RenderData, drawInfo: RenderDrawInfo): void {
-        const iBuf = renderData.chunk.meshBuffer.iData;
-        let vertexId = renderData.chunk.vertexOffset;
-        const quadCount = renderData.vertexCount / 4;
-        let indexOffset = (vertexId / 4) * 6;
-        drawInfo.setIndexOffset(indexOffset);
-        for (let i = 0; i < quadCount; i += 1) {
-            iBuf[indexOffset] = vertexId;
-            iBuf[indexOffset + 1] = vertexId + 1;
-            iBuf[indexOffset + 2] = vertexId + 2;
-            iBuf[indexOffset + 3] = vertexId + 2;
-            iBuf[indexOffset + 4] = vertexId + 1;
-            iBuf[indexOffset + 5] = vertexId + 3;
-            indexOffset += 6;
-            vertexId += 4;
-        }
-        renderData.chunk.meshBuffer.indexOffset = indexOffset;
-        drawInfo.setIBCount(quadCount * 6);
-    }
-
-    public prepareDrawData (): void {
-        this._drawInfoList.length = 0;
-        const entity = this.renderEntity;
-        entity.clearDynamicRenderDrawInfos();
-        const tiledDataArray = this._tiledDataArray;
-        let idx = 0;
-        tiledDataArray.forEach((m) => {
-            if (isTiledSubNodeData(m)) {
-                // 提前处理 User Nodes
-                m.subNodes.forEach((c) => {
-                    if (c) {
-                        if (!this._drawInfoList[idx]) {
-                            this._drawInfoList[idx] = new RenderDrawInfo();
-                        }
-                        const drawInfo = this._drawInfoList[idx];
-                        drawInfo.setDrawInfoType(RenderDrawInfoType.SUB_NODE);
-                        drawInfo.setSubNode(c.node);
-                        entity.setDynamicRenderDrawInfo(drawInfo, idx);
-                        idx++;
-                    }
-                });
-            } else {
-                const td = m;
-                if (td.texture && td.renderData) {
-                    if (!this._drawInfoList[idx]) {
-                        this._drawInfoList[idx] = new RenderDrawInfo();
-                    }
-                    const drawInfo = this._drawInfoList[idx];
-                    td.renderData.fillDrawInfoAttributes(drawInfo);
-                    drawInfo.setTexture(td.texture.getGFXTexture());
-                    drawInfo.setSampler(td.texture.getGFXSampler());
-                    drawInfo.setMaterial(this.getRenderMaterial(0)!);
-                    this.fillIndicesBuffer(td.renderData, drawInfo);
-                    entity.setDynamicRenderDrawInfo(drawInfo, idx);
-                    idx++;
-                }
-            }
-        });
     }
 }

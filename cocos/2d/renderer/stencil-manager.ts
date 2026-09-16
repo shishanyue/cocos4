@@ -50,7 +50,7 @@ export enum Stage {
 }
 
 /**
- * @en Native stencil buffer format enum.
+ * @en Stencil buffer stage enum.
  * @zh 原生模板缓冲格式枚举。
  * @deprecated since v3.7.0, this is an engine private interface that will be removed in the future.
  */

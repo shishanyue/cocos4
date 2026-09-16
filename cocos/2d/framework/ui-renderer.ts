@@ -22,7 +22,7 @@
  THE SOFTWARE.
 */
 
-import { DEBUG, EDITOR, JSB, USE_SORTING_2D } from 'internal:constants';
+import { DEBUG, EDITOR, USE_SORTING_2D } from 'internal:constants';
 import {
     ccclass, executeInEditMode, requireComponent, tooltip,
     type, displayOrder, serializable, override, visible, displayName, disallowAnimation,
@@ -40,9 +40,8 @@ import { UITransform } from './ui-transform';
 import { Stage } from '../renderer/stencil-manager';
 import { NodeEventType } from '../../scene-graph/node-event';
 import { Renderer } from '../../misc/renderer';
-import { RenderEntity, RenderEntityType, RenderEntityFillColorType } from '../renderer/render-entity';
+import { RenderEntityFillColorType } from '../renderer/rendering-types';
 import { uiRendererManager } from './ui-renderer-manager';
-import { RenderDrawInfoType } from '../renderer/render-draw-info';
 import { director } from '../../game';
 import { SortingLayers } from '../../sorting/sorting-layers';
 import type { Batcher2D } from '../renderer/batcher-2d';
@@ -139,7 +138,6 @@ export class UIRenderer extends Renderer {
 
     constructor () {
         super();
-        this._renderEntity = this.createRenderEntity();
 
         if (USE_SORTING_2D) {
             this.priority = SortingLayers.getDefaultPriority();
@@ -229,7 +227,6 @@ export class UIRenderer extends Renderer {
     }
     set stencilStage (val: Stage) {
         this._stencilStage = val;
-        this._renderEntity.setStencilStage(val);
     }
 
     @override
@@ -257,8 +254,6 @@ export class UIRenderer extends Renderer {
 
     protected _renderFlag = true;
 
-    protected declare _renderEntity: RenderEntity;
-
     protected _instanceMaterialType = -1;
     protected _srcBlendFactorCache = BlendFactor.SRC_ALPHA;
     protected _dstBlendFactorCache = BlendFactor.ONE_MINUS_SRC_ALPHA;
@@ -285,9 +280,6 @@ export class UIRenderer extends Renderer {
 
     set priority (val: number) {
         this._priority = val;
-        if (JSB) {
-            this._renderEntity.setPriority(val);
-        }
     }
 
     /**
@@ -295,16 +287,6 @@ export class UIRenderer extends Renderer {
      */
     get batcher (): Batcher2D {
         return director.root!.batcher2D;
-    }
-
-    /**
-     * @deprecated Since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    get renderEntity (): RenderEntity {
-        if (DEBUG) {
-            assert(Boolean(this._renderEntity), 'this._renderEntity should not be invalid');
-        }
-        return this._renderEntity;
     }
 
     /**
@@ -325,9 +307,6 @@ export class UIRenderer extends Renderer {
      */
     protected setFillColorType (val: RenderEntityFillColorType): void {
         this._fillColorType = val;
-        if (JSB) {
-            this._renderEntity.setFillColorType(val);
-        }
     }
 
     /**
@@ -352,10 +331,6 @@ export class UIRenderer extends Renderer {
     }
 
     protected _lastParent: Node | null = null;
-
-    public onLoad (): void {
-        this._renderEntity.setNode(this.node);
-    }
 
     public __preload (): void {
         this.node._uiProps.uiComp = this;
@@ -403,7 +378,6 @@ export class UIRenderer extends Renderer {
         }
         uiRendererManager.removeRenderer(this);
         this._renderFlag = false;
-        this._renderEntity.enabled = false;
     }
 
     /**
@@ -416,7 +390,6 @@ export class UIRenderer extends Renderer {
     }
 
     public onDestroy (): void {
-        this._renderEntity.setNode(null);
         if (this.node._uiProps.uiComp === this) {
             this.node._uiProps.uiComp = null;
         }
@@ -453,9 +426,8 @@ export class UIRenderer extends Renderer {
      * @zh 请求新的渲染数据对象。
      * @return @en The new render data. @zh 新的渲染数据。
      */
-    public requestRenderData (drawInfoType = RenderDrawInfoType.COMP): RenderData {
+    public requestRenderData (): RenderData {
         const data = RenderData.add();
-        data.initRenderDrawInfo(this, drawInfoType);
         this._renderData = data;
         return data;
     }
@@ -465,7 +437,6 @@ export class UIRenderer extends Renderer {
      * @zh 销毁当前渲染数据。
      */
     public destroyRenderData (): void {
-        this.renderEntity.clearRenderDrawInfos();
         if (!this._renderData) {
             return;
         }
@@ -483,7 +454,6 @@ export class UIRenderer extends Renderer {
             assembler.updateRenderData(this);
         }
         this._renderFlag = this._canRender();
-        this._renderEntity.enabled = this._renderFlag;
     }
 
     /**
@@ -554,7 +524,6 @@ export class UIRenderer extends Renderer {
 
     protected _updateColor (): void {
         this._colorDirty();
-        this.setEntityColor(this._color);
         const assembler = this._assembler;
         if (assembler) {
             if (assembler.updateColor) {
@@ -563,46 +532,12 @@ export class UIRenderer extends Renderer {
             // Need update rendFlag when opacity changes from 0 to !0 or 0 to !0
             const renderFlag = this._renderFlag;
             this._renderFlag = this._canRender();
-            this.setEntityEnabled(this._renderFlag);
             if (renderFlag !== this._renderFlag) {
                 const renderData = this.renderData;
                 if (renderData) {
                     renderData.vertDirty = true;
                 }
             }
-        }
-    }
-
-    private setEntityColorDirty (dirty: boolean): void {
-        if (JSB) {
-            this._renderEntity.colorDirty = dirty;
-        }
-    }
-
-    /**
-     * @deprecated Since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    public setEntityColor (color: Color): void {
-        if (JSB) {
-            this._renderEntity.color = color;
-        }
-    }
-
-    /**
-     * @deprecated Since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    public setEntityOpacity (opacity: number): void {
-        if (JSB) {
-            (this.node as any)._setLocalOpacity(opacity);
-        }
-    }
-
-    /**
-     * @deprecated Since v3.7.0, this is an engine private interface that will be removed in the future.
-     */
-    public setEntityEnabled (enabled: boolean): void {
-        if (JSB) {
-            this._renderEntity.enabled = enabled;
         }
     }
 
@@ -653,7 +588,6 @@ export class UIRenderer extends Renderer {
 
     protected _colorDirty (): void {
         this.node._uiProps.colorDirty = true;
-        this.setEntityColorDirty(true);
     }
 
     protected _onMaterialModified (idx: number, material: Material | null): void {
@@ -704,12 +638,6 @@ export class UIRenderer extends Renderer {
         if (this._renderData) {
             this._renderData.textureDirty = true;
         }
-    }
-
-    // RenderEntity
-    // it should be overwritten by inherited classes
-    protected createRenderEntity (): RenderEntity {
-        return new RenderEntity(RenderEntityType.STATIC);
     }
 }
 

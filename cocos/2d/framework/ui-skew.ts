@@ -22,7 +22,6 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { ccclass, disallowMultiple, displayOrder, executeInEditMode, menu, serializable, type } from 'cc.decorator';
 import { Component } from '../../scene-graph/component';
 import { CCBoolean, cclegacy, IVec2Like, v2, Vec2 } from '../../core';
@@ -31,11 +30,6 @@ import { TRANSFORM_ON, Node } from '../../scene-graph/node';
 
 const tempVec2 = v2();
 
-enum SkewType {
-    NONE = 0,
-    STANDARD,
-    ROTATIONAL,
-}
 @ccclass('cc.UISkew')
 @menu('UI/UISkew')
 @disallowMultiple
@@ -78,41 +72,24 @@ export class UISkew extends Component {
 
     protected override __preload (): void {
         this.node._uiProps._uiSkewComp = this;
-        if (JSB) {
-            (this.node as any)._setSkew(this._skew);
-        }
     }
 
     protected override onEnable (): void {
         this._skewEnabled = true;
         Node._incSkewCompCount();
-        this._syncNative(true);
         this._updateNodeTransformFlags();
     }
 
     protected override onDisable (): void {
         this._skewEnabled = false;
         Node._decSkewCompCount();
-        this._syncNative(false);
         this._updateNodeTransformFlags();
     }
 
     protected override onDestroy (): void {
         this._skewEnabled = false;
-        this._syncNative(false);
         this.node._uiProps._uiSkewComp = null;
         this._updateNodeTransformFlags();
-    }
-
-    private _syncNative (enabled: boolean): void {
-        if (JSB) {
-            const node = this.node as any;
-            if (enabled) {
-                node._skewType = this._rotational ? SkewType.ROTATIONAL : SkewType.STANDARD;
-            } else {
-                node._skewType = SkewType.NONE;
-            }
-        }
     }
 
     /**
@@ -129,9 +106,6 @@ export class UISkew extends Component {
      */
     set x (v: number) {
         this._skew.x = v;
-        if (JSB) {
-            (this.node as any)._setSkewX(v);
-        }
 
         if (this._skewEnabled) {
             this._updateNodeTransformFlags();
@@ -152,9 +126,6 @@ export class UISkew extends Component {
      */
     set y (v: number) {
         this._skew.y = v;
-        if (JSB) {
-            (this.node as any)._setSkewY(v);
-        }
 
         if (this._skewEnabled) {
             this._updateNodeTransformFlags();
@@ -202,9 +173,6 @@ export class UISkew extends Component {
         if (Vec2.equals(v, tempVec2)) return;
 
         v.set(tempVec2);
-        if (JSB) {
-            (this.node as any)._setSkew(v);
-        }
 
         if (this._skewEnabled) {
             this._updateNodeTransformFlags();

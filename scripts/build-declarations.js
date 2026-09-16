@@ -1,5 +1,6 @@
 const { join } = require('path');
-const { emptyDir } = require('fs-extra');
+const { emptyDir, copyFile, readFile, writeFile } = require('fs-extra');
+const { execFileSync } = require('node:child_process');
 const { dtsBundler } = require('@cocos/ccbuild');
 const { magenta } = require('chalk');
 
@@ -13,11 +14,18 @@ console.log(magenta(`${prefix} Build declarations ${prefix}`));
     };
     await emptyDir(PATHS.out);
 
-    await dtsBundler.build({
+    const success = await dtsBundler.build({
         engine: PATHS.engine,
         outDir: PATHS.out,
         withIndex: true,
         withExports: false,
         withEditorExports: true,
     });
-}());
+    if (!success) throw new Error('Declaration bundling failed');
+    // Public WebGPU APIs require the real ambient browser declarations alongside the bundle.
+    await copyFile(join(PATHS.engine, '@types', 'webGPU.d.ts'), join(PATHS.out, 'webGPU.d.ts'));
+    const ccDts = join(PATHS.out, 'cc.d.ts');
+    await writeFile(ccDts, `/// <reference path="./webGPU.d.ts" />\n${await readFile(ccDts, 'utf8')}`);
+    execFileSync(process.execPath, [require.resolve('typescript/bin/tsc'), '--project',
+        join(__dirname, 'test-declarations', 'tsconfig.json')], { stdio: 'inherit' });
+}()).catch((error) => { console.error(error); process.exitCode = 1; });

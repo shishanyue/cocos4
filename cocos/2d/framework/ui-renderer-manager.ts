@@ -24,22 +24,21 @@
 
 import { DEBUG } from 'internal:constants';
 import { assert, js } from '../../core';
-import { UIMeshRenderer } from '../components';
 import { UIRenderer } from './ui-renderer';
 
 /** @mangle */
 export class UIRendererManager {
-    private _allRenderers: (UIRenderer | UIMeshRenderer)[] = [];
-    private _dirtyRenderers: (UIRenderer | UIMeshRenderer)[] = [];
+    private _allRenderers: UIRenderer[] = [];
+    private _dirtyRenderers: UIRenderer[] = [];
     private _dirtyVersion = 0;
-    public addRenderer (uiRenderer: UIRenderer | UIMeshRenderer): void {
+    public addRenderer (uiRenderer: UIRenderer): void {
         if (uiRenderer._internalId === -1) {
             uiRenderer._internalId = this._allRenderers.length;
             this._allRenderers.push(uiRenderer);
         }
     }
 
-    public removeRenderer (uiRenderer: UIRenderer | UIMeshRenderer): void {
+    public removeRenderer (uiRenderer: UIRenderer): void {
         if (uiRenderer._internalId !== -1) {
             if (DEBUG) {
                 assert(this._allRenderers[uiRenderer._internalId] === uiRenderer);
@@ -55,7 +54,7 @@ export class UIRendererManager {
         }
     }
 
-    public markDirtyRenderer (uiRenderer: UIRenderer | UIMeshRenderer): void {
+    public markDirtyRenderer (uiRenderer: UIRenderer): void {
         if (uiRenderer._dirtyVersion !== this._dirtyVersion && uiRenderer._internalId !== -1) {
             this._dirtyRenderers.push(uiRenderer);
             uiRenderer._dirtyVersion = this._dirtyVersion;

@@ -90,8 +90,8 @@ export interface IFeatureItem extends BaseItem {
     enginePlugin?: boolean;
 
     /**
-     * @zh 限定的使用环境，允许宏的组合条件判断，默认为空支持任意环境，配置后限定为指定环境。如设置为 "$NATIVE || $HTML5" 则仅在 native 和 html5 环境下生效。
-     * @en The restricted usage environment allows for conditional judgments using macro combinations. By default, it supports any environment, but once configured, it is limited to the specified environment. For example, if set to "$NATIVE || $HTML5", it will only take effect in native and HTML5 environments.
+     * @zh 限定的使用环境，允许宏的组合条件判断，默认为空支持任意环境，配置后限定为指定环境。如设置为 "$HTML5 || $MINIGAME" 则仅在 Web 和小游戏环境下生效。
+     * @en The restricted usage environment allows macro combinations. By default, any environment is supported. For example, "$HTML5 || $MINIGAME" restricts the feature to Web and mini game environments.
      */
     envCondition?: string;
 
@@ -108,16 +108,10 @@ export interface IFeatureItem extends BaseItem {
     flags: {[k: string]: Pick<BaseItem, 'default' | 'label' | 'description' > & {'ui-type': 'checkbox' | 'select'}}
 
     /**
-     * @zh 是否为原生模块，这部分模块的编译模式可能是 wasm 也可能是共存或只有 asmjs，为 true 的模块，如果模块勾选构建面板上才会显示原生代码打包模式的配置。
-     * @en Whether it is a native module. This part of the module may be compiled as wasm or asmjs, and the module with this attribute will be displayed in the packaging mode configuration in the build panel if it is selected.
+     * @zh 是否包含 WASM/ASM.js 模块。选中此类模块时，构建面板显示 WASM/ASM.js 打包模式配置。
+     * @en Whether the module includes WASM/ASM.js code. Selecting it exposes the WASM/ASM.js packaging mode in the build panel.
      */
     isNativeModule?: boolean;
-
-    /**
-     * @zh 在原生引擎的模块宏配置，如果在原生端有原生实现，在此处补充对应字段，后续根据项目设置的配置情况，会将选择值设置到 `cmake` 配置内。
-     * @en The macro configuration of the native module in the native engine. If there is a native implementation in the native engine, please fill in the corresponding fields here. The value will be set to `cmake` configuration according to the project settings.
-     */
-    cmakeConfig?: string;
 }
 
 export interface IFeatureGroup extends BaseItem {

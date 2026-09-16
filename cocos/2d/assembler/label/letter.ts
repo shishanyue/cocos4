@@ -22,7 +22,6 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { Color } from '../../../core';
 import type { IBatcher } from '../../renderer/i-batcher';
 import type { Label } from '../../components/label';
@@ -53,24 +52,6 @@ class Letter extends LetterFont implements IAssembler {
         tempColor.a = node._uiProps.opacity * 255;
         // Fill All
         fillMeshVertices3D(node, renderer, comp.renderData, tempColor);
-    }
-
-    updateColor (label: Label): void {
-        const renderData = label.renderData;
-        if (JSB && renderData) {
-            const vertexCount = renderData.vertexCount;
-            if (vertexCount === 0) return;
-            const vData = renderData.chunk.vb;
-            const stride = renderData.floatStride;
-            let colorOffset = 5;
-            for (let i = 0; i < vertexCount; i++) {
-                vData[colorOffset] = 1;
-                vData[colorOffset + 1] = 1;
-                vData[colorOffset + 2] = 1;
-                vData[colorOffset + 3] = 1;
-                colorOffset += stride;
-            }
-        }
     }
 }
 

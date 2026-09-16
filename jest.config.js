@@ -11,16 +11,16 @@ module.exports = {
     testRegex: '/tests/.*\\.(test|spec)?\\.(ts|tsx)$',
     moduleNameMapper: {
         ...pathsToModuleNameMapper(compilerOptions.paths, { prefix: `${__dirname}/` }),
-        'external:(.*)': '<rootDir>/native/external/$1',
+        'external:(.*)': '<rootDir>/external/$1',
     },
     transformIgnorePatterns: [
         // ignore everything in the node_modules EXCEPT for:
         // - @cocos/dragonbones-js
         'node_modules/(?!(@cocos/dragonbones-js)/)',
-        // ignore everything in the native/external/emscripten EXCEPT for:
+        // ignore everything in external/emscripten EXCEPT for:
         // - meshopt
         // Since above packages are in ESM module format, whereas we currently use CJS for testing.
-        'native/external/emscripten/(?!(meshopt)/)',
+        'external/emscripten/(?!(meshopt)/)',
     ],
     setupFilesAfterEnv: [
         "./tests/setup-after-env.ts",

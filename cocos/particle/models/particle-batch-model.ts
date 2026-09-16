@@ -23,7 +23,6 @@
  THE SOFTWARE.
 */
 
-import { JSB } from 'internal:constants';
 import { Mesh } from '../../3d/assets/mesh';
 import { AttributeName, BufferUsageBit, FormatInfos, MemoryUsageBit, PrimitiveMode,
     Attribute, Buffer, BufferInfo, Feature, deviceManager } from '../../gfx';
@@ -75,10 +74,6 @@ export default class ParticleBatchModel extends scene.Model {
 
     constructor () {
         super();
-        if (JSB) {
-            (this as any)._registerListeners();
-        }
-
         this.type = scene.ModelType.PARTICLE_BATCH;
         this._capacity = 0;
         this._bufferSize = 16;
