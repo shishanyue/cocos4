@@ -1,0 +1,7 @@
+{
+  "name": "cocos4-code-scene",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Click the tile to score, press R to restart. Plain public-API TypeScript game.",
+  "type": "module"
+}

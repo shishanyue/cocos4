@@ -1,0 +1,8 @@
+{
+  "name": "@cocos4/runtime-maintainer-probe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Isolated real-browser acceptance tooling; not a portable SDK release",
+  "scripts": { "test": "node --test ../test/runtime.test.mjs" },
+  "devDependencies": { "playwright-core": "1.58.2" }
+}

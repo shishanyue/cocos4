@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/cocos/cocos-cli.git",
+  "revision": "8595d1b2f1dff34fb1111d3c5de88fc5f08da9f9",
+  "files": {
+    "index.js": ["src/core/assets/effect-compiler/index.js", "9eebb2f77ff586751966dc24bb2fc6a23dffa52acefa9c162e1dac54685aaac1"],
+    "index.d.ts": ["src/core/assets/effect-compiler/index.d.ts", "01ea77c92deff0f24b0c89660b147af98252ac6729fc842458f31df3d633369a"],
+    "shdc-lib.js": ["src/core/assets/effect-compiler/shdc-lib.js", "700326bc5ea15cb9eb398e08b41a63c991c739eaab117e96a077655acfd68ba4"],
+    "offline-mappings.js": ["src/core/assets/effect-compiler/offline-mappings.js", "cc8c2864a53bbf8fb72d4217b00b7a3e22e983560a3c14b7da1d459ac2aee7f7"],
+    "utils.js": ["src/core/assets/effect-compiler/utils.js", "297907855bd12415e8dfaa0cefd4559bd1be598cf4970ba8917ca10775d32706"],
+    "LICENSE": ["LICENSE", "efa0a98867b0aa26251ebf1e523545357cc762a0d9e6570c0a48ec441a43bdf6"],
+    "upstream-package.json": ["package.json", "6c45995007c7d6bc94548ee339f8e82f8118ac6165b4bfc782fbe1ecc6de5b53"],
+    "repo.json": ["repo.json", "9e5e25d65f6a58547b9dcbfd246741cdc4520b9f45be11683b42bd0e40863875"]
+  }
+}

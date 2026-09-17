@@ -7,6 +7,7 @@ if (!tsConfig.config) {
 }
 const { compilerOptions } = tsConfig.config;
 module.exports = {
+    roots: ['<rootDir>/tests'],
     testEnvironment: './tests/test-environment.ts',
     testRegex: '/tests/.*\\.(test|spec)?\\.(ts|tsx)$',
     moduleNameMapper: {

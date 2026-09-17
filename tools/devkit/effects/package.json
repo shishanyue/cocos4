@@ -1,0 +1,23 @@
+{
+  "name": "@cocos4/devkit-effect-probe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Explicit maintainer-only builtin Effect compilation with a real host GL validator.",
+  "engines": {
+    "node": ">=24.21.0"
+  },
+  "allowScripts": {
+    "gl": true
+  },
+  "scripts": {
+    "prepare:source": "node prepare-source.cjs",
+    "probe": "node probe.cjs",
+    "test": "node --test test/pipeline.test.cjs"
+  },
+  "dependencies": {
+    "gl": "9.0.0-rc.10",
+    "glsl-parser": "2.0.1",
+    "glsl-tokenizer": "2.1.5",
+    "js-yaml": "4.1.0"
+  }
+}

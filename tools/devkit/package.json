@@ -1,0 +1,30 @@
+{
+  "name": "@cocos4/devkit-probes",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Readonly development MCP/CLI and maintainer probes; not a portable game-development release.",
+  "type": "module",
+  "engines": {
+    "node": ">=18.20.8"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "build": "tsc",
+    "test": "npm run build && node --test build/probes/mcp-client.js test/*.test.mjs",
+    "prepare:sdk": "node scripts/prepare-sdk.mjs",
+    "start": "node build/src/cli.js"
+  },
+  "devDependencies": {
+    "@cocos/module-system": "0.0.21",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "@types/node": "18.19.130",
+    "json5": "2.2.3",
+    "typescript": "5.9.3",
+    "zod": "3.25.76"
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": {
+      "@hono/node-server": "1.19.9"
+    }
+  }
+}

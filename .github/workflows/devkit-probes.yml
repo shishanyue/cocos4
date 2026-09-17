@@ -1,0 +1,53 @@
+name: Devkit MCP And Probes
+
+on:
+  pull_request:
+    paths:
+      - 'tools/devkit/**'
+      - '.github/workflows/devkit-probes.yml'
+      - 'cc.config.json'
+      - 'package.json'
+      - 'scripts/validate-bilibili.cjs'
+      - 'docs/bilibili_minigame/README.md'
+      - 'docs/plans/cocos4-mcp-devkit.md'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'LICENSE'
+  push:
+    paths:
+      - 'tools/devkit/**'
+      - '.github/workflows/devkit-probes.yml'
+      - 'cc.config.json'
+      - 'package.json'
+      - 'scripts/validate-bilibili.cjs'
+      - 'docs/bilibili_minigame/README.md'
+      - 'docs/plans/cocos4-mcp-devkit.md'
+      - 'README.md'
+      - 'AGENTS.md'
+      - 'LICENSE'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18.20.8', '24.21.0']
+    defaults:
+      run:
+        working-directory: tools/devkit
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: tools/devkit/package-lock.json
+      - run: npm ci --ignore-scripts --engine-strict --no-audit --no-fund
+      - run: npm run check
+      - run: npm test

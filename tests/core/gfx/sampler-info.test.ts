@@ -1,4 +1,14 @@
 import { Sampler, SamplerInfo, Filter, Address, ComparisonFunc } from "../../../cocos/gfx"
+import * as rendering from '../../../cocos/rendering/define';
+import * as enums from '../../../cocos/rendering/rendering-enums';
+import { legacyCC } from '../../../cocos/core/global-exports';
+
+test('rendering enum extraction preserves runtime export identity', () => {
+    expect(rendering.RenderPassStage).toBe(enums.RenderPassStage);
+    expect(rendering.RenderPriority).toBe(enums.RenderPriority);
+    expect(rendering.SetIndex).toBe(enums.SetIndex);
+    expect(legacyCC.RenderPassStage).toBe(enums.RenderPassStage);
+});
 
 function testSamplerInfo(info: SamplerInfo): boolean {
     const packed = Sampler.computeHash(info);

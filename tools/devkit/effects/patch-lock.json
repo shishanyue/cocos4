@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "id": "glsl1-conditional-validation",
+  "revision": "8595d1b2f1dff34fb1111d3c5de88fc5f08da9f9",
+  "provenance": {
+    "owner": "tools/devkit/effects/compiler-patch.cjs",
+    "upstreamFile": "src/core/assets/effect-compiler/shdc-lib.js",
+    "reason": "EFX2404: miscChecks removes directives but parses mutually exclusive and disabled branches together.",
+    "design": "Preprocess GLSL100 with the existing validation define policy before lexical/AST checks. Preserve conditional output and real WebGL compile/link checks.",
+    "preprocessor": "Khronos glslangValidator 16.4.0, --stdin -E -S vert|frag; warnings and errors are fatal"
+  },
+  "scriptSha256": "da72957fdb516aa9bf073af54540acb6ce3bb034fb2706e85c934aa26e29a76e",
+  "outputSha256": "aed0c4e15f455ffd6c36b2b1b920b1ac94463b687d35031ba20fdf99626c0f7c"
+}

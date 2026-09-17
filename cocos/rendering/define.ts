@@ -27,6 +27,7 @@ import { Model } from '../render-scene/scene/model';
 import { SubModel } from '../render-scene/scene/submodel';
 import { Layers } from '../scene-graph/layers';
 import { cclegacy, RecyclePool } from '../core';
+import { RenderPassStage, SetIndex } from './rendering-enums';
 import { BindingMappingInfo, DescriptorType, Type, ShaderStageFlagBit, UniformStorageBuffer, DescriptorSetLayoutBinding,
     Uniform, UniformBlock, UniformSamplerTexture, UniformStorageImage, Device, FormatFeatureBit, Format, API,
     Texture,
@@ -40,31 +41,15 @@ import { BindingMappingInfo, DescriptorType, Type, ShaderStageFlagBit, UniformSt
     SampleType,
 } from '../gfx';
 
+export { RenderPassStage, RenderPriority, SetIndex } from './rendering-enums';
+
 export const PIPELINE_FLOW_MAIN = 'MainFlow';
 export const PIPELINE_FLOW_FORWARD = 'ForwardFlow';
 export const PIPELINE_FLOW_SHADOW = 'ShadowFlow';
 export const PIPELINE_FLOW_SMAA = 'SMAAFlow';
 export const PIPELINE_FLOW_TONEMAP = 'ToneMapFlow';
 
-/**
- * @en The predefined render pass stage ids
- * @zh 预设的渲染阶段。
- */
-export enum RenderPassStage {
-    DEFAULT = 100,
-    UI = 200,
-}
 cclegacy.RenderPassStage = RenderPassStage;
-
-/**
- * @en The predefined render priorities
- * @zh 预设的渲染优先级。
- */
-export enum RenderPriority {
-    MIN = 0,
-    MAX = 0xff,
-    DEFAULT = 0x80,
-}
 
 /**
  * @en Render object interface
@@ -161,12 +146,6 @@ const LOCAL_UBO_COUNT = ModelLocalBindings.SAMPLER_JOINTS;
 const LOCAL_SAMPLER_COUNT = ModelLocalBindings.COUNT - LOCAL_UBO_COUNT;
 const LOCAL_STORAGE_IMAGE_COUNT = ModelLocalBindings.COUNT - LOCAL_UBO_COUNT - LOCAL_SAMPLER_COUNT;
 
-export enum SetIndex {
-    GLOBAL,
-    MATERIAL,
-    LOCAL,
-    COUNT
-}
 // parameters passed to GFX Device
 export const bindingMappingInfo = new BindingMappingInfo(
     [GLOBAL_UBO_COUNT, 0, LOCAL_UBO_COUNT, 0],         // Uniform Buffer Counts

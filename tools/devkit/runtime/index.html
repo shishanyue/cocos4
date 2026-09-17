@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Cocos4 Code Scene</title>
+  <style>
+    html,body { margin:0; width:100%; height:100%; overflow:hidden; background:#101828; }
+    #GameDiv,#Cocos3dGameContainer { width:100%; height:100%; }
+    #GameCanvas { display:block; width:100%; height:100%; touch-action:none; }
+    #error { position:absolute; top:0; color:white; white-space:pre-wrap; }
+  </style>
+</head>
+<body>
+  <div id="GameDiv"><div id="Cocos3dGameContainer"><canvas id="GameCanvas" width="640" height="480" tabindex="0"></canvas></div></div>
+  <pre id="error" hidden></pre>
+  <script src="loader.js"></script>
+  <script type="systemjs-importmap" src="import-map.json"></script>
+  <script src="boot.js"></script>
+</body>
+</html>
