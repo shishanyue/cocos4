@@ -76,9 +76,32 @@ const tfigPatches = [
             return copyComments(typeElement, nodeFactor.createSetAccessorDeclaration(undefined,
                 recastPropertyName(typeElement.name), recastParameterArray(typeElement.parameters), undefined));
         }`],
+    ['build/gift.js', `        function generateIdFromSourceFileName(fileName) {
+            const relativeFromRoot = path_1.default.relative(rootDir, fileName);`, String.raw`        function generateIdFromSourceFileName(fileName) {
+            let relativeFromRoot = path_1.default.relative(rootDir, fileName);
+            if (relativeFromRoot.startsWith('..' + path_1.default.sep) || path_1.default.isAbsolute(relativeFromRoot)) {
+                // Use the input tree's package links for names only; keep nested copies distinct.
+                const parts = fileName.split(/[\\/]node_modules[\\/]/);
+                for (let i = parts.length - 1; i > 0; --i) {
+                    const modulePath = parts.slice(i).join('/node_modules/').replace(/\.(js|ts|d\.ts)$/, '');
+                    const resolved = typescript_1.default.resolveModuleName(modulePath,
+                        path_1.default.resolve(rootDir, '__tfig__.d.ts'),
+                        { ...program.getCompilerOptions(), preserveSymlinks: true }, typescript_1.default.sys).resolvedModule;
+                    if (resolved && fs.realpathSync(resolved.resolvedFileName) === fs.realpathSync(fileName)) {
+                        relativeFromRoot = path_1.default.relative(rootDir, resolved.resolvedFileName);
+                        break;
+                    }
+                }
+            }`],
 ];
 
-function patchCcbuild(root = path.join(__dirname, '..', 'node_modules', '@cocos', 'ccbuild'), tfigRoot) {
+// These upstream Armature fields are exposed to the engine; pooling clears the animation to null.
+const dragonBonesPatches = [
+    ['out/dragonBones.d.ts', '/* private */ readonly _bones;', '/* private */ readonly _bones: Array<Bone>;'],
+    ['out/dragonBones.d.ts', '/* private */ _animation;', '/* private */ _animation: Animation | null;'],
+];
+
+function patchCcbuild(root = path.join(__dirname, '..', 'node_modules', '@cocos', 'ccbuild'), tfigRoot, dragonBonesRoot) {
     const { version } = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     if (version !== '2.3.21') throw new Error(`Review ccbuild patches before using ${version}`);
     tfigRoot ??= path.dirname(require.resolve('@cocos/tfig/package.json', { paths: [path.join(root, 'modules/dts-bundler/lib')] }));
@@ -87,6 +110,11 @@ function patchCcbuild(root = path.join(__dirname, '..', 'node_modules', '@cocos'
     const changes = new Map();
     const allPatches = [...patches.map(([file, ...edit]) => [path.join(root, file), ...edit]),
         ...tfigPatches.map(([file, ...edit]) => [path.join(tfigRoot, file), ...edit])];
+    if (dragonBonesRoot) {
+        const { version: dragonBonesVersion } = JSON.parse(fs.readFileSync(path.join(dragonBonesRoot, 'package.json'), 'utf8'));
+        if (dragonBonesVersion !== '1.0.1') throw new Error(`Review DragonBones patches before using ${dragonBonesVersion}`);
+        allPatches.push(...dragonBonesPatches.map(([file, ...edit]) => [path.join(dragonBonesRoot, file), ...edit]));
+    }
     for (const [file, before, after, count = 1] of allPatches) {
         const original = changes.get(file) ?? fs.readFileSync(file, 'utf8');
         const patchedCount = original.split(after).length - 1;
@@ -102,5 +130,5 @@ function patchCcbuild(root = path.join(__dirname, '..', 'node_modules', '@cocos'
     console.log('[ccbuild] Mini-game targets and external/ resource root prepared.');
 }
 
-module.exports = { patchCcbuild, patches, tfigPatches };
-if (require.main === module) patchCcbuild();
+module.exports = { patchCcbuild, patches, tfigPatches, dragonBonesPatches };
+if (require.main === module) patchCcbuild(undefined, undefined, path.join(__dirname, '..', 'node_modules', '@cocos', 'dragonbones-js'));

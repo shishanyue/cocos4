@@ -23,7 +23,7 @@
 */
 
 import { EDITOR_NOT_IN_PREVIEW } from 'internal:constants';
-import { Armature, BaseObject, Animation, BaseFactory, DragonBones, DragonBonesData, DisplayData } from '@cocos/dragonbones-js';
+import { Armature, BaseObject, BaseFactory, DragonBones, DragonBonesData, DisplayData } from '@cocos/dragonbones-js';
 import { ISchedulable, Scheduler, System, SystemPriority, _decorator } from '../core';
 import { CCTextureAtlasData } from './CCTextureData';
 import { TextureBase } from '../asset/assets/texture-base';
@@ -195,10 +195,6 @@ export class CCFactory extends BaseFactory implements ISchedulable {
         const armature = BaseObject.borrowObject(Armature);
 
         armature._skinData = dataPackage.skin;
-        armature._animation = BaseObject.borrowObject(Animation);
-        armature._animation._armature = armature;
-        armature._animation.animations = dataPackage.armature.animations;
-
         armature._isChildArmature = false;
 
         // fixed dragonbones sort issue
@@ -206,6 +202,7 @@ export class CCFactory extends BaseFactory implements ISchedulable {
 
         const display = new CCArmatureDisplay();
 
+        // Armature.init creates and initializes the animation player.
         armature.init(dataPackage.armature, display as any, display, this._dragonBones);
 
         return armature;

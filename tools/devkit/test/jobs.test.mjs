@@ -15,6 +15,15 @@ const fixture = new URL('./fixtures/job-worker.mjs', import.meta.url);
 class FixtureManager extends JobManager {
     constructor(options) { super(options, fixture); }
 }
+// Probe actual Worker limits without loading a fake SDK or bypassing production checks.
+const resourceWorker = new URL(`data:text/javascript,${encodeURIComponent(`
+    import { parentPort, resourceLimits } from 'node:worker_threads';
+    parentPort.postMessage({ type: 'log', text: JSON.stringify(resourceLimits) });
+    setInterval(() => {}, 1000);
+`)}`);
+class ResourceManager extends JobManager {
+    constructor(options) { super(options, resourceWorker); }
+}
 const ended = new Set(['succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted']);
 const code = expected => error => error instanceof AppError && error.code === expected;
 
@@ -55,6 +64,258 @@ async function until(predicate, timeout = 5000) {
 async function finished(manager, jobId) {
     return until(() => { const job = manager.get(jobId); return ended.has(job.state) && job; });
 }
+
+test('metadata expiry and cross-SDK startup never delete delivered or unreferenced artifacts', async t => {
+    const env = await setup(t);
+    const first = await env.open();
+    const receipt = await first.submit('doctor', {}, 'retention-seed');
+    await finished(first, receipt.jobId);
+    await first.close();
+    const filename = join(env.directory, 'metadata.json');
+    const metadata = JSON.parse(await readFile(filename, 'utf8'));
+    const record = metadata.records[0];
+    const artifactId = receipt.jobId;
+    const bytes = Buffer.from('Previously delivered artifact bytes; not a runnable game fixture.');
+    record.job.operation = 'game_build';
+    record.job.report.artifacts = [{ artifactId, sdkId: env.options.sdkId, target: 'HTML5', profile: '2d-basic', variant: 'debug',
+        entry: 'index.html', bytes: bytes.length, files: 1, sha256: createHash('sha256').update(bytes).digest('hex'), validationLevels: ['fixture-only'] }];
+    metadata.artifacts = record.job.report.artifacts;
+    for (const field of ['createdAt', 'startedAt', 'finishedAt', 'deadline']) if (record.job[field] !== null) record.job[field] -= 8 * 24 * 60 * 60 * 1000;
+    await writeFile(filename, JSON.stringify(metadata));
+    const artifacts = [artifactId, randomUUID()].map(id => join(env.directory, `artifact-${id}`));
+    for (const directory of artifacts) {
+        await mkdir(directory, { mode: 0o700 });
+        await writeFile(join(directory, 'index.html'), bytes, { mode: 0o400 });
+    }
+    const staging = join(env.directory, `staging-${receipt.jobId}`);
+    await mkdir(staging, { mode: 0o700 });
+    await writeFile(join(staging, 'partial-output'), 'failed staging', { mode: 0o600 });
+    for (const sdkId of [env.options.sdkId, 'another-sdk']) {
+        const current = await env.open({ sdkId });
+        assert.throws(() => current.get(receipt.jobId), code('JOB_NOT_FOUND'));
+        for (const directory of artifacts) assert.deepEqual(await readFile(join(directory, 'index.html')), bytes);
+        await assert.rejects(lstat(staging), { code: 'ENOENT' });
+        await assert.rejects(lstat(join(env.directory, `log-${receipt.jobId}.txt`)), { code: 'ENOENT' });
+        await current.close();
+    }
+});
+
+test('abandoned foreign-SDK preview metadata cannot occupy the current workspace preview slot', async t => {
+    const env = await setup(t);
+    const first = await env.open();
+    const receipt = await first.submit('doctor', {});
+    await finished(first, receipt.jobId);
+    await first.close();
+    const filename = join(env.directory, 'metadata.json');
+    const metadata = JSON.parse(await readFile(filename, 'utf8'));
+    const foreign = metadata.records[0];
+    const own = structuredClone(foreign);
+    foreign.job = { ...foreign.job, operation: 'preview_start', state: 'running', finishedAt: null, report: null };
+    const artifactId = randomUUID();
+    own.sdkId = 'sdk-two';
+    own.job.jobId = artifactId;
+    own.job.operation = 'game_build';
+    own.job.report.artifacts = [{ artifactId, sdkId: 'sdk-two', target: 'HTML5', profile: '2d-basic', variant: 'debug',
+        entry: 'index.html', bytes: 1, files: 1, sha256: 'a'.repeat(64), validationLevels: ['fixture-only'] }];
+    metadata.records.push(own);
+    metadata.artifacts = own.job.report.artifacts;
+    await writeFile(filename, JSON.stringify(metadata));
+    const current = await env.open({ sdkId: 'sdk-two', permissions: { mode: 'develop', preview: true, executeTests: false } });
+    assert.throws(() => current.get(foreign.job.jobId), code('JOB_NOT_FOUND'));
+    const preview = await current.submit('preview_start', { artifactId, ttlSeconds: 1 }, 'own-preview');
+    assert.equal(current.get(preview.jobId).operation, 'preview_start');
+    await current.cancel(preview.jobId);
+    assert.throws(() => current.get(foreign.job.jobId), code('JOB_NOT_FOUND'));
+});
+
+test('every non-preview task worker receives the 512 MiB SDK heap budget', async t => {
+    const env = await setup(t);
+    const manager = await ResourceManager.open({ ...env.options, permissions: { mode: 'develop', preview: false, executeTests: false } });
+    env.onCleanup(() => manager.close());
+    const requests = [
+        ['doctor', {}],
+        ['project_create', { directory: 'created', templateId: 'fixture', projectName: 'created' }],
+        ['package_validate', { directory: 'package' }],
+        ['project_check', { project: 'project', target: 'HTML5', profile: '2d-basic', checks: ['types'] }],
+        ['game_build', { project: 'project', target: 'BILIBILI', profile: '2d-basic', variant: 'debug' }],
+    ];
+    for (const [operation, input] of requests) {
+        if (!['doctor', 'package_validate'].includes(operation)) {
+            await assert.rejects(manager.submit(operation, input), code('INVALID_ARGUMENTS'));
+        }
+        const task = await manager.submit(operation, input, operation);
+        const limits = JSON.parse(await until(() => manager.logs(task.jobId).text));
+        assert.equal(limits.maxOldGenerationSizeMb, 512, operation);
+        assert.equal(limits.maxYoungGenerationSizeMb, 16, operation);
+        await manager.cancel(task.jobId);
+    }
+});
+
+test('owned BILIBILI receipts cannot consume a preview slot; one task and one 128 MiB preview can run together', async t => {
+    const env = await setup(t);
+    const first = await env.open();
+    await finished(first, (await first.submit('doctor', {})).jobId);
+    await first.close();
+    const filename = join(env.directory, 'metadata.json');
+    const metadata = JSON.parse(await readFile(filename, 'utf8'));
+    const seed = metadata.records[0];
+    metadata.records = ['HTML5', 'BILIBILI', 'BILIBILI'].map((target, index) => {
+        const record = structuredClone(seed);
+        const artifactId = randomUUID();
+        if (index === 2) record.sdkId = 'foreign-sdk';
+        record.job.jobId = artifactId;
+        record.job.operation = 'game_build';
+        record.job.report.artifacts = [{ artifactId, sdkId: record.sdkId, target, profile: '2d-basic', variant: 'debug',
+            entry: target === 'HTML5' ? 'index.html' : 'game.js', bytes: 1, files: 1, sha256: 'a'.repeat(64), validationLevels: ['fixture-only'] }];
+        return record;
+    });
+    metadata.artifacts = metadata.records.flatMap(record => record.job.report.artifacts);
+    await writeFile(filename, JSON.stringify(metadata));
+    const [html, bilibili, foreign] = metadata.records.map(record => record.job.jobId);
+    const manager = await ResourceManager.open({ ...env.options, permissions: { mode: 'develop', preview: true, executeTests: false } });
+    env.onCleanup(() => manager.close());
+    const before = manager.list();
+    const persisted = await readFile(filename, 'utf8');
+    assert.equal(manager.artifact(bilibili).target, 'BILIBILI');
+    assert.equal(manager.get(bilibili).state, 'succeeded');
+    await assert.rejects(manager.submit('preview_start', { artifactId: foreign }, 'foreign-preview'), code('ARTIFACT_INVALID'));
+    await assert.rejects(manager.submit('preview_start', { artifactId: randomUUID() }, 'missing-preview'), code('ARTIFACT_INVALID'));
+    for (let attempt = 0; attempt < 2; attempt++) {
+        await assert.rejects(manager.submit('preview_start', { artifactId: bilibili }, 'preview-key'), code('UNSUPPORTED_PROJECT'));
+    }
+    assert.deepEqual(manager.list(), before);
+    assert.equal(manager.active.size, 0);
+    assert.equal(manager.pending.size, 0);
+    assert.equal(await readFile(filename, 'utf8'), persisted);
+
+    const preview = await manager.submit('preview_start', { artifactId: html }, 'preview-key');
+    const previewLimits = JSON.parse(await until(() => manager.logs(preview.jobId).text));
+    assert.equal(previewLimits.maxOldGenerationSizeMb, 128);
+    assert.equal(previewLimits.maxYoungGenerationSizeMb, 16);
+    await assert.rejects(manager.submit('preview_start', { artifactId: html }, 'extra-preview'), code('WORKSPACE_BUSY'));
+    await assert.rejects(manager.submit('preview_start', { artifactId: bilibili }, 'bilibili-preview'), code('UNSUPPORTED_PROJECT'));
+    const task = await manager.submit('doctor', {});
+    await until(() => manager.logs(task.jobId).text);
+    assert.equal(manager.get(preview.jobId).state, 'running');
+    assert.equal(manager.list().filter(job => job.state === 'running').length, 2);
+    const queued = await manager.submit('doctor', {});
+    assert.equal(manager.get(queued.jobId).state, 'queued');
+    assert.equal(manager.get(queued.jobId).startedAt, null);
+    assert.equal(manager.logs(queued.jobId).text, '');
+    await manager.cancel(task.jobId);
+    await until(() => manager.logs(queued.jobId).text);
+    assert.equal(manager.get(preview.jobId).state, 'running');
+    assert.equal(manager.get(queued.jobId).state, 'running');
+    await manager.close();
+
+    for (const [target, entry] of [['HTML5', 'game.js'], ['BILIBILI', 'index.html']]) {
+        const malformed = structuredClone(metadata);
+        Object.assign(malformed.records[0].job.report.artifacts[0], { target, entry });
+        const raw = JSON.stringify(malformed);
+        await writeFile(filename, raw);
+        await assert.rejects(env.open(), code('ARTIFACT_INVALID'));
+        assert.equal(await readFile(filename, 'utf8'), raw);
+    }
+});
+
+test('publication rechecks deadline and shutdown after committing-state persistence', async t => {
+    for (const reason of ['deadline', 'shutdown']) await t.test(reason, async t => {
+        const env = await setup(t);
+        const manager = await env.open({ permissions: { mode: 'develop', preview: false, executeTests: false } });
+        const update = manager.update.bind(manager);
+        let entered = false;
+        let closed;
+        manager.update = async (jobId, fields) => {
+            await update(jobId, fields);
+            if (fields.phase !== 'committing') return;
+            entered = true;
+            if (reason === 'deadline') await delay(Math.max(1, manager.get(jobId).deadline - Date.now() + 30));
+            else closed = manager.close();
+        };
+        const receipt = await manager.submit('project_create', { directory: 'new-project', templateId: 'fixture', projectName: 'new-project' }, 'create-key', 2000);
+        const job = await finished(manager, receipt.jobId);
+        if (closed) await closed;
+        assert.equal(entered, true);
+        assert.equal(job.state, reason === 'deadline' ? 'timed_out' : 'cancelled');
+        assert.equal(job.error.code, reason === 'deadline' ? 'TIMEOUT' : 'CANCELLED');
+        await assert.rejects(lstat(join(env.options.workspace, 'new-project')), { code: 'ENOENT' });
+    });
+});
+
+test('worker exit observations and discarded byte counts survive persistence without inventing legacy success', async t => {
+    const env = await setup(t);
+    const manager = await env.open();
+    const success = await finished(manager, (await manager.submit('doctor', { project: 'valid' })).jobId);
+    assert.equal(success.exitCode, 0);
+    assert.equal(success.signal, null, 'Worker threads do not exit with OS process signals');
+    assert.equal(success.discardedLogBytes, 0);
+    const failed = await finished(manager, (await manager.submit('doctor', { project: 'exit-code' })).jobId);
+    assert.equal(failed.state, 'failed');
+    assert.equal(failed.exitCode, 7);
+    const active = await manager.submit('doctor', { project: 'spin' });
+    await until(() => manager.logs(active.jobId).text.includes('fixture:start'));
+    const queued = await manager.submit('doctor', {});
+    await manager.cancel(queued.jobId);
+    assert.equal(manager.get(queued.jobId).exitCode, null);
+    await manager.cancel(active.jobId);
+    assert.equal(manager.get(active.jobId).exitCode, 1);
+    await manager.close();
+    const filename = join(env.directory, 'metadata.json');
+    const stored = JSON.parse(await readFile(filename, 'utf8'));
+    const legacy = stored.records.find(record => record.job.jobId === success.jobId);
+    for (const field of ['exitCode', 'signal', 'discardedLogBytes']) delete legacy.job[field];
+    delete legacy.logs.discardedBytes;
+    await writeFile(filename, JSON.stringify(stored));
+    const restored = await env.open();
+    assert.equal(restored.get(failed.jobId).exitCode, 7);
+    assert.equal(restored.get(success.jobId).exitCode, null);
+    assert.equal(restored.get(success.jobId).discardedLogBytes, null);
+    assert.equal(restored.logs(success.jobId).discardedLogBytes, null);
+});
+
+test('game/check deadlines accept the frozen one-hour maximum and bind request-key deduplication', async t => {
+    const env = await setup(t);
+    const manager = await ResourceManager.open({ ...env.options, permissions: { mode: 'develop', preview: false, executeTests: false } });
+    env.onCleanup(() => manager.close());
+    for (const [operation, input] of [
+        ['project_check', { project: 'game', target: 'HTML5', profile: '2d-basic', checks: ['types'] }],
+        ['game_build', { project: 'game', target: 'HTML5', profile: '2d-basic', variant: 'release' }],
+    ]) {
+        await assert.rejects(manager.submit(operation, input, operation, 3600001), code('INVALID_ARGUMENTS'));
+        const receipt = await manager.submit(operation, input, operation, 3600000);
+        const job = manager.get(receipt.jobId);
+        assert.equal(job.deadline - job.createdAt, 3600000);
+        assert.equal((await manager.submit(operation, input, operation, 3600000)).jobId, receipt.jobId);
+        await assert.rejects(manager.submit(operation, input, operation, 600000), code('REQUEST_CONFLICT'));
+        await manager.cancel(receipt.jobId);
+    }
+});
+
+test('release-scoped request keys survive relocation but never reuse another release or unknown legacy producer', async t => {
+    const env = await setup(t);
+    const releases = ['a', 'b'].map(value => `sha256-${value.repeat(64)}`);
+    const relocated = join(env.base, 'relocated-sdk');
+    await mkdir(relocated, { mode: 0o700 });
+    await assert.rejects(env.open({ releaseId: 'unverified-version-name' }), code('INVALID_ARGUMENTS'));
+    const legacy = await env.open();
+    const before = await finished(legacy, (await legacy.submit('doctor', { project: 'valid' }, 'same-key')).jobId);
+    assert.equal(before.releaseId, null);
+    await legacy.close();
+    const first = await env.open({ releaseId: releases[0] });
+    const original = await finished(first, (await first.submit('doctor', { project: 'valid' }, 'same-key')).jobId);
+    assert.notEqual(original.jobId, before.jobId);
+    assert.equal(original.releaseId, releases[0]);
+    await first.close();
+    const moved = await env.open({ releaseId: releases[0], sdkRoot: relocated });
+    assert.equal((await moved.submit('doctor', { project: 'valid' }, 'same-key')).jobId, original.jobId);
+    await assert.rejects(moved.submit('doctor', { project: 'other' }, 'same-key'), code('REQUEST_CONFLICT'));
+    await moved.close();
+    const upgraded = await env.open({ releaseId: releases[1], sdkRoot: relocated });
+    const after = await finished(upgraded, (await upgraded.submit('doctor', { project: 'valid' }, 'same-key')).jobId);
+    assert.notEqual(after.jobId, original.jobId);
+    assert.equal(after.releaseId, releases[1]);
+    assert.deepEqual(upgraded.get(original.jobId), original, 'Historical output keeps its original producer rather than being relabeled.');
+});
 
 function launch(env, mode = 'owner') {
     const child = fork(fileURLToPath(fixture), [mode, JSON.stringify(env.options)], { execArgv: [], stdio: ['ignore', 'pipe', 'pipe', 'ipc'] });
@@ -312,7 +573,11 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         assert.equal((await finished(manager, receipt.jobId)).state, 'succeeded');
         const logs = manager.logs(receipt.jobId);
         assert.equal(logs.truncated, true);
-        assert.ok(Buffer.byteLength(logs.text) <= 32 * 1024);
+        // The oversized secret-bearing line is discarded; the ordinary 2 MiB
+        // output now fits the 8 MiB contract (quota flooding has its own test).
+        assert(logs.discardedLogBytes >= 16384 && logs.discardedLogBytes < 32768);
+        assert.equal(manager.get(receipt.jobId).discardedLogBytes, logs.discardedLogBytes);
+        assert(Buffer.byteLength(logs.text) > 2 * 1024 * 1024 && Buffer.byteLength(logs.text) <= 8 * 1024 * 1024);
         for (const secret of ['split secret', 'bearer-secret', 'url-secret', 'query-secret', 'message-secret', 'private-payload-secret', 'oversized-line-secret', 'ghp_1234567890secret']) {
             assert.ok(!logs.text.includes(secret), secret);
         }
@@ -321,9 +586,11 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         logs.text = 'caller mutation';
         await manager.close();
         const reopened = await env.open();
+        assert.equal(reopened.logs(receipt.jobId).discardedLogBytes, logs.discardedLogBytes);
+        assert.equal(reopened.get(receipt.jobId).discardedLogBytes, logs.discardedLogBytes);
         assert.notEqual(reopened.logs(receipt.jobId).text, 'caller mutation');
         assert.ok((await lstat(join(env.directory, 'metadata.json'))).size < 128 * 1024);
-        assert.deepEqual((await readdir(env.directory)).sort(), ['lock', 'metadata.json']);
+        assert.deepEqual((await readdir(env.directory)).sort(), ['lock', `log-${receipt.jobId}.txt`, 'metadata.json']);
     });
 
     await t.test('close stops active and queued workers, persists cancellation, and releases ownership', async t => {
@@ -399,7 +666,7 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         const queued = structuredClone(metadata.records[0]);
         queued.job = { ...queued.job, jobId: randomUUID(), state: 'queued', phase: 'queued', startedAt: null };
         queued.requestKeyDigest = null;
-        queued.logs = { text: '', truncated: false };
+        queued.logs = { bytes: 0, generation: 0, truncated: false, discardedBytes: 0 };
         metadata.records.push(queued);
         await writeFile(path, JSON.stringify(metadata));
 
@@ -479,7 +746,8 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         const saved = join(env.base, 'saved-metadata.json');
         // Let the log flush finish first so the injected failure is specifically
         // the terminal result commit, not an earlier background log write.
-        await until(async () => (await readFile(path, 'utf8')).includes('fixture:staging'));
+        await manager.enqueue(() => manager.persist());
+        assert((await readFile(join(env.directory, `log-${receipt.jobId}.txt`), 'utf8')).includes('fixture:staging'));
         await rename(path, saved);
         await mkdir(path, { mode: 0o700 });
         await writeFile(join(env.directory, `staging-${receipt.jobId}`, 'release'), '', { mode: 0o600 });
@@ -493,7 +761,7 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         await rm(path, { recursive: true });
         await rename(saved, path);
         await assert.rejects(manager.close(), code('PROCESS_FAILED'));
-        assert.deepEqual((await readdir(env.directory)).sort(), ['metadata.json']);
+        assert.deepEqual((await readdir(env.directory)).sort(), [`log-${receipt.jobId}.txt`, 'metadata.json']);
         const reopened = await env.open();
         assert.equal(reopened.get(receipt.jobId).state, 'failed');
     });
@@ -516,7 +784,8 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         const closing = await manager.submit('doctor', { project: 'staging-hang' });
         await until(() => manager.logs(closing.jobId).text.includes('fixture:staging'));
         await manager.close();
-        assert.deepEqual(await readdir(env.directory), ['metadata.json']);
+        assert.deepEqual((await readdir(env.directory)).sort(),
+            [complete, cancelled, closing].map(receipt => `log-${receipt.jobId}.txt`).concat('metadata.json').sort());
     });
 
     await t.test('seven-day expiry removes metadata, logs and keys without replay', async t => {

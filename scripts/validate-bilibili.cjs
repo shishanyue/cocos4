@@ -26,7 +26,10 @@ function validateBilibili(directory) {
         }
     }
     if (config.deviceOrientation !== undefined && !['portrait', 'landscape'].includes(config.deviceOrientation)) throw new Error('Invalid deviceOrientation');
-    if (config.plugins && Object.keys(config.plugins).length) throw new Error('WeChat-style engine plugins are not supported on Bilibili');
+    if (config.plugins !== undefined) {
+        if (!config.plugins || Array.isArray(config.plugins) || typeof config.plugins !== 'object') throw new Error('plugins must be an object');
+        if (Object.keys(config.plugins).length) throw new Error('WeChat-style engine plugins are not supported on Bilibili');
+    }
     if (config.openDataContext) throw new Error('Bilibili open-data domain export is not implemented');
     for (const key of ['iOSHighPerformance', 'iOSHighPerformance+', 'androidHighPerformance', 'androidHighPerformance+']) {
         if (config[key] !== undefined && typeof config[key] !== 'boolean') throw new Error(`Invalid ${key}`);

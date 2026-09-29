@@ -14,6 +14,18 @@ const entry = globalThis.__bilibili = {
 bl.onShow((options) => { entry.lastShowOptions = options; });
 require('./web-adapter');
 
+// The loader installs on self, but its extensions reference the global System binding.
+// Forward before evaluating it, including hosts where GameGlobal is not globalThis.
+if (globalThis.self !== globalThis) {
+    const loaderGlobal = globalThis.self;
+    if (globalThis.System) loaderGlobal.System = globalThis.System;
+    Object.defineProperty(globalThis, 'System', {
+        configurable: true,
+        get() { return loaderGlobal.System; },
+        set(value) { loaderGlobal.System = value; },
+    });
+}
+
 <% if (polyfillsBundleFile) { %>
 require(<%- JSON.stringify(polyfillsBundleFile) %>);
 <% } %>
@@ -27,15 +39,19 @@ System.warmup({
 });
 
 let startupFailed = false;
+let startupComplete = false;
+let launchRequested = false;
 let launchReported = false;
 let detachLaunchEvents = () => {};
 entry.reportLaunchSuccess = () => {
+    launchRequested = true;
+    if (!startupComplete) return;
     if (startupFailed || launchReported) return;
     bl.launchSuccess();
     launchReported = true;
 };
 
-System.import(<%- JSON.stringify(applicationJs) %>).then(({ Application }) => {
+entry.startup = System.import(<%- JSON.stringify(applicationJs) %>).then(({ Application }) => {
     const application = new Application();
     return System.import('cc').then((cc) => {
         require('./engine-adapter')(cc);
@@ -51,8 +67,14 @@ System.import(<%- JSON.stringify(applicationJs) %>).then(({ Application }) => {
         <% } %>
         return Promise.resolve(application.init(cc)).then(() => application.start());
     });
-}).catch((error) => {
+}).then(() => {
+    startupComplete = true;
+    if (launchRequested) entry.reportLaunchSuccess();
+});
+entry.startup.catch((error) => {
     startupFailed = true;
     detachLaunchEvents();
+    entry.error = error;
+    globalThis.__runtimeError = String(error.stack || error);
     console.error('[BILIBILI] Game startup failed:', error);
 });

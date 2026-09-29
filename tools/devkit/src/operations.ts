@@ -1,48 +1,54 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { z } from 'zod';
-import { AppError, reportSchema, type Report, type WorkerRequest } from './contracts.js';
-import { loadSdk } from './sdk.js';
+import { AppError, authorize, parseWorkerRequest, permissionsSchema, reportSchema, type ExecuteLogic, type Report, type WorkerRequest } from './contracts.js';
+import { runGameOperation } from './game.js';
+import { loadSdk, type Sdk } from './sdk.js';
 import { inspectProject, readSdkValidator, validateRelativePath, withPackageSnapshot } from './workspace.js';
 
-const roots = { workspace: z.string().min(1).max(4096), sdkRoot: z.string().min(1).max(4096), staging: z.string().min(1).max(4096) };
-const requestSchema = z.discriminatedUnion('operation', [
-    z.object({ ...roots, operation: z.literal('doctor'), input: z.object({
-        project: z.string().min(1).max(1024).optional(), depth: z.enum(['quick', 'full']).default('quick'),
-    }).strict() }).strict(),
-    z.object({ ...roots, operation: z.literal('package_validate'), input: z.object({
-        directory: z.string().min(1).max(1024), target: z.literal('BILIBILI').default('BILIBILI'),
-    }).strict() }).strict(),
-]);
 const require = createRequire(import.meta.url);
 const text = (value: string, length = 512): string => value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, length);
 
 type BilibiliResult = { packages: { name: string; root: string; bytes: number }[]; totalBytes: number; warnings: string[] };
 
-export async function runOperation(request: WorkerRequest, log: (text: string) => void = () => {}): Promise<Report> {
-    const parsed = requestSchema.safeParse(request);
-    if (!parsed.success) throw new AppError('INVALID_ARGUMENTS', 'Invalid read-only worker operation arguments.');
-    const args = parsed.data;
-    const relative = args.operation === 'doctor' ? args.input.project : args.input.directory;
+// The caller loads/verifies the SDK. These diagnostics need no workspace, job or writable state.
+export async function diagnoseSdk(sdk: Sdk): Promise<Report> {
+    const validator = sdk.manifest.files.find((file) => file.path === 'app/validate-bilibili.cjs');
+    if (!validator) throw new AppError('SDK_INCOMPLETE', 'The SDK manifest does not contain the packaged Bilibili validator.');
+    await readSdkValidator(sdk.root, validator.sha256);
+    return reportSchema.parse({
+        summary: sdk.toolchainRoot
+            ? 'SDK integrity and host read checks passed. Delivered game profiles are present; release, browser and vendor acceptance are separate.'
+            : 'Read-only SDK catalog integrity and host read checks passed. This is not a portable game-development release.',
+        items: [
+            { name: 'SDK manifest', status: 'passed', message: `Schema and payload SHA-256 integrity verified for ${sdk.sdkId}. Hashes are not provenance authentication.` },
+            { name: 'SDK scope', status: 'info', message: sdk.toolchainRoot
+                ? 'Verified game profiles and compiler; startup permissions govern project development and loopback preview.'
+                : 'Readonly source catalog, selected source guides and Bilibili package preflight only.' },
+            { name: 'Engine catalog', status: 'info', message: `${sdk.manifest.catalog.platforms.length} source targets and ${sdk.manifest.catalog.features.length} source features; catalog entries alone are not delivered engine binaries.` },
+            sdk.toolchainRoot
+                ? { name: 'Game development', status: 'info', message: `${sdk.manifest.catalog.profiles.length} delivered profiles and ${sdk.manifest.catalog.templates.length} templates verified. They support template creation, strict type checks and game builds. Preview is HTML5-only; BILIBILI source preflight requires its delivered profiles and project game.json. Vendor publishing is not validated.` }
+                : { name: 'Game development', status: 'warning', code: 'PROFILE_NOT_AVAILABLE', message: 'No prebuilt profiles, runnable templates, game build, preview, export or vendor publishing capability is established.' },
+            { name: 'Host filesystem', status: 'passed', message: 'Linux pinned-descriptor, no-follow reads verified for the packaged validator.' },
+            { name: 'Host runtime', status: 'info', message: `Running Node ${process.version} on ${process.platform}/${process.arch}. Read checks do not establish publisher/supervisor kernel support, browser availability or supported-host acceptance.` },
+        ],
+        validationLevels: ['manifest-schema', 'payload-sha256', 'linux-pinned-reads'],
+    });
+}
+
+export async function runOperation(request: WorkerRequest, log: (text: string) => void = () => {}, executeLogic?: ExecuteLogic): Promise<Report> {
+    const args = parseWorkerRequest(request);
+    authorize(args, permissionsSchema.parse(args.permissions ?? {}));
+    const relative = 'project' in args.input ? args.input.project : 'directory' in args.input ? args.input.directory : undefined;
     if (relative !== undefined) validateRelativePath(relative);
     log('Verifying the read-only SDK manifest and packaged payload hashes.');
     const sdk = await loadSdk(args.sdkRoot);
-    const validator = sdk.manifest.files.find((file) => file.path === 'app/validate-bilibili.cjs');
-    if (!validator) throw new AppError('SDK_INCOMPLETE', 'The SDK manifest does not contain the packaged Bilibili validator.');
-    const validatorBytes = await readSdkValidator(sdk.root, validator.sha256);
-
+    if (args.expectedSdkId !== undefined && args.expectedSdkId !== sdk.sdkId) throw new AppError('SDK_INCOMPLETE', 'SDK changed after job admission.');
+    if (args.operation !== 'doctor' && args.operation !== 'package_validate') return runGameOperation(args, sdk, log, executeLogic);
     if (args.operation === 'doctor') {
-        const report: Report = {
-            summary: 'Read-only SDK catalog verified. This is not a portable game-development release.',
-            items: [
-                { name: 'SDK manifest', status: 'passed', message: `Schema and payload SHA-256 integrity verified for ${sdk.sdkId}. Hashes are not provenance authentication.` },
-                { name: 'SDK scope', status: 'info', message: 'Readonly source catalog, selected source guides and Bilibili package preflight only.' },
-                { name: 'Engine catalog', status: 'info', message: `${sdk.manifest.catalog.platforms.length} source targets and ${sdk.manifest.catalog.features.length} source features; catalog entries are not delivered engine binaries.` },
-                { name: 'Game development', status: 'warning', code: 'PROFILE_NOT_AVAILABLE', message: 'No prebuilt profiles, runnable templates, game build, preview, export or vendor publishing capability is established.' },
-                { name: 'Host filesystem', status: 'passed', message: 'Linux pinned-descriptor, no-follow reads verified for the packaged validator.' },
-            ],
-            validationLevels: ['manifest-schema', 'payload-sha256', 'linux-pinned-reads'],
-        };
+        const report = await diagnoseSdk(sdk);
+        report.items.push({ name: 'Test execution', status: 'info', message: args.permissions?.executeTests
+            ? 'Startup explicitly trusts pure logic tests. The fixed Linux supervisor manages process lifetime, not a sandbox: child code can access host files, spawn processes and use the network.'
+            : 'Project code execution is disabled. Enable --execute-tests true with develop only for trusted projects; MCP arguments cannot grant it.' });
         if (args.input.project !== undefined) {
             log('Inspecting bounded project data without resolving dependencies or running scripts.');
             const inspection = await inspectProject(args.workspace, args.input.project);
@@ -58,6 +64,9 @@ export async function runOperation(request: WorkerRequest, log: (text: string) =
         return reportSchema.parse(report);
     }
 
+    const validator = sdk.manifest.files.find((file) => file.path === 'app/validate-bilibili.cjs');
+    if (!validator) throw new AppError('SDK_INCOMPLETE', 'The SDK manifest does not contain the packaged Bilibili validator.');
+    const validatorBytes = await readSdkValidator(sdk.root, validator.sha256);
     const stageRelative = path.relative(sdk.root, path.resolve(args.staging));
     if (!stageRelative || (!stageRelative.startsWith(`..${path.sep}`) && stageRelative !== '..' && !path.isAbsolute(stageRelative))) {
         throw new AppError('PERMISSION_DENIED', 'Job staging must not write into the read-only SDK.');

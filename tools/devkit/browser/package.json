@@ -1,0 +1,18 @@
+{
+  "name": "@cocos4/browser-bootstrap-probe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Independent HTML5 BUILD bootstrap probe, not a production SDK",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "check": "node check.cjs",
+    "check:baseline": "node check.cjs --repository-baseline",
+    "build": "node build.cjs",
+    "verify": "node verify.cjs",
+    "test": "node --test test/*.test.cjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.58.2",
+    "pngjs": "6.0.0"
+  }
+}

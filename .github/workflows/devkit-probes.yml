@@ -2,52 +2,71 @@ name: Devkit MCP And Probes
 
 on:
   pull_request:
-    paths:
-      - 'tools/devkit/**'
-      - '.github/workflows/devkit-probes.yml'
-      - 'cc.config.json'
-      - 'package.json'
-      - 'scripts/validate-bilibili.cjs'
-      - 'docs/bilibili_minigame/README.md'
-      - 'docs/plans/cocos4-mcp-devkit.md'
-      - 'README.md'
-      - 'AGENTS.md'
-      - 'LICENSE'
   push:
-    paths:
-      - 'tools/devkit/**'
-      - '.github/workflows/devkit-probes.yml'
-      - 'cc.config.json'
-      - 'package.json'
-      - 'scripts/validate-bilibili.cjs'
-      - 'docs/bilibili_minigame/README.md'
-      - 'docs/plans/cocos4-mcp-devkit.md'
-      - 'README.md'
-      - 'AGENTS.md'
-      - 'LICENSE'
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  probes:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
+  integration:
+    name: Provisioned Integration (Node ${{ matrix.node }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
         node: ['18.20.8', '24.21.0']
-    defaults:
-      run:
-        working-directory: tools/devkit
+    env:
+      VERIFICATION_OUT: ${{ runner.temp }}/devkit-${{ github.run_id }}-${{ github.run_attempt }}-node${{ matrix.node }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The pre-index compatibility producer is an exact historical commit.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install Host Build And Real GL Prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential binutils bubblewrap curl tar xz-utils cmake ninja-build python3 pkg-config git xauth xvfb libxi-dev libxext-dev libx11-dev libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev libglu1-mesa-dev libglew-dev libgl1-mesa-dri
+      - name: Install Chromium OS Prerequisites On This Disposable Runner
+        run: |
+          # Playwright 1.58.2 nativeDeps: ubuntu24.04-x64 tools + chromium.
+          # Review this list when runtime/package-lock.json changes. The provisioner never installs OS packages.
+          sudo apt-get install -y xvfb fonts-noto-color-emoji fonts-unifont libfontconfig1 libfreetype6 xfonts-cyrillic xfonts-scalable fonts-liberation fonts-ipafont-gothic fonts-wqy-zenhei fonts-tlwg-loma-otf fonts-freefont-ttf
+          sudo apt-get install -y libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2
+      - name: Enable Required Test Namespaces On This Ephemeral Runner
+        run: |
+          # Ubuntu 24.04 restricts unprivileged user namespaces via AppArmor.
+          # The provisioner must still pass a real bwrap user/PID/network/mount probe.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          install -d -m 700 /tmp/opencode
+      # Effects have their own Node 24 native addon ABI, even in the Node 18 lane.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.21.0'
+      - name: Record Effects Node
+        id: effects-node
+        run: node -e 'require("node:fs").appendFileSync(process.env.GITHUB_OUTPUT, `executable=${process.execPath}\n`)'
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-          cache-dependency-path: tools/devkit/package-lock.json
-      - run: npm ci --ignore-scripts --engine-strict --no-audit --no-fund
-      - run: npm run check
-      - run: npm test
+      # Only this maintainer provisioner downloads the reviewed node-lock.json
+      # archive and verifies its SHA-256. Candidate assembly has no network.
+      # Reproducibility reuses provisioned runtime/builtin/base/legacy SDK inputs
+      # on both lanes. Private normalization tests are not new browser evidence.
+      - name: Provision Inputs, Assemble Offline Candidate And Run All Tests
+        env:
+          EFFECT_NODE: ${{ steps.effects-node.outputs.executable }}
+          LIBGL_ALWAYS_SOFTWARE: '1'
+        run: xvfb-run -a node tools/devkit/scripts/prepare-verification.mjs --out "$VERIFICATION_OUT" --effect-node "$EFFECT_NODE"
+      # Only the field-allowlisted receipt is cleared, never raw logs/command
+      # environments, SDKs, candidates, games, fonts, compilers or addon payloads.
+      - name: Retain Non-Sensitive Integration Receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: devkit-receipt-${{ github.run_id }}-${{ github.run_attempt }}-node${{ matrix.node }}
+          path: ${{ env.VERIFICATION_OUT }}/ci-receipt.json
+          if-no-files-found: warn
+          retention-days: 7

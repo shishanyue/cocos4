@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +10,18 @@ import vm from 'node:vm';
 
 const require = createRequire(import.meta.url);
 const execute = promisify(execFile);
+const { prepareLoader } = require('../runtime/prepare-loader.cjs');
+const { inventory, sha256 } = require('../runtime/files.cjs');
 const importMap = { imports: { cc: './cocos-js/cc.js' } };
+// Retained HTML5/BILIBILI 2D/3D runtime and SDK loader artifacts, built with these options.
+const loaderHashes = {
+    'web-desktop': '5d1a25de07cc11276a6b1d6479cac7f12c0c561dd06941b8339e568c9d94f900',
+    bilibili: 'f1bf370e6df5bf58763175b5135fc999c0b09e9a1b75f42e19eb37678c84c157',
+};
+const releaseLoaderHashes = {
+    'web-desktop': '531803df1e9d4b632e01367aebfa5fb39af4d90db7a54de34da08093d529c16a',
+    bilibili: '4cb96ea27aec89e9082927a56fd55c4429f326f69e94a79a9582da048972c2a9',
+};
 
 // Plain module fixtures, not an engine bundle or rendering acceptance test.
 const modules = new Map([
@@ -76,26 +86,46 @@ async function verifyModules(system, base, loaded) {
 test('published Cocos 0.0.21 loaders: isolated VM module probes, not browser/rendering acceptance',
     { timeout: 210_000 }, async (t) => {
         assert.equal(require('@cocos/module-system/package.json').version, '0.0.21');
-        const directory = await mkdtemp(join(tmpdir(), 'cocos4-loader-'));
+        // Keep all preparation in the checkout, including when TMPDIR is unset.
+        const temporaryRoot = fileURLToPath(new URL('../build/test-tmp', import.meta.url));
+        await mkdir(temporaryRoot, { recursive: true });
+        const directory = await mkdtemp(join(temporaryRoot, 'cocos4-loader-'));
         t.after(() => rm(directory, { recursive: true, force: true }));
-        const packageRoot = join(directory, 'module-system');
+        const hostileTypes = join(directory, 'node_modules/@types/loader-ancestor');
+        await mkdir(hostileTypes, { recursive: true });
+        await writeFile(join(hostileTypes, 'index.d.ts'), 'declare const System: "hostile ancestor";\n');
+        const work = join(directory, 'work');
+        await mkdir(work);
+        const publishedRoot = dirname(require.resolve('@cocos/module-system/package.json'));
+        const publishedFiles = await inventory(publishedRoot);
+        const packageRoot = await prepareLoader(work);
         const dependencies = fileURLToPath(new URL('../node_modules', import.meta.url));
-        // Relocate the unchanged tsconfig so engine ancestor @types are not implicit inputs.
-        await cp(dirname(require.resolve('@cocos/module-system/package.json')), packageRoot, { recursive: true });
-        await symlink(dependencies, join(directory, 'node_modules'), process.platform === 'win32' ? 'junction' : 'dir');
+        const configPath = join(packageRoot, 'lib/tsconfig.json');
+        const config = JSON.parse(await readFile(configPath, 'utf8'));
+        const publishedConfig = JSON.parse(await readFile(join(publishedRoot, 'lib/tsconfig.json'), 'utf8'));
+        assert.deepEqual(config, { ...publishedConfig, compilerOptions: {
+            ...publishedConfig.compilerOptions, typeRoots: ['../../node_modules/@types'],
+        } });
+        assert.equal(await readFile(join(packageRoot, 'dist/build.js'), 'utf8'),
+            (await readFile(join(publishedRoot, 'dist/build.js'), 'utf8'))
+                .replace('(0, rollup_plugin_terser_1.terser)({})', '(0, rollup_plugin_terser_1.terser)({ numWorkers: 1 })'));
         const packageRequire = createRequire(join(packageRoot, 'package.json'));
-        const subprocess = { cwd: directory, timeout: 60_000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 };
-        await t.test('unchanged published loader sources pass strict Cocos TypeScript checking without engine inputs',
+        const subprocess = { cwd: work, timeout: 60_000, killSignal: 'SIGKILL', maxBuffer: 1024 * 1024 };
+        await t.test('strict loader type closure retains local Node/DOM and excludes hostile and engine ancestor types',
             { timeout: 65_000 }, async () => {
                 const result = await execute(process.execPath, [
                     packageRequire.resolve('@cocos/typescript/bin/tsc'), '--noEmit', '--pretty', 'false',
-                    '--project', join(packageRoot, 'lib/tsconfig.json'), '--listFiles',
+                    '--project', configPath, '--listFiles',
                 ], subprocess);
                 assert.equal(result.stderr.trim(), '');
-                const files = result.stdout.trim().split(/\r?\n/).map(file => resolve(file));
+                const files = await Promise.all(result.stdout.trim().split(/\r?\n/).map(file => realpath(resolve(work, file))));
                 assert.ok(files.includes(join(packageRoot, 'lib/globals.ts')));
+                assert.ok(files.includes(packageRequire.resolve('@cocos/typescript/lib/lib.dom.d.ts')));
+                for (const name of ['node', 'estree', 'resolve']) {
+                    assert.ok(files.some(file => file.startsWith(join(dependencies, '@types', name) + sep)), `Missing local @types/${name}`);
+                }
                 for (const file of files) {
-                    assert.ok([directory, dependencies].some(root => {
+                    assert.ok([packageRoot, dependencies].some(root => {
                         const path = relative(root, file);
                         return path !== '..' && !path.startsWith(`..${sep}`) && !isAbsolute(path);
                     }), `Compiler input outside the isolated layout: ${file}`);
@@ -105,18 +135,27 @@ test('published Cocos 0.0.21 loaders: isolated VM module probes, not browser/ren
         for (const platform of ['web-desktop', 'bilibili']) {
             const out = join(directory, `${platform}.js`);
             const options = { out, platform, sourceMap: false, minify: false, hmr: false, editor: false };
-            const script = `require(${JSON.stringify(packageRoot)})
-                .build(${JSON.stringify(options)})
-                .catch(error => { console.error(error); process.exitCode = 1; });`;
-            const result = await execute(process.execPath, ['--eval', script], subprocess);
+            const stage = fileURLToPath(new URL('../runtime/build-stage.cjs', import.meta.url));
+            const result = await execute(process.execPath, [stage, 'loader', JSON.stringify({ loader: packageRoot, buildOptions: options })], subprocess);
             // The published builder can emit despite TS diagnostics; treat those as failures.
             assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /\bTS\d+\b/, `${platform} compiler diagnostics`);
             if (result.stdout.trim()) t.diagnostic(`${platform} build stdout: ${result.stdout.trim()}`);
             if (result.stderr.trim()) t.diagnostic(`${platform} build stderr: ${result.stderr.trim()}`);
             loaders[platform] = await readFile(out, 'utf8');
-            assert.ok(loaders[platform].length > 0);
+            assert.equal(sha256(loaders[platform]), loaderHashes[platform], `${platform} retained loader bytes`);
+            const releaseOut = join(directory, `${platform}-release.js`);
+            const release = await execute(process.execPath, [stage, 'loader', JSON.stringify({ loader: packageRoot,
+                buildOptions: { ...options, out: releaseOut, minify: true } })], subprocess);
+            assert.doesNotMatch(`${release.stdout}\n${release.stderr}`, /\bTS\d+\b/);
+            const releaseSource = await readFile(releaseOut, 'utf8');
+            assert.equal(sha256(releaseSource), releaseLoaderHashes[platform], `${platform} separately minified loader`);
+            assert(releaseSource.length < loaders[platform].length);
+            assert.doesNotMatch(releaseSource, /sourceMappingURL|sourcesContent/);
         }
         assert.notEqual(loaders['web-desktop'], loaders.bilibili);
+        const sourceFiles = files => files.filter(file => !['lib/tsconfig.json', 'dist/build.js'].includes(file.path));
+        assert.deepEqual(sourceFiles(await inventory(packageRoot)), sourceFiles(publishedFiles), 'Copied loader sources changed');
+        assert.deepEqual(await inventory(publishedRoot), publishedFiles, 'Installed loader package changed');
 
         for (const distinct of [false, true]) {
             const contract = distinct ? 'distinct GameGlobal with explicit System forwarding' : 'shared host global';

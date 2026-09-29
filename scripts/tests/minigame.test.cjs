@@ -4,9 +4,10 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { spawnSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const { test } = require('node:test');
 const ts = require('typescript');
-const { patchCcbuild, patches, tfigPatches } = require('../patch-ccbuild.cjs');
+const { patchCcbuild, patches, tfigPatches, dragonBonesPatches } = require('../patch-ccbuild.cjs');
 const { spreadPal } = require('../spread-pal.cjs');
 const { spreadAdapter } = require('../spread-adapter.cjs');
 const { setupExternal, required } = require('../setup-external.cjs');
@@ -15,6 +16,7 @@ const root = path.resolve(__dirname, '../..');
 const config = require('../../cc.config.json');
 const ccbuildRoot = path.join(root, 'node_modules/@cocos/ccbuild');
 const tfigRoot = path.dirname(require.resolve('@cocos/tfig/package.json', { paths: [path.join(ccbuildRoot, 'modules/dts-bundler/lib')] }));
+const dragonBonesRoot = path.join(root, 'node_modules/@cocos/dragonbones-js');
 
 function fixture(t) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cocos-minigame-test-'));
@@ -38,6 +40,19 @@ function snapshot(dir, prefix = '') {
     return entries;
 }
 
+function ccbuildFixture(t) {
+    const dir = fixture(t);
+    for (const [source, prefix, edits] of [[ccbuildRoot, '', patches], [tfigRoot, 'tfig', tfigPatches],
+        [dragonBonesRoot, 'dragonbones', dragonBonesPatches]]) {
+        for (const file of new Set(['package.json', ...edits.map(([file]) => file)])) {
+            const target = path.join(dir, prefix, file);
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            fs.copyFileSync(path.join(source, file), target);
+        }
+    }
+    return dir;
+}
+
 test('the engine source tree contains no native application or JSB implementation', () => {
     for (const relative of ['native', 'cocos/native-binding', 'cocos/physics-2d/box2d-jsb', 'scripts/native-pack-tool',
         'templates/android', 'templates/ios', 'templates/windows', 'templates/mac', 'templates/linux']) {
@@ -54,43 +69,164 @@ test('the engine source tree contains no native application or JSB implementatio
 });
 
 test('ccbuild patches cover both resource loaders and declaration discovery, and are idempotent', t => {
-    const dir = fixture(t);
-    write(path.join(dir, 'package.json'), JSON.stringify({ version: '2.3.21' }));
-    write(path.join(dir, 'tfig/package.json'), JSON.stringify({ version: '3.3.4' }));
-    for (const [source, prefix, edits] of [[ccbuildRoot, '', patches], [tfigRoot, 'tfig', tfigPatches]]) {
-        for (const file of new Set(edits.map(([file]) => file))) {
-            const target = path.join(dir, prefix, file);
-            fs.mkdirSync(path.dirname(target), { recursive: true });
-            fs.copyFileSync(path.join(source, file), target);
-        }
-    }
-    const allPatches = [...patches, ...tfigPatches.map(([file, ...edit]) => [path.join('tfig', file), ...edit])];
+    const dir = ccbuildFixture(t);
+    const prepare = () => patchCcbuild(dir, path.join(dir, 'tfig'), path.join(dir, 'dragonbones'));
+    const allPatches = [...patches, ...tfigPatches.map(([file, ...edit]) => [path.join('tfig', file), ...edit]),
+        ...dragonBonesPatches.map(([file, ...edit]) => [path.join('dragonbones', file), ...edit])];
     // Test fresh-package matching even when prepare:engine already patched node_modules.
     for (const [file, before, after] of allPatches) {
         write(path.join(dir, file), fs.readFileSync(path.join(dir, file), 'utf8').replaceAll(after, before));
     }
     const pristine = snapshot(dir);
-    patchCcbuild(dir, path.join(dir, 'tfig'));
+    prepare();
     const patched = snapshot(dir);
     assert.notDeepEqual(patched, pristine);
-    patchCcbuild(dir, path.join(dir, 'tfig'));
+    prepare();
     assert.deepEqual(snapshot(dir), patched);
     for (const [file, , after, count = 1] of allPatches) {
         const text = fs.readFileSync(path.join(dir, file), 'utf8');
         assert.equal(text.split(after).length - 1, count, file);
         assert.doesNotMatch(text, /native\/external/);
     }
-    write(path.join(dir, 'package.json'), JSON.stringify({ version: '2.3.22' }));
-    assert.throws(() => patchCcbuild(dir, path.join(dir, 'tfig')), /Review ccbuild patches/);
-    write(path.join(dir, 'package.json'), JSON.stringify({ version: '2.3.21' }));
-    write(path.join(dir, 'tfig/package.json'), JSON.stringify({ version: '3.3.5' }));
-    assert.throws(() => patchCcbuild(dir, path.join(dir, 'tfig')), /Review tfig patches/);
-    write(path.join(dir, 'tfig/package.json'), JSON.stringify({ version: '3.3.4' }));
-    const [file, , after] = allPatches.at(-1);
-    write(path.join(dir, file), fs.readFileSync(path.join(dir, file), 'utf8').replace(after, '// changed upstream\n'));
-    const changed = snapshot(dir);
-    assert.throws(() => patchCcbuild(dir, path.join(dir, 'tfig')), /patch no longer matches/);
-    assert.deepEqual(snapshot(dir), changed);
+    for (const [file, version, error] of [['package.json', '2.3.22', /Review ccbuild patches/],
+        ['tfig/package.json', '3.3.5', /Review tfig patches/],
+        ['dragonbones/package.json', '1.0.2', /Review DragonBones patches/]]) {
+        const original = fs.readFileSync(path.join(dir, file), 'utf8');
+        write(path.join(dir, file), JSON.stringify({ version }));
+        const changed = snapshot(dir);
+        assert.throws(prepare, error);
+        assert.deepEqual(snapshot(dir), changed);
+        write(path.join(dir, file), original);
+    }
+    for (const [prefix, edits] of [['tfig', tfigPatches], ['dragonbones', dragonBonesPatches]]) {
+        // Earlier patches must still be pending when a late anchor fails validation.
+        for (const [file, bytes] of Object.entries(pristine)) write(path.join(dir, file), Buffer.from(bytes, 'base64'));
+        const [file, before] = edits.at(-1);
+        const target = path.join(dir, prefix, file);
+        write(target, fs.readFileSync(target, 'utf8').replace(before, '// changed upstream\n'));
+        const changed = snapshot(dir);
+        assert.throws(prepare, /patch no longer matches/);
+        assert.deepEqual(snapshot(dir), changed);
+    }
+});
+
+test('declaration aliases and strict consumer types are identical across fresh staging roots', t => {
+    assert.equal(ts.version, '4.9.5');
+    const dir = ccbuildFixture(t);
+    const bundledTfig = path.join(dir, 'tfig');
+    fs.cpSync(path.join(tfigRoot, 'build'), path.join(bundledTfig, 'build'), { recursive: true });
+    fs.symlinkSync(path.join(root, 'node_modules'), path.join(bundledTfig, 'node_modules'), 'dir');
+    patchCcbuild(dir, bundledTfig, path.join(dir, 'dragonbones'));
+    assert.equal(require.resolve('typescript', { paths: [bundledTfig] }), require.resolve('typescript'));
+    const { bundle } = require(bundledTfig);
+    const dependencies = path.join(dir, 'dependencies/node_modules');
+    const modules = {
+        '@fixture/left/model.d.ts': "export interface Item { readonly origin: 'left/model'; value: number; }",
+        '@fixture/left/other.d.ts': "export interface Item { readonly origin: 'left/other'; value: string; }",
+        '@fixture/left/mode.d.ts': 'export enum Mode { None = 0, All = 4 }',
+        '@fixture/right/model.d.ts': "export interface Item { readonly origin: 'right/model'; value: string; }",
+        '@fixture/outer/node_modules/shared/model.d.ts': "export interface Item { readonly origin: 'nested/shared'; value: string; }",
+        'shared/model.d.ts': "export interface Item { readonly origin: 'shared'; value: number; }",
+    };
+    for (const [file, text] of Object.entries(modules)) write(path.join(dependencies, file), text);
+    fs.symlinkSync(path.join(root, 'node_modules/typescript'), path.join(dependencies, 'typescript'), 'dir');
+    const dependencyFiles = Object.keys(modules).map(file => path.join(dependencies, file));
+    const sources = {
+        'main.ts': `export interface API {
+    left: import('@fixture/left/model').Item;
+    leftOther: import('@fixture/left/other').Item;
+    right: import('@fixture/right/model').Item;
+    nested: import('@fixture/outer/node_modules/shared/model').Item;
+    shared: import('shared/model').Item;
+    localA: import('./local/a/model').Item;
+    localB: import('./local/b/model').Item;
+    dom: EXT_color_buffer_float;
+}
+export declare function fade(mode: import('@fixture/left/mode').Mode): void;`,
+        'local/a/model.ts': "export interface Item { readonly origin: 'local/a'; value: number; }",
+        'local/b/model.ts': "export interface Item { readonly origin: 'local/b'; value: string; }",
+    };
+    const consumer = `type Shape<O extends string, V> = { readonly origin: O; value: V };
+type Expected = {
+    left: Shape<'left/model', number>;
+    leftOther: Shape<'left/other', string>;
+    right: Shape<'right/model', string>;
+    nested: Shape<'nested/shared', string>;
+    shared: Shape<'shared', number>;
+    localA: Shape<'local/a', number>;
+    localB: Shape<'local/b', string>;
+    dom: { readonly fixture: 'dom' };
+};
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends (<T>() => T extends B ? 1 : 2) ? true : false;
+type Expect<T extends true> = T;
+type ExactAPI = Expect<Equal<API, Expected>>;
+declare let api: API;
+// @ts-expect-error Same-named types in different packages must stay distinct.
+api.left = api.right;
+// @ts-expect-error Distinct source files within a package must not merge.
+api.left = api.leftOther;
+// @ts-expect-error Nested dependency copies must not collapse into hoisted ones.
+api.shared = api.nested;
+// @ts-expect-error Input-root-relative source directories must be preserved.
+api.localA = api.localB;
+// @ts-expect-error The merged DOM type must not widen to any.
+const invalidDom: number = api.dom.fixture;
+fade(0);
+fade(4);
+// @ts-expect-error Private enum parameters must not widen to any.
+fade('all');
+`;
+    const check = (files, options = {}) => {
+        const program = ts.createProgram(files, {
+            target: ts.ScriptTarget.ES2017, moduleResolution: ts.ModuleResolutionKind.NodeJs,
+            lib: ['lib.es2017.d.ts', 'lib.dom.d.ts'], types: [], strict: true, skipLibCheck: false, noEmit: true,
+            ...options,
+        });
+        assert.deepEqual(ts.getPreEmitDiagnostics(program).map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n')), []);
+        return program;
+    };
+    const results = [];
+    for (const layout of ['html5-debug', 'release/debug/BILIBILI']) {
+        const parent = path.join(dir, layout);
+        fs.mkdirSync(parent, { recursive: true });
+        const source = fs.mkdtempSync(path.join(parent, 'declaration-source-'));
+        const input = path.join(source, '__dts_before_bundle');
+        fs.symlinkSync(dependencies, path.join(source, 'node_modules'), 'dir');
+        for (const [file, text] of Object.entries(sources)) write(path.join(source, file), text);
+        const ambient = path.join(source, 'ambient.d.ts');
+        write(ambient, "interface EXT_color_buffer_float { readonly fixture: 'dom'; }");
+        const sourceFiles = Object.keys(sources).map(file => path.join(source, file));
+        const sourceConsumer = path.join(source, 'consumer.ts');
+        write(sourceConsumer, `import { API, fade } from './main';\n${consumer}`);
+        check([...sourceFiles, ambient, ...dependencyFiles, sourceConsumer]);
+        const emit = check([...sourceFiles, ambient, ...dependencyFiles], {
+            noEmit: false, noEmitOnError: true, declaration: true, emitDeclarationOnly: true, rootDir: source, outDir: input,
+        }).emit();
+        assert.equal(emit.emitSkipped, false);
+        assert.deepEqual(emit.diagnostics, []);
+        const output = path.join(source, 'types/cc.d.ts');
+        const result = bundle({
+            input: [...Object.keys(sources).map(file => path.join(input, file.replace(/\.ts$/, '.d.ts'))), ambient, ...dependencyFiles],
+            rootDir: input, output, entries: { cc: path.join(input, 'main.d.ts') },
+        });
+        assert.equal(result.groups.length, 1);
+        const code = result.groups[0].code;
+        write(output, code);
+        const bundledConsumer = path.join(source, 'types/consumer.ts');
+        write(bundledConsumer, `import { API, fade } from 'cc';\n${consumer}`);
+        check([output, bundledConsumer]);
+        results.push({ code, sha256: createHash('sha256').update(fs.readFileSync(output)).digest('hex') });
+    }
+    assert.equal(results[0].code, results[1].code);
+    assert.equal(results[0].sha256, results[1].sha256);
+    for (const alias of ['__node_modules_fixture_left_model__Item', '__node_modules_fixture_left_other__Item',
+        '__node_modules_fixture_right_model__Item', '__node_modules_fixture_outer_node_modules_shared_model__Item',
+        '__node_modules_shared_model__Item', '_local_a_model__Item', '_local_b_model__Item',
+        '__node_modules_typescript_lib_libdom__EXT_color_buffer_float']) {
+        assert.ok(results[0].code.includes(`interface ${alias} {`), alias);
+    }
+    assert.match(results[0].code, /enum __node_modules_fixture_left_mode__Mode \{\s+None = 0,\s+All = 4\s+\}/);
+    t.diagnostic(`TypeScript ${ts.version}; identical declaration SHA-256: ${results[0].sha256}`);
 });
 
 test('declaration bundling preserves PAL aliases, cross-module private imports, templates and accessors', t => {

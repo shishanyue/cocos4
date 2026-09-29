@@ -4,8 +4,10 @@ import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { AppError, diagnosticSchema } from './contracts.js';
+import { AppError, diagnosticSchema, MAX_ARTIFACT_BYTES } from './contracts.js';
 
 const MiB = 1024 * 1024;
 const inspectionLimits = { entries: 1000, bytes: 8 * MiB, milliseconds: 5000 };
@@ -203,11 +205,16 @@ async function scanTree(root: Pin, limits: Limits, deadline: number, scan: Scan,
     output?: Pin;
     file?: (name: string, bytes: Buffer) => void;
     privatePath?: (name: string) => void;
+    jsonBytes?: number;
+    privateOutput?: boolean;
 } = {}): Promise<void> {
     let entries = 0;
     async function walk(pin: Pin, prefix: string, depth: number, output?: Pin): Promise<void> {
         deadlineCheck(deadline);
         await checkPin(pin, true);
+        if (options.privateOutput && (pin.stat.uid !== BigInt(process.getuid!()) || (pin.stat.mode & 0o7777n) !== 0o700n)) {
+            throw new AppError('ARTIFACT_INVALID', 'Output directories must remain private and tool-owned.');
+        }
         scan.records.set(prefix || '.', stamp(pin.stat));
         const directory = await fs.opendir(fdPath(pin));
         try {
@@ -230,7 +237,10 @@ async function scanTree(root: Pin, limits: Limits, deadline: number, scan: Scan,
                         try { await walk(child, name, depth + 1, childOutput); }
                         finally { await childOutput?.handle.close(); }
                     } else {
-                        const maximum = Math.min(limits.bytes - scan.bytes, /\.(?:json|jsonc)$/i.test(name) ? MiB : limits.bytes);
+                        if (options.privateOutput && (child.stat.uid !== BigInt(process.getuid!()) || ![0o400n, 0o600n].includes(child.stat.mode & 0o7777n))) {
+                            throw new AppError('ARTIFACT_INVALID', 'Output files must remain private, non-executable and tool-owned.');
+                        }
+                        const maximum = Math.min(limits.bytes - scan.bytes, /\.(?:json|jsonc)$/i.test(name) ? options.jsonBytes ?? MiB : limits.bytes);
                         const bytes = await readRegular(child, maximum, deadline);
                         scan.files++;
                         scan.bytes += bytes.length;
@@ -469,4 +479,263 @@ export async function withPackageSnapshot<T>(workspace: string, directory: strin
         await closePins(statePins);
         await closePins(sourcePins);
     }
+}
+
+type InventoryFile = { readonly path: string; readonly bytes: number; readonly sha256: string };
+const gameLimits = { entries: 20000, bytes: MAX_ARTIFACT_BYTES + 4 * MiB, milliseconds: 60000 };
+
+function outside(root: string, directory: string): void {
+    const relative = path.relative(root, directory);
+    if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
+        throw new AppError('PERMISSION_DENIED', 'Private job state must be outside the workspace and SDK.');
+    }
+}
+
+function trustedAncestors(pins: Pin[]): void {
+    for (const pin of pins) {
+        const owner = pin.stat.uid === 0n || pin.stat.uid === BigInt(process.getuid!());
+        const sticky = pin.stat.uid === 0n && (pin.stat.mode & 0o1000n) !== 0n;
+        if (!owner || ((pin.stat.mode & 0o022n) !== 0n && !sticky)) {
+            throw new AppError('PERMISSION_DENIED', 'Publication and private-state ancestors must not be replaceable by other users.');
+        }
+    }
+}
+
+async function pinGameState(workspace: string, staging: string, create = false): Promise<Pin[]> {
+    outside(workspace, staging);
+    const pins = await pinAbsolute(path.dirname(staging));
+    try {
+        if (staging !== path.resolve(staging)) throw new AppError('INVALID_ARGUMENTS', 'Expected canonical job staging.');
+        trustedAncestors(pins);
+        const parent = pins[pins.length - 1];
+        const name = path.basename(staging);
+        if (create) {
+            try { await fs.lstat(`${fdPath(parent)}/${name}`); }
+            catch (error) {
+                if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+                if (parent.stat.uid !== BigInt(process.getuid!()) || (parent.stat.mode & 0o077n) !== 0n) {
+                    throw new AppError('PERMISSION_DENIED', 'New staging requires an owner-only parent.');
+                }
+                const created = await createDirectory(parent, name);
+                await created.handle.close();
+            }
+        }
+        pins.push(await openChild(parent, name, true));
+        const state = pins[pins.length - 1];
+        if (state.stat.uid !== BigInt(process.getuid!()) || (state.stat.mode & 0o7777n) !== 0o700n) {
+            throw new AppError('PERMISSION_DENIED', 'Job staging must be private and tool-owned.');
+        }
+        return pins;
+    } catch (error) { await closePins(pins); filesystemError(error); }
+}
+
+// Copy only manifest-listed bytes. In particular, never require executable SDK
+// files by their original path after a hash check: that path can be replaced.
+export async function withGameSnapshot<T>(workspace: string, project: string | undefined, staging: string,
+    sdk: { root: string; files: readonly InventoryFile[] },
+    action: (paths: { sdk: string; project?: string; output: string }) => Promise<T>): Promise<T> {
+    outside(sdk.root, staging);
+    const deadline = performance.now() + 10 * 60000;
+    const statePins = await pinGameState(workspace, staging, true);
+    const sourcePins: Pin[] = [];
+    const sdkPins: Pin[] = [];
+    try {
+        const state = statePins[statePins.length - 1];
+        const sdkOutput = await createDirectory(state, 'sdk');
+        statePins.push(sdkOutput);
+        const tree = new Map<string, InventoryFile[]>();
+        let total = 0;
+        const names = new Set<string>();
+        for (const file of sdk.files) {
+            validateRelativePath(file.path);
+            if (file.path === '.' || names.has(file.path.toLowerCase()) || !Number.isSafeInteger(file.bytes) || file.bytes < 0
+                || !/^[a-f0-9]{64}$/.test(file.sha256) || (total += file.bytes) > 512 * MiB || names.size >= 20000) {
+                throw new AppError('SDK_INCOMPLETE', 'The selected SDK inventory is invalid or too large.');
+            }
+            names.add(file.path.toLowerCase());
+            const directory = path.posix.dirname(file.path);
+            tree.set(directory, [...tree.get(directory) ?? [], file]);
+            for (let parent = directory; parent !== '.'; parent = path.posix.dirname(parent)) {
+                if (!tree.has(parent)) tree.set(parent, []);
+            }
+        }
+        sdkPins.push(...await pinAbsolute(sdk.root));
+        const copy = async (source: Pin, output: Pin, prefix: string): Promise<void> => {
+            for (const file of tree.get(prefix) ?? []) {
+                const name = path.posix.basename(file.path);
+                const input = await openChild(source, name, false);
+                try {
+                    const bytes = await readRegular(input, file.bytes, deadline);
+                    if (bytes.length !== file.bytes || createHash('sha256').update(bytes).digest('hex') !== file.sha256) {
+                        throw new AppError('SDK_INCOMPLETE', 'SDK bytes no longer match the verified manifest.');
+                    }
+                    await writePrivate(output, name, bytes);
+                } finally { await input.handle.close(); }
+            }
+            for (const directory of tree.keys()) {
+                if (directory === '.' || path.posix.dirname(directory) !== prefix) continue;
+                const name = path.posix.basename(directory);
+                const child = await openChild(source, name, true);
+                try {
+                    const destination = await createDirectory(output, name);
+                    try { await copy(child, destination, directory); }
+                    finally { await destination.handle.close(); }
+                    await checkPin(child);
+                } finally { await child.handle.close(); }
+            }
+        };
+        await copy(sdkPins[sdkPins.length - 1], sdkOutput, '.');
+        await checkPins(sdkPins);
+        const before = newScan();
+        let projectOutput: Pin | undefined;
+        if (project !== undefined) {
+            sourcePins.push(...await pinProject(workspace, project));
+            projectOutput = await createDirectory(state, 'project');
+            statePins.push(projectOutput);
+            await scanTree(sourcePins[sourcePins.length - 1], snapshotLimits, deadline, before, { output: projectOutput });
+            await checkPins(sourcePins);
+        }
+        const output = await createDirectory(state, 'output');
+        statePins.push(output);
+        for (const pin of statePins) pin.stat = await pin.handle.stat({ bigint: true });
+        await checkPins(statePins);
+        const snapshot = newScan();
+        if (projectOutput) {
+            await scanTree(projectOutput, snapshotLimits, deadline, snapshot);
+            compareRecords(before.contents, snapshot.contents);
+        }
+        const result = await action({ sdk: sdkOutput.absolute, project: projectOutput?.absolute, output: output.absolute });
+        if (projectOutput) {
+            const copiedAfter = newScan();
+            await scanTree(projectOutput, snapshotLimits, deadline, copiedAfter);
+            compareRecords(snapshot.records, copiedAfter.records);
+            const after = newScan();
+            await scanTree(sourcePins[sourcePins.length - 1], snapshotLimits, deadline, after);
+            compareRecords(before.records, after.records);
+        }
+        await checkPins(sourcePins);
+        await checkPins(statePins);
+        deadlineCheck(deadline);
+        return result;
+    } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new AppError('OUTPUT_CONFLICT', 'Job staging already contains operation output.');
+        filesystemError(error);
+    } finally { await closePins(sdkPins); await closePins(sourcePins); await closePins(statePins); }
+}
+
+export async function readGameOutput(directory: string): Promise<Map<string, Buffer>> {
+    const pins = await pinAbsolute(directory);
+    try {
+        const files = new Map<string, Buffer>();
+        const scan = newScan();
+        await scanTree(pins[pins.length - 1], gameLimits, performance.now() + gameLimits.milliseconds,
+            scan, { jsonBytes: 4 * MiB, file: (name, bytes) => files.set(name, bytes) });
+        await checkPins(pins);
+        return files;
+    } finally { await closePins(pins); }
+}
+
+export function validateProjectDestination(directory: string): string {
+    validateRelativePath(directory);
+    if (directory === '.') throw new AppError('OUTPUT_CONFLICT', 'Project creation requires an absent directory, not the workspace itself.');
+    if (directory.split('/').some(name => privateComponent.test(name) || /^\.cocos4(?:[.-]|$)/i.test(name))) {
+        throw new AppError('PERMISSION_DENIED', 'Private and reserved tool paths are not project destinations.');
+    }
+    return directory;
+}
+
+// Parent process only. Fixed packaged Linux/procfs helper and kernel
+// renameat2(RENAME_NOREPLACE). No shell, environment, project executable, or
+// check-then-rename/cross-device fallback. The caller serializes cancellation.
+// Rename and job metadata are not a crash-recoverable transaction: after host
+// process loss, the parent must reconcile the destination before retrying.
+export async function publishGameOutput(context: { workspace: string; staging: string; artifactsRoot: string },
+    destination: { project: string } | { artifact: string }, validate: (files: Map<string, Buffer>) => void): Promise<void> {
+    const sourcePins = await pinGameState(context.workspace, context.staging);
+    const destinationPins: Pin[] = [];
+    const helperPins: Pin[] = [];
+    try {
+        const staging = sourcePins[sourcePins.length - 1];
+        sourcePins.push(await openChild(staging, 'output', true));
+        const source = sourcePins[sourcePins.length - 1];
+        let name: string;
+        if ('project' in destination) {
+            validateProjectDestination(destination.project);
+            name = path.posix.basename(destination.project);
+            destinationPins.push(...await pinProject(context.workspace, path.posix.dirname(destination.project)));
+            trustedAncestors(destinationPins);
+        } else {
+            if (!/^artifact-[a-f0-9-]{36}$/i.test(destination.artifact)) throw new AppError('ARTIFACT_INVALID', 'Invalid artifact destination.');
+            name = destination.artifact;
+            destinationPins.push(...await pinGameState(context.workspace, context.artifactsRoot));
+        }
+        const files = new Map<string, Buffer>();
+        const scan = newScan();
+        await scanTree(source, gameLimits, performance.now() + gameLimits.milliseconds, scan,
+            { jsonBytes: 4 * MiB, privateOutput: true, file: (name, bytes) => files.set(name, bytes) });
+        const directories = new Set(['.']);
+        for (const file of files.keys()) {
+            for (let directory = path.posix.dirname(file); directory !== '.'; directory = path.posix.dirname(directory)) directories.add(directory);
+        }
+        if ([...scan.records.keys()].some(name => !files.has(name) && !directories.has(name))) {
+            throw new AppError('ARTIFACT_INVALID', 'Unlisted empty output directories cannot be published.');
+        }
+        validate(files);
+        let helper: Pin;
+        try {
+            if (process.arch !== 'x64') throw new Error('Only the Linux x64 publisher is built.');
+            // Source builds use build/{src,host}; distributions use app/{src,host}.
+            // No PATH, environment override, SDK/project executable or runtime build.
+            const filename = fileURLToPath(new URL('../host/cocos4-publish', import.meta.url));
+            helperPins.push(...await pinAbsolute(path.dirname(filename)));
+            trustedAncestors(helperPins);
+            const directory = helperPins[helperPins.length - 1];
+            const report = await openChild(directory, 'cocos4-publish.build.json', false);
+            helperPins.push(report);
+            helper = await openChild(directory, 'cocos4-publish', false);
+            helperPins.push(helper);
+            for (const pin of [report, helper]) {
+                if ((pin.stat.uid !== 0n && pin.stat.uid !== BigInt(process.getuid!())) || (pin.stat.mode & 0o6022n) !== 0n) {
+                    throw new Error('Unsafe publisher ownership or permissions.');
+                }
+            }
+            const deadline = performance.now() + 5000;
+            const manifest = z.object({ schemaVersion: z.literal(1), protocol: z.literal('cocos4-publish-v1'),
+                target: z.literal('linux-x64'), bytes: z.number().int().positive().max(MiB),
+                binarySha256: z.string().regex(/^[a-f0-9]{64}$/) }).parse(
+                JSON.parse((await readRegular(report, 64 * 1024, deadline)).toString('utf8')));
+            const bytes = await readRegular(helper, MiB, deadline);
+            if (!(helper.stat.mode & 0o100n) || bytes.length !== manifest.bytes
+                || createHash('sha256').update(bytes).digest('hex') !== manifest.binarySha256
+                || bytes.length < 64 || !bytes.subarray(0, 6).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1]))
+                || bytes.readUInt16LE(18) !== 62) throw new Error('Invalid publisher ELF or integrity report.');
+            await checkPins(helperPins);
+            await checkPin(helper, true);
+        } catch {
+            throw new AppError('SDK_INCOMPLETE', 'Atomic publication requires the verified shipped Linux x64 cocos4-publish helper, procfs and renameat2.',
+                ['Install a complete trusted kit; publication never compiles or downloads a helper.']);
+        }
+        await checkPins(sourcePins);
+        await checkPins(destinationPins);
+        const pins = [...sourcePins, ...destinationPins];
+        const args = ['cocos4-publish-v1', String(sourcePins.length), name,
+            ...pins.flatMap(pin => [pin.absolute, String(pin.stat.dev), String(pin.stat.ino), String(pin.stat.mode)])];
+        await new Promise<void>((resolve, reject) => {
+            // Execute the checked inode, not a pathname that can be replaced after
+            // validation. The kit and its owner remain trusted, not a sandbox.
+            const child = spawn(`/proc/self/fd/${pins.length + 3}`, args,
+                { env: {}, cwd: '/', shell: false, stdio: ['ignore', 'ignore', 'ignore', ...pins.map(pin => pin.handle.fd), helper.handle.fd] });
+            const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
+            child.once('error', () => { clearTimeout(timer); reject(new AppError('SDK_INCOMPLETE', 'Atomic publication requires the compiled cocos4-publish helper and Linux renameat2.')); });
+            child.once('exit', (code, signal) => {
+                clearTimeout(timer);
+                if (code === 0) resolve();
+                else reject(new AppError(code === 70 ? 'OUTPUT_CONFLICT' : code === 73 ? 'INPUT_CHANGED'
+                    : code === 74 ? 'PERMISSION_DENIED' : signal ? 'TIMEOUT' : 'SDK_INCOMPLETE',
+                code === 70 ? 'The destination already exists, even if empty; nothing was overwritten.'
+                    : 'Atomic publication failed or could not be confirmed. No unsafe rename fallback was attempted.'));
+            });
+        });
+    } catch (error) { filesystemError(error); }
+    finally { await closePins(helperPins); await closePins(destinationPins); await closePins(sourcePins); }
 }

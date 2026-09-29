@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { canonical, hash, loadSdk, manifestSchema } from '../build/src/sdk.js';
+import { browserReportSchema, browserSummarySchema, canonical, hash, loadSdk, manifestSchema, summarizeBrowserReport } from '../build/src/sdk.js';
 import { prepareGameSdk } from '../scripts/prepare-game-sdk.mjs';
 
 const run = promisify(execFile);
@@ -23,21 +23,23 @@ const incomplete = error => error?.code === 'SDK_INCOMPLETE';
 before(async () => {
     try { for (const input of runtimes) await lstat(path.join(input.runtime, 'runtime.json')); }
     catch (error) {
-        if (error.code !== 'ENOENT' || process.env.GAME_SDK_RUNTIME_ROOT || process.env.GAME_SDK_INTEGRATION === '1') throw error;
+        if (error.code !== 'ENOENT' || process.env.GAME_SDK_RUNTIME_ROOT !== undefined
+            || process.env.BILIBILI_SDK_BASE_ROOT !== undefined || process.env.GAME_SDK_INTEGRATION === '1') throw error;
         unavailable = 'Real runtime artifacts are absent; set GAME_SDK_RUNTIME_ROOT to the fresh 2D/3D acceptance directory.';
         return;
     }
     temporary = await mkdtemp(path.join(tmpdir(), 'cocos4-game-sdk-test-'));
     base = path.join(temporary, 'readonly');
     prepared = path.join(temporary, 'prepared');
-    const persisted = path.join(devkit, 'build/readonly-sdk');
+    const persisted = process.env.BILIBILI_SDK_BASE_ROOT ?? path.join(devkit, 'build/readonly-sdk');
     try { await lstat(persisted); await cp(persisted, base, { recursive: true }); }
     catch (error) {
-        if (error.code !== 'ENOENT') throw error;
+        if (error.code !== 'ENOENT' || process.env.BILIBILI_SDK_BASE_ROOT !== undefined) throw error;
         await run(process.execPath, [path.join(devkit, 'scripts/prepare-sdk.mjs'), '--out', base]);
     }
     const result = await prepareGameSdk({ base, runtimes: runtimes.map(item => ({ runtime: path.join(item.runtime, 'runtime.json') })), out: prepared });
     assert.equal(result.dependencyCount, 84);
+    assert.equal(result.evidence, `${prepared}.evidence`);
     sdk = await loadSdk(prepared);
 });
 after(async () => { if (temporary) await rm(temporary, { recursive: true, force: true }); });
@@ -87,6 +89,17 @@ test('real profiles, templates, full exports and binary assets produce truthful 
     assert.equal(sdk.catalog({ section: 'platforms', target: 'BILIBILI' }).items[0].exportAvailable, false);
     assert(sdk.catalog({ section: 'features', target: 'WECHAT' }).items.every(feature => !feature.prebuiltAvailable));
     assert.match(sdk.catalog({ section: 'sdk' }).items[0].description, /not a portable release/);
+    const evidence = `${prepared}.evidence`;
+    const receipt = JSON.parse(await readFile(path.join(evidence, 'receipt.json')));
+    assert.equal(receipt.schemaVersion, 1);
+    assert.equal(receipt.kind, 'cocos4-sdk-execution-receipt');
+    assert.equal(receipt.sdkId, sdk.sdkId);
+    assert.equal(receipt.manifestSha256, hash(await readFile(path.join(prepared, 'manifest.json'))));
+    for (const file of receipt.files) {
+        const bytes = await readFile(path.join(evidence, file.path));
+        assert.equal(bytes.length, file.bytes);
+        assert.equal(hash(bytes), file.sha256);
+    }
     for (const entry of sdk.manifest.catalog.profiles) {
         const profile = sdk.profile(entry.target, entry.id, entry.variant);
         assert(Object.isFrozen(profile));
@@ -100,6 +113,21 @@ test('real profiles, templates, full exports and binary assets produce truthful 
         assert.equal(profile.descriptor.validationLevels.portableSDK, false, 'Original runtime provenance must remain unchanged');
         const original = await readFile(path.join(artifacts, entry.id, 'runtime.json'));
         assert.deepEqual(await readFile(path.join(profile.directory, 'runtime.json')), original);
+        const input = runtimes.find(input => path.basename(input.runtime) === entry.id);
+        const rawBytes = await readFile(input.browserReport);
+        const raw = browserReportSchema.parse(JSON.parse(rawBytes));
+        const summaryBytes = await readFile(path.join(prepared, entry.browserReport));
+        const summary = browserSummarySchema.parse(JSON.parse(summaryBytes));
+        assert.equal(summary.runtimeSha256, hash(original));
+        assert.equal(summary.profile, entry.id);
+        assert.deepEqual(summaryBytes, Buffer.from(`${JSON.stringify(await summarizeBrowserReport(raw,
+            file => readFile(path.join(path.dirname(input.browserReport), file))), null, 2)}\n`));
+        assert.deepEqual(await readFile(path.join(evidence, entry.browserReport)), rawBytes);
+        for (const screenshot of raw.screenshots) {
+            const relative = `${entry.directory}/evidence/${screenshot.path}`;
+            assert.deepEqual(await readFile(path.join(evidence, relative)), await readFile(path.join(path.dirname(input.browserReport), screenshot.path)));
+            assert(!sdk.manifest.files.some(file => file.path === relative), 'Execution PNGs are not stable SDK payload');
+        }
         const templateEntry = sdk.manifest.catalog.templates.find(template => template.profile === entry.id);
         const template = sdk.template(templateEntry.id);
         assert.equal(template.directory, path.join(profile.directory, 'template'));
@@ -148,7 +176,7 @@ test('relocated SDK compiler checks and emits decorated projects with no checkou
     await cp(prepared, data, { recursive: true });
     const runtime = path.join(isolated, 'runtime');
     await mkdir(path.join(runtime, 'node_modules'), { recursive: true });
-    for (const name of ['sdk.js', 'contracts.js']) await cp(path.join(devkit, 'build/src', name), path.join(runtime, name));
+    for (const name of ['sdk.js', 'contracts.js', 'api-index.js']) await cp(path.join(devkit, 'build/src', name), path.join(runtime, name));
     await cp(path.join(devkit, 'node_modules/zod'), path.join(runtime, 'node_modules/zod'), { recursive: true });
     await writeFile(path.join(runtime, 'package.json'), '{"type":"module"}');
     const project = path.join(isolated, 'project');
@@ -181,8 +209,13 @@ export class PortableSdkFixture extends Component {
         };
         const sdk = await loadSdk(process.cwd() + '/data');
         TextDecoder.prototype.decode = decode;
-        assert(decodedBytes < sdk.manifest.files.reduce((total, file) => total + file.bytes, 0) / 4,
-            'Loading should stream payload hashes, not decode every runtime/compiler file');
+        const apiIndex = JSON.parse(await readFile(sdk.root + '/' + sdk.manifest.apiIndex.path));
+        const apiDecodeBudget = sdk.manifest.apiIndex.bytes + apiIndex.parser.bytes + apiIndex.profiles[0].declaration.bytes
+            + apiIndex.profiles.reduce((total, item) => total + item.engine.bytes + item.exports.bytes, 0)
+            + apiIndex.entries.reduce((total, item) => total + item.bytes * (item.kind === 'example' ? 2 : 1), 0);
+        assert(decodedBytes >= sdk.manifest.apiIndex.bytes, 'The actual API index must be decoded and validated');
+        assert(decodedBytes - apiDecodeBudget < sdk.manifest.files.reduce((total, file) => total + file.bytes, 0) / 4,
+            'Only the source-bound API inputs may add decoding; remaining payload hashes must still stream');
         const profile = sdk.profile('HTML5', '2d-basic', 'debug');
         const require = createRequire(import.meta.url);
         const resolve = Module._resolveFilename;
@@ -293,6 +326,58 @@ test('profile corruption, false capability claims, unsafe paths and forged evide
     const bytes = await readFile(binary);
     bytes[bytes.length - 1] ^= 1;
     await writeFile(binary, bytes);
+    await assert.rejects(loadSdk(directory), incomplete);
+});
+
+test('legacy raw-report and PNG negatives remain enforced alongside fresh summaries', async t => {
+    if (unavailable) return t.skip(unavailable);
+    const directory = await copy();
+    const profile = sdk.manifest.catalog.profiles.find(profile => profile.id === '2d-basic');
+    const input = runtimes.find(input => path.basename(input.runtime) === profile.id);
+    const rawBytes = await readFile(input.browserReport);
+    const raw = browserReportSchema.parse(JSON.parse(rawBytes));
+    // Restore genuine retained bytes in a private compatibility fixture. The
+    // runtime descriptor is unchanged; this does not invent execution evidence.
+    await writeFile(path.join(directory, profile.browserReport), rawBytes);
+    const images = [];
+    for (const screenshot of raw.screenshots) {
+        const bytes = await readFile(path.join(path.dirname(input.browserReport), screenshot.path));
+        const relative = `${profile.directory}/evidence/${screenshot.path}`;
+        assert.equal(hash(bytes), screenshot.sha256);
+        await writeFile(path.join(directory, relative), bytes);
+        images.push({ path: relative, bytes: bytes.length, sha256: hash(bytes) });
+    }
+    await mutate(directory, manifest => {
+        Object.assign(manifest.files.find(file => file.path === profile.browserReport), { bytes: rawBytes.length, sha256: hash(rawBytes) });
+        manifest.files.push(...images);
+        manifest.files.sort((a, b) => a.path < b.path ? -1 : 1);
+    });
+    await loadSdk(directory);
+    const manifestFile = path.join(directory, 'manifest.json');
+    const manifestBytes = await readFile(manifestFile);
+    for (const change of [report => { report.runtimeSha256 = '0'.repeat(64); }, report => { report.success = false; },
+        report => { report.initial.world3d = true; }, report => { report.pageErrors.push('unexpected error'); },
+        report => { report.screenshots[0].width++; }, report => { report.screenshots[0].sha256 = '0'.repeat(64); }]) {
+        await replaceJson(directory, profile.browserReport, change);
+        await assert.rejects(loadSdk(directory), incomplete);
+        await writeFile(path.join(directory, profile.browserReport), rawBytes);
+        await writeFile(manifestFile, manifestBytes);
+    }
+    const image = images[0];
+    const imageFile = path.join(directory, image.path);
+    const original = await readFile(imageFile);
+    for (const change of [bytes => { bytes[0] ^= 1; }, bytes => { bytes.writeUInt32BE(raw.screenshots[0].width + 1, 16); }]) {
+        const bytes = Buffer.from(original);
+        change(bytes);
+        await writeFile(imageFile, bytes);
+        await mutate(directory, manifest => Object.assign(manifest.files.find(file => file.path === image.path), { sha256: hash(bytes) }));
+        await replaceJson(directory, profile.browserReport, report => { report.screenshots[0].sha256 = hash(bytes); });
+        await assert.rejects(loadSdk(directory), incomplete, 'Rehashing cannot hide invalid PNG signatures or mismatched dimensions');
+        await writeFile(imageFile, original);
+        await writeFile(path.join(directory, profile.browserReport), rawBytes);
+        await writeFile(manifestFile, manifestBytes);
+    }
+    await rm(imageFile);
     await assert.rejects(loadSdk(directory), incomplete);
 });
 

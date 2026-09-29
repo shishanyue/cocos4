@@ -27,6 +27,15 @@ test('real offline mappings compile and load without an engine host', { timeout:
         assert.equal(m.murmurhash2_32_gc('abcde', 3339675911), 730143326);
         assert.equal(m.GetTypeSize(m.typeMap.vec4), 16);
         assert.equal(m.typeMap[m.typeMap.vec4], 'vec4');
+        assert.equal(m.typeMap.u32vec4, m.typeMap.uvec4);
+        assert.equal(m.typeMap[m.typeMap.u32vec4], 'uvec4');
+        assert.equal(m.GetTypeSize(m.typeMap.u32vec4), 16);
+        assert.equal(m.formatMap.u32vec4, m.getFormat('RGBA32UI'));
+        assert.equal(m.formatMap.u32vec4, m.formatMap.uvec4);
+        assert.notEqual(m.formatMap.u32vec4, m.getFormat('RGBA16UI'));
+        assert.notEqual(m.formatMap.u32vec4, m.getFormat('RGBA32I'));
+        assert.notEqual(m.formatMap.u32vec4, m.getFormat('RGBA32F'));
+        assert.equal(m.isNormalized(m.formatMap.u32vec4), false);
         const info = new m.SamplerInfo(2, 1, 0, 3, 2, 1, 15, 6);
         const unpacked = m.Sampler.unpackFromHash(m.Sampler.computeHash(info));
         for (const key of ['minFilter', 'magFilter', 'mipFilter', 'addressU', 'addressV', 'addressW', 'maxAnisotropy', 'cmpFunc']) {

@@ -5,6 +5,12 @@ import path from 'node:path';
 import { TextDecoder } from 'node:util';
 import { z } from 'zod';
 import { AppError } from './contracts.js';
+import { apiIndexDescriptorSchema, apiIndexSchema, apiMetadataSchema, documentIdSchema, exampleMetadataSchema,
+    generateApiIndex, MAX_API_INDEX_BYTES, MAX_API_SOURCE_BYTES, runtimeAvailabilitySchema, sourceRangeSchema,
+    type IndexedDocument } from './api-index.js';
+export { apiIndexDescriptorSchema, apiIndexSchema, apiMetadataSchema, documentIdSchema, exampleMetadataSchema,
+    runtimeAvailabilitySchema, sourceRangeSchema } from './api-index.js';
+export type { ApiIndex, ApiEntry, ApiIndexInput, ApiProfileInput, ApiTemplateInput, SourceRange, RuntimeAvailability } from './api-index.js';
 
 const KiB = 1024;
 const MAX_MANIFEST = 256 * KiB;
@@ -44,14 +50,25 @@ const featureSchema = z.object({
     dependentAssets: z.array(id).max(128), prebuiltAvailable: z.boolean(),
 }).strict();
 
-const validationLevels = ['engineTypecheck', 'engineBuild', 'builtinIntegrity', 'gameTypecheck', 'loaderTypecheck',
-    'browserFirstFrame', 'browserInteraction'] as const;
-const profileSchema = z.object({
-    id, target: z.literal('HTML5'), variant: z.literal('debug'), directory: sdkPathSchema,
-    descriptor: sdkPathSchema, browserReport: sdkPathSchema, exports: sdkPathSchema,
+const validationLevels = Object.freeze(['engineTypecheck', 'engineBuild', 'builtinIntegrity', 'gameTypecheck', 'loaderTypecheck',
+    'browserFirstFrame', 'browserInteraction'] as const);
+export const runtimeValidationLevels = Object.freeze({ HTML5: validationLevels,
+    BILIBILI: Object.freeze(['engineTypecheck', 'engineBuild', 'builtinIntegrity', 'gameTypecheck', 'loaderTypecheck',
+        'moduleClosure', 'canonicalPreflight', 'loaderBootstrapSharedGlobal', 'loaderBootstrapDistinctGlobal', 'entryLifecycle', 'startupFailure'] as const) });
+const profileFields = {
+    id, variant: z.enum(['debug', 'release']), directory: sdkPathSchema,
+    descriptor: sdkPathSchema, exports: sdkPathSchema,
     features: z.array(id).min(1).max(128), delivery: z.literal('PREBUILT'), validationLevels: z.array(id).max(16),
-}).strict();
-const templateSchema = z.object({ id, directory: sdkPathSchema, profile: id, target: z.literal('HTML5'), variant: z.literal('debug') }).strict();
+};
+export const profileSchema = z.discriminatedUnion('target', [
+    z.object({ ...profileFields, target: z.literal('HTML5'), browserReport: sdkPathSchema }).strict(),
+    z.object({ ...profileFields, target: z.literal('BILIBILI'), localReport: sdkPathSchema }).strict(),
+]);
+const templateFields = { id, directory: sdkPathSchema, profile: id, variant: z.enum(['debug', 'release']) };
+export const templateSchema = z.discriminatedUnion('target', [
+    z.object({ ...templateFields, target: z.literal('HTML5') }).strict(),
+    z.object({ ...templateFields, target: z.literal('BILIBILI') }).strict(),
+]);
 const developmentSchema = z.object({
     baseSdkId: sdkIdSchema, baseManifest: z.literal('provenance/readonly-manifest.json'),
     directory: z.literal('toolchain'), compiler: z.literal('toolchain/compiler/compile-game.cjs'),
@@ -79,18 +96,26 @@ export const manifestSchema = z.object({
         profiles: z.array(profileSchema).max(16), templates: z.array(templateSchema).max(16),
     }).strict(),
     docs: z.array(docEntrySchema).min(4).max(96),
+    apiIndex: apiIndexDescriptorSchema.optional(),
     development: developmentSchema.optional(),
 }).strict().superRefine((manifest, context) => {
     const game = manifest.kind === 'portable-development';
     if (['gameDevelopment', 'gameBuild', 'preview', 'export'].some(key => manifest.capabilities[key as 'gameBuild'] !== game)
-        || game !== !!manifest.development || (!game && (manifest.files.length > 128
+        || game !== !!manifest.development || (!game && (manifest.apiIndex || manifest.files.length > 128
             || manifest.files.some(file => !fileSchema.safeParse(file).success)
             || manifest.catalog.profiles.length || manifest.catalog.templates.length
             || manifest.catalog.platforms.some(item => item.prebuiltAvailable || item.exportAvailable || item.validationLevels.length)
             || manifest.catalog.features.some(item => item.prebuiltAvailable)))
-        || (game && (!['2d-basic', '3d-basic'].every(id => manifest.catalog.profiles.some(item => item.id === id))
+        || (game && (!['2d-basic', '3d-basic'].every(id => manifest.catalog.profiles.some(item => item.id === id && item.target === 'HTML5'))
+            || (manifest.catalog.profiles.some(item => item.target === 'BILIBILI') && (!manifest.apiIndex
+                || !['2d-basic', '3d-basic'].every(id => manifest.catalog.profiles.some(item => item.id === id && item.target === 'BILIBILI'))))
             || !manifest.catalog.templates.length))) {
         context.addIssue({ code: z.ZodIssueCode.custom, message: 'Capabilities require complete delivered profiles, templates and toolchain.' });
+    }
+    if (game && manifest.catalog.profiles.some(profile => (profile.variant === 'release' && !manifest.apiIndex)
+        || !['2d-basic', '3d-basic'].every(id => manifest.catalog.profiles.some(item => item.id === id
+            && item.target === profile.target && item.variant === profile.variant)))) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'Each target/variant requires both profiles; release requires a source-bound API index.' });
     }
 });
 
@@ -103,29 +128,38 @@ export const catalogSchema = z.object({
     section: sectionSchema, target: id.nullable(), available: z.boolean(), reason: z.string().max(1024).nullable(),
     items: z.array(z.union([sdkSummarySchema, platformSchema, featureSchema, profileSchema, templateSchema])).max(100), nextCursor: cursorSchema.nullable(),
 }).strict();
+const indexedMetadata = { api: apiMetadataSchema.optional(), example: exampleMetadataSchema.optional(),
+    runtimeAvailability: z.array(runtimeAvailabilitySchema).max(16).optional() };
 export const searchSchema = z.object({
-    query: z.string().min(1).max(256), kind: kindSchema, profile: id.nullable(), availableKinds: z.tuple([z.literal('guide')]),
+    query: z.string().min(1).max(256), kind: kindSchema, profile: id.nullable(), availableKinds: z.array(z.enum(['guide', 'api', 'example'])).min(1).max(3),
     items: z.array(z.object({
-        documentId: id, kind: z.literal('guide'), title: z.string().max(256), engineVersion: version,
+        documentId: documentIdSchema, kind: z.enum(['guide', 'api', 'example']), title: z.string().max(1024), engineVersion: version,
         summary: z.string().max(512), matches: z.array(z.object({
             line: z.number().int().positive(), column: z.number().int().positive(),
+            source: sourceRangeSchema.optional(),
         }).strict()).max(1), requiredFeatures: z.array(id).max(0),
+        ...indexedMetadata,
     }).strict()).max(100), nextCursor: cursorSchema.nullable(),
 }).strict();
 export const documentSchema = z.object({
-    documentId: id, kind: z.literal('guide'), title: z.string().max(256), engineVersion: version,
+    documentId: documentIdSchema, kind: z.enum(['guide', 'api', 'example']), title: z.string().max(1024), engineVersion: version,
     content: z.string().max(MAX_DOCUMENT), offsetBytes: z.number().int().nonnegative(),
-    totalBytes: z.number().int().positive().max(MAX_DOCUMENT), sha256: digest, nextCursor: cursorSchema.nullable(),
+    totalBytes: z.number().int().positive().max(MAX_API_SOURCE_BYTES), sha256: digest, nextCursor: cursorSchema.nullable(),
+    ...indexedMetadata,
+    anchors: z.array(z.object({ documentOffsetBytes: z.number().int().nonnegative(), lengthBytes: z.number().int().positive(),
+        role: z.enum(['jsdoc', 'signature', 'source']), source: sourceRangeSchema }).strict()).max(256).optional(),
 }).strict();
 
 type DeepReadonly<T> = T extends object ? { readonly [P in keyof T]: DeepReadonly<T[P]> } : T;
 export type Manifest = DeepReadonly<z.infer<typeof manifestSchema>>;
-export type SdkProfile = DeepReadonly<z.infer<typeof runtimeDescriptorSchema>> & {
+type LoadedProfile<D> = D extends unknown ? DeepReadonly<D> & {
     readonly directory: string;
-    readonly descriptor: DeepReadonly<z.infer<typeof runtimeDescriptorSchema>>;
+    readonly descriptor: DeepReadonly<D>;
     readonly ccExports: readonly string[];
     readonly typesDirectory: string;
-};
+} : never;
+export type RuntimeDescriptor = z.infer<typeof runtimeDescriptorSchema>;
+export type SdkProfile = LoadedProfile<RuntimeDescriptor>;
 export type SdkTemplate = DeepReadonly<z.infer<typeof templateSchema>>;
 export interface Sdk {
     readonly sdkId: string;
@@ -204,10 +238,24 @@ function input<S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> {
 }
 
 const ccExport = z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/).max(256);
-export const runtimeDescriptorSchema = z.object({
+const emissionSchema = z.object({ variant: z.enum(['debug', 'release']), sourceMaps: z.literal(false), minified: z.boolean(),
+    compact: z.boolean(), comments: z.enum(['preserve', 'license-only']) }).strict();
+const buildOptionsSchema = z.object({
+    engine: z.object({ platform: z.enum(['HTML5', 'BILIBILI']), mode: z.literal('BUILD'), moduleFormat: z.literal('system'),
+        features: z.array(id).min(1).max(128), flags: z.record(z.union([z.boolean(), z.number()])), compress: z.boolean(),
+        sourceMap: z.literal(false), split: z.literal(false), targets: z.object({ chrome: z.literal('100') }).strict() }).strict(),
+    loader: z.object({ platform: z.enum(['web-desktop', 'bilibili']), sourceMap: z.literal(false), minify: z.boolean(),
+        hmr: z.literal(false), editor: z.literal(false), minifierWorkers: z.literal(1) }).strict(),
+    game: emissionSchema,
+    bootstrap: z.object({ minified: z.boolean(), sourceMaps: z.literal(false), comments: z.enum(['preserve', 'license-only']) }).strict(),
+}).strict();
+const buildEvidenceSchema = z.object({ target: z.enum(['HTML5', 'BILIBILI']), variant: z.enum(['debug', 'release']),
+    optionsSha256: digest, engineSha256: digest }).strict();
+export const html5RuntimeDescriptorSchema = z.object({
     schemaVersion: z.literal(1), kind: z.literal('cocos4-html5-runtime'), profile: id,
-    target: z.literal('HTML5'), mode: z.literal('BUILD'), variant: z.literal('debug'),
-    moduleFormat: z.literal('system'), sourceMap: z.literal(false), compressed: z.literal(false),
+    target: z.literal('HTML5'), mode: z.literal('BUILD'), variant: z.enum(['debug', 'release']),
+    moduleFormat: z.literal('system'), sourceMap: z.literal(false), compressed: z.boolean(),
+    buildOptions: buildOptionsSchema.optional(),
     features: z.array(id).min(1).max(128), constants: z.record(z.union([z.boolean(), z.number()])),
     engineVersion: version, rootLockSha256: digest, delivery: z.literal('PREBUILT'),
     entry: z.literal('index.html'), engineEntry: z.literal('./engine/cc.js'),
@@ -215,6 +263,7 @@ export const runtimeDescriptorSchema = z.object({
     tools: z.object({ typeChecked: z.literal(true), requiredCCExports: z.array(ccExport).min(1).max(4096),
         typescript: z.literal('4.9.5'), babel: z.literal('7.19.6'), preset: z.literal('@cocos/babel-preset-cc@2.2.0'),
         typeChecking: z.object({ strict: z.literal(true), skipLibCheck: z.literal(false), skipDefaultLibCheck: z.literal(false) }).passthrough(),
+        emission: emissionSchema.optional(),
     }).passthrough(),
     builtins: z.object({ report: z.literal('builtin-report.json'), reportSha256: digest,
         effects: z.array(z.unknown()).min(1), materials: z.array(z.unknown()).min(1) }).passthrough(),
@@ -223,8 +272,22 @@ export const runtimeDescriptorSchema = z.object({
         sourceFiles: z.array(sdkPathSchema).length(2), requiresEngineCheckout: z.boolean() }).passthrough(),
     validationLevels: z.record(z.boolean()), files: z.array(inventoryFileSchema).min(20).max(10000),
 }).passthrough();
+export const bilibiliRuntimeDescriptorSchema = html5RuntimeDescriptorSchema.extend({
+    kind: z.literal('cocos4-bilibili-runtime'), target: z.literal('BILIBILI'),
+    entry: z.literal('game.js'), engineEntry: z.literal('./cocos-js/cc.js'),
+    tools: html5RuntimeDescriptorSchema.shape.tools.extend({ loaderPlatform: z.literal('bilibili'),
+        moduleSystem: z.literal('0.0.21'), ccbuild: z.literal('2.3.21') }),
+    builtins: html5RuntimeDescriptorSchema.shape.builtins.extend({
+        effects: z.array(z.object({ uuid: z.string().uuid(), name: version }).passthrough()).min(1).max(128),
+        materials: z.array(z.object({ uuid: z.string().uuid(), name: version }).passthrough()).min(1).max(128),
+    }),
+});
+export const runtimeDescriptorSchema = z.discriminatedUnion('target', [html5RuntimeDescriptorSchema, bilibiliRuntimeDescriptorSchema]);
 export const browserReportSchema = z.object({
     schemaVersion: z.literal(1), profile: id, runtimeSha256: digest, success: z.literal(true),
+    build: buildEvidenceSchema.optional(),
+    runtimeConstants: z.record(z.boolean()).optional(),
+    tools: z.object({ executableSha256: digest, verifierSha256: digest, playwright: version, node: version }).strict().optional(),
     browser: version, graphics: z.object({ version: version, renderer: z.string().min(1).max(1024) }).passthrough(),
     pageErrors: z.array(z.never()).max(0),
     validation: z.object({ firstFrame: z.literal(true), mouse: z.literal(true), touch: z.literal(true),
@@ -235,6 +298,80 @@ export const browserReportSchema = z.object({
     initial: z.object({ ready: z.literal(true), classRegistered: z.literal(true), imageLoaded: z.literal(true),
         jsonLoaded: z.literal(true), audioLoaded: z.literal(true), world3d: z.boolean(), error: z.literal('') }).passthrough(),
 }).passthrough();
+// New payloads contain a validation summary, not a sanitized execution report.
+// Raw reports/PNGs are checked at preparation and retained in a hash-bound sibling
+// receipt. Legacy payloads below still validate their delivered reports and PNGs.
+export const browserSummarySchema = browserReportSchema.pick({ schemaVersion: true, profile: true, runtimeSha256: true,
+    success: true, build: true, runtimeConstants: true, browser: true, tools: true, pageErrors: true }).extend({
+    kind: z.literal('cocos4-browser-validation-summary'),
+    evidence: z.literal('separate-execution-receipt'),
+    headless: z.boolean(), launchArgs: z.array(z.string().min(1).max(256)).max(32),
+    validation: browserReportSchema.shape.validation.strict(),
+    initial: browserReportSchema.shape.initial.strict(),
+    screenshots: z.tuple([
+        z.object({ path: z.literal('first-frame.png'), width: z.literal(640), height: z.literal(480) }).strict(),
+        z.object({ path: z.literal('after-click.png'), width: z.literal(640), height: z.literal(480) }).strict(),
+        z.object({ path: z.literal('after-touch.png'), width: z.literal(640), height: z.literal(480) }).strict(),
+        z.object({ path: z.literal('mobile.png'), width: z.literal(390), height: z.literal(844) }).strict(),
+    ]),
+}).strict();
+
+export async function summarizeBrowserReport(value: unknown, read: (file: string, max: number) => Promise<Buffer>): Promise<z.infer<typeof browserSummarySchema>> {
+    const report = browserReportSchema.parse(value);
+    if (new Set(report.screenshots.map(file => file.path.toLowerCase())).size !== report.screenshots.length) invalidPack();
+    for (const screenshot of report.screenshots) {
+        const image = await read(screenshot.path, 16 * 1024 * KiB);
+        if (!screenshot.path.endsWith('.png') || hash(image) !== screenshot.sha256 || image.length < 24
+            || !image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+            || image.readUInt32BE(16) !== screenshot.width || image.readUInt32BE(20) !== screenshot.height) invalidPack('Invalid browser screenshot evidence.');
+    }
+    const initial = browserReportSchema.shape.initial.strip().parse(report.initial);
+    const validation = browserReportSchema.shape.validation.strip().parse(report.validation);
+    return browserSummarySchema.parse({ schemaVersion: report.schemaVersion, kind: 'cocos4-browser-validation-summary',
+        evidence: 'separate-execution-receipt', profile: report.profile, runtimeSha256: report.runtimeSha256,
+        success: report.success, build: report.build, runtimeConstants: report.runtimeConstants,
+        browser: report.browser, tools: report.tools, headless: report.headless, launchArgs: report.launchArgs,
+        pageErrors: report.pageErrors, validation, initial,
+        screenshots: report.screenshots.map(({ path, width, height }) => ({ path, width, height })) });
+}
+const localProbeSchema = z.object({ ready: z.literal(true), score: z.literal(0), restarts: z.literal(1), starts: z.literal(2),
+    clicks: z.literal(0), decoratedDefault: z.literal(7), classRegistered: z.literal(true), imageLoaded: z.literal(true),
+    jsonLoaded: z.literal(true), audioLoaded: z.literal(true), audioStarted: z.literal(1), audioEnded: z.literal(1),
+    missingRejected: z.literal(true), world3d: z.boolean(), error: z.literal('') }).strict();
+const localLifecycleSchema = z.object({ distinct: z.boolean(), loaded: z.array(sdkPathSchema).min(1).max(32),
+    launchSuccessCount: z.literal(1), errors: z.array(z.never()).max(0), probe: localProbeSchema,
+    negativeGates: z.tuple([z.literal('unknown-module'), z.literal('missing-module'), z.literal('missing-asset')]) }).strict();
+const localFaults = ['missing-settings', 'missing-export', 'missing-builtin', 'invalid-material', 'init', 'run',
+    'start-sync', 'start-async', 'missing-asset'] as const;
+export const bilibiliReportSchema = z.object({
+    schemaVersion: z.literal(1), kind: z.literal('cocos4-bilibili-local-report'), profile: id,
+    runtimeSha256: digest, success: z.literal(true),
+    build: buildEvidenceSchema.optional(),
+    checks: z.object({ moduleClosure: z.literal(true), canonicalPreflight: z.literal(true), loaderBootstrapSharedGlobal: z.literal(true),
+        loaderBootstrapDistinctGlobal: z.literal(true), entryLifecycle: z.literal(true), startupFailure: z.literal(true) }).strict(),
+    validationLevels: z.object({ vendorBuild: z.literal(false), device: z.literal(false) }).strict(),
+    notes: z.tuple([
+        z.literal('Maintainer-only trusted artifact verifier, not a sandbox for untrusted game code'),
+        z.literal('Real generated loader, launcher, adapters, Application and game modules; engine exports/resources inspected statically'),
+        z.literal('cc game, scene/component lifecycle, builtin instances, asset wrappers and bl host services are explicit contract mocks'),
+        z.literal('No engine execution, GL, rendering, media decoding/playback, vendor build or real-device validation'),
+    ]),
+    evidence: z.object({
+        closure: z.object({ parsedScripts: z.number().int().positive().max(128), systemModules: z.number().int().positive().max(128),
+            moduleEdges: z.array(z.object({ from: sdkPathSchema, to: sdkPathSchema }).strict()).min(1).max(256),
+            resourceCount: z.number().int().positive().max(1024), engineExportCount: z.number().int().positive().max(4096),
+            requiredCCExportCount: z.number().int().positive().max(4096), builtinEffects: z.number().int().positive().max(128),
+            builtinMaterials: z.number().int().positive().max(128) }).strict(),
+        preflight: z.object({ appId: version, version,
+            packages: z.tuple([z.object({ name: z.literal('main'), root: z.literal(''), bytes: z.number().int().positive().max(MAX_GAME_TOTAL) }).strict()]),
+            totalBytes: z.number().int().positive().max(MAX_GAME_TOTAL), warnings: z.array(z.string().max(256)).max(2) }).strict(),
+        shared: localLifecycleSchema.extend({ distinct: z.literal(false) }),
+        distinct: localLifecycleSchema.extend({ distinct: z.literal(true) }),
+        failures: z.array(z.object({ fault: z.enum(localFaults), errors: z.array(z.string().min(1).max(2048)).min(1).max(8) }).strict()).length(localFaults.length),
+    }).strict(),
+}).strict();
+export type BilibiliRuntimeDescriptor = z.infer<typeof bilibiliRuntimeDescriptorSchema>;
+export type BilibiliReport = z.infer<typeof bilibiliReportSchema>;
 const exportInventorySchema = z.object({ engineSha256: digest, names: z.array(ccExport).min(1).max(4096) }).strict();
 const packageName = z.string().regex(/^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/).max(214);
 const packagePath = sdkPathSchema.refine(value => /^(?:node_modules\/(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+)(?:\/node_modules\/(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+)*$/.test(value));
@@ -323,7 +460,88 @@ export function validateCompilerClosure(value: unknown, lockBytes: Buffer, packa
     }
 }
 
-export function runtimeFileAllowed(file: string): boolean {
+const bilibiliFixedFiles = [
+    'game.js', 'game.json', 'application.js', 'web-adapter.js', 'engine-adapter.js', 'fs-utils.js', 'loader.js',
+    'cocos-js/cc.js', 'internal-prerequisites.js', 'import-map.json', 'settings.json', 'builtin-report.json',
+    'engine-build.json', 'compiler-dependencies.json', 'ENGINE-LICENSE', 'game-compiler.json', 'game/main.js', 'game/world.js',
+    'assets/internal/config.json', 'assets/internal/index.js', 'assets/game/tile.png', 'assets/game/click.wav', 'assets/game/rules.json',
+    'template/package.json', 'template/tsconfig.json', 'template/src/main.ts', 'template/src/world.ts', 'template/tests/contract.mjs',
+    'template/assets/tile.png', 'template/assets/click.wav', 'template/assets/rules.json', 'types/cc.d.ts', 'types/cc.editor.d.ts', 'types/webGPU.d.ts',
+] as const;
+// Reviewed bootstrap emitted by templates/bilibili/game.ejs, the checked adapter
+// preparation, bilibili-application.js, and @cocos/module-system 0.0.21. These are
+// source pins, not vendor certification. Revisit them when those inputs change.
+export const bilibiliBootstrapHashes = Object.freeze({
+    'game.js': 'f2de52f215ea45e2fb222ecf9eea0ec16adc25e67aacdd5b52e951d40fb8ca7e',
+    'game.json': '280cd47a56ebde787d089ea3acf25bd12b453ef66090f0ae66db53c5a4575ae5',
+    'application.js': 'b0fa1f9761865d5b4bff2d6283d0743d5e497060ef26bae8b739ea5dbeacbfb1',
+    'web-adapter.js': '362e8bc82cf375414a7dd8ef6d4fe0f75a363a2ddb48807a3ee62bd6fb06e18c',
+    'engine-adapter.js': 'bf77e5e5aff024a5e16465c9a527a83f10f43558b7c9e30d446c0accb919221d',
+    'fs-utils.js': 'b62ea232b6e4dd600c6aa773a9ce8ffa4dc399e84dc6b0cd8cb51db840033ffb',
+    'loader.js': 'f1bf370e6df5bf58763175b5135fc999c0b09e9a1b75f42e19eb37678c84c157',
+    'import-map.json': '5fc732c3148d610b9628477e4d11c169b01e13722ab1917aaae82b6e55cf12db',
+    'internal-prerequisites.js': '8ec473abaac5f9fcc603052adcfa1b5ebcbcddeddfc7934b5a016afa48b072f4',
+});
+
+// Release uses separately minified loader/bootstrap bytes. Debug pins remain valid
+// for the persisted SDKs, not as interchangeable aliases for a release runtime.
+export const bilibiliReleaseBootstrapHashes = Object.freeze({
+    ...bilibiliBootstrapHashes,
+    'game.js': 'a024a8635cc534180aba7b159dbadbd8dfba0ac8d0bcbf348936c6fc5de3ce5f',
+    'application.js': 'cf4383f8020809f8f70322e8aef8d6f029c3c4a4234c509d705598be8ed04ae1',
+    'web-adapter.js': 'aadc6c3e57e979409a6f3e7e64e69439fa17a22b2b12f5070e2a966c3e4dee12',
+    'engine-adapter.js': 'f9a1f4fe26e8bdc4fe38c7cdea0711723943e678b874163a2dd8aaaea42bc261',
+    'fs-utils.js': 'cf6b8761fa498fd1c0f507a088d88bf6b903aca1fb6cb0de1cc72556db9fe5c2',
+    'loader.js': '4cb96ea27aec89e9082927a56fd55c4429f326f69e94a79a9582da048972c2a9',
+    'internal-prerequisites.js': 'e3d5b4de7e45bc60a74f50e9a3bbf145446abbfca4d282f06f1dbdc67e22f968',
+});
+
+function validateRuntimeVariant(descriptor: RuntimeDescriptor, evidence: z.infer<typeof buildEvidenceSchema> | undefined): void {
+    const release = descriptor.variant === 'release';
+    if (!['debug', 'release'].includes(descriptor.variant) || descriptor.compressed !== release
+        || descriptor.sourceMap !== false || descriptor.constants.DEBUG !== !release) invalidPack('Runtime variant flags disagree.');
+    // Real saved debug descriptors predate buildOptions and emission metadata.
+    if (!descriptor.buildOptions) {
+        if (release || evidence) invalidPack('Missing variant build options.');
+        return;
+    }
+    const comments = release ? 'license-only' : 'preserve';
+    const expected = {
+        engine: { platform: descriptor.target, mode: 'BUILD', moduleFormat: 'system', features: descriptor.features,
+            flags: { ...(descriptor.profile === '3d-basic' ? { USE_3D: true } : {}),
+                DEBUG: !release, NATIVE: false, JSB: false, EDITOR: false, PREVIEW: false },
+            compress: release, sourceMap: false, split: false, targets: { chrome: '100' } },
+        loader: { platform: descriptor.target === 'BILIBILI' ? 'bilibili' : 'web-desktop', sourceMap: false, minify: release, hmr: false, editor: false, minifierWorkers: 1 },
+        game: { variant: descriptor.variant, sourceMaps: false, minified: release, compact: release, comments },
+        bootstrap: { minified: release, sourceMaps: false, comments },
+    };
+    if (canonical(descriptor.buildOptions) !== canonical(expected) || canonical(descriptor.tools.emission) !== canonical(expected.game)
+        || canonical(evidence) !== canonical({ target: descriptor.target, variant: descriptor.variant,
+            optionsSha256: hash(JSON.stringify(descriptor.buildOptions)),
+            engineSha256: descriptor.files.find(file => file.path === descriptor.engineEntry.slice(2))?.sha256 })) {
+        invalidPack('Runtime variant build/evidence binding mismatch.');
+    }
+}
+
+export async function validateRuntimeScripts(descriptor: RuntimeDescriptor, read: (file: string, max: number) => Promise<Buffer>): Promise<void> {
+    if (descriptor.variant !== 'release') return;
+    for (const file of descriptor.files) {
+        if (file.path.endsWith('.map') || (file.path.endsWith('.ts') && !file.path.startsWith('types/') && !file.path.startsWith('template/'))) {
+            invalidPack('Release runtime contains source/debug artifacts.');
+        }
+        if (!file.path.endsWith('.js') || file.path.startsWith('template/')) continue;
+        const bytes = await read(file.path, file.bytes);
+        if (bytes.length !== file.bytes || hash(bytes) !== file.sha256
+            || /sourceMappingURL\s*=|["']sourcesContent["']\s*:/.test(new TextDecoder('utf-8', { fatal: true }).decode(bytes))) {
+            invalidPack('Release JavaScript contains source maps or differs from its inventory.');
+        }
+    }
+}
+
+export function runtimeFileAllowed(file: string, target: RuntimeDescriptor['target'] = 'HTML5'): boolean {
+    if (target === 'BILIBILI') return sdkPathSchema.safeParse(file).success && ((bilibiliFixedFiles as readonly string[]).includes(file)
+        || /^assets\/internal\/import\/[a-f0-9]{2}\/[a-f0-9-]{36}\.json$/.test(file));
+    if (target !== 'HTML5') return false;
     return sdkPathSchema.safeParse(file).success && (/^(?:engine\/|assets\/(?:internal|game)\/|template\/(?:src|assets|tests)\/)/.test(file)
         || ['index.html', 'boot.js', 'loader.js', 'internal-prerequisites.js', 'import-map.json', 'settings.json',
             'builtin-report.json', 'engine-build.json', 'compiler-dependencies.json', 'ENGINE-LICENSE', 'game-compiler.json',
@@ -332,15 +550,17 @@ export function runtimeFileAllowed(file: string): boolean {
         && !file.split('/').some(part => part === 'node_modules' || part.startsWith('.')) && !file.endsWith('.map');
 }
 
-export function validateRuntime(descriptor: z.infer<typeof runtimeDescriptorSchema>, report: z.infer<typeof browserReportSchema>, descriptorSha256: string): void {
+export function validateRuntime(descriptor: z.infer<typeof html5RuntimeDescriptorSchema>,
+    report: z.infer<typeof browserReportSchema> | z.infer<typeof browserSummarySchema>, descriptorSha256: string): void {
+    validateRuntimeVariant(descriptor, report.build);
     const files = new Map(descriptor.files.map(file => [file.path, file]));
     if (new Set(descriptor.files.map(file => file.path.toLowerCase())).size !== files.size
         || files.size !== descriptor.files.length || descriptor.files.some(file => !runtimeFileAllowed(file.path) || !file.bytes)
         || descriptor.files.reduce((sum, file) => sum + file.bytes, 0) > MAX_GAME_TOTAL
         || report.profile !== descriptor.profile || report.runtimeSha256 !== descriptorSha256
         || !['2d-basic', '3d-basic'].includes(descriptor.profile) || report.initial.world3d !== (descriptor.profile === '3d-basic')
-        || !['HTML5', 'BUILD', 'DEBUG'].every(key => descriptor.constants[key] === true)
-        || !['NATIVE', 'JSB', 'EDITOR', 'PREVIEW', 'TEST', 'NODEJS'].every(key => descriptor.constants[key] === false)
+        || !['HTML5', 'BUILD'].every(key => descriptor.constants[key] === true)
+        || !['NATIVE', 'JSB', 'EDITOR', 'PREVIEW', 'TEST', 'NODEJS', 'BILIBILI', 'MINIGAME', 'WECHAT'].every(key => descriptor.constants[key] === false)
         || descriptor.constants.USE_3D !== (descriptor.profile === '3d-basic')
         || !validationLevels.slice(0, 5).every(key => descriptor.validationLevels[key] === true)
         || ['vendorBuild', 'device', 'portableSDK'].some(key => descriptor.validationLevels[key] !== false)
@@ -356,6 +576,67 @@ export function validateRuntime(descriptor: z.infer<typeof runtimeDescriptorSche
     const features = ['base', '2d', 'ui', 'audio', 'tween', 'gfx-webgl', 'gfx-webgl2', 'legacy-pipeline',
         ...(descriptor.profile === '3d-basic' ? ['3d', 'animation', 'skeletal-animation', 'primitive'] : [])];
     if (canonical([...descriptor.features].sort()) !== canonical(features.sort())) invalidPack();
+    if ((descriptor.variant === 'release' || report.runtimeConstants) && canonical(report.runtimeConstants) !== canonical({
+        CC_DEBUG: descriptor.variant === 'debug', CC_BUILD: true, CC_JSB: false, CC_EDITOR: false, CC_PREVIEW: false, CC_BILIBILI: false, CC_MINIGAME: false,
+    })) invalidPack('Browser evidence does not establish the actual runtime constants.');
+}
+
+export function validateBilibiliRuntime(descriptor: BilibiliRuntimeDescriptor, report: BilibiliReport,
+    descriptorSha256: string, descriptorBytes: number): void {
+    bilibiliRuntimeDescriptorSchema.parse(descriptor);
+    bilibiliReportSchema.parse(report);
+    validateRuntimeVariant(descriptor, report.build);
+    const files = new Map(descriptor.files.map(file => [file.path, file]));
+    const assets = [...descriptor.builtins.effects, ...descriptor.builtins.materials];
+    const required = [...bilibiliFixedFiles, ...assets.map(asset => `assets/internal/import/${asset.uuid.slice(0, 2)}/${asset.uuid}.json`)];
+    const world3d = descriptor.profile === '3d-basic';
+    const expectedLevels = Object.fromEntries([...validationLevels.slice(0, 5).map(name => [name, true]),
+        ...['browserFirstFrame', 'browserInteraction', 'vendorBuild', 'device', 'portableSDK'].map(name => [name, false])]);
+    if (!['2d-basic', '3d-basic'].includes(descriptor.profile) || report.profile !== descriptor.profile
+        || report.runtimeSha256 !== descriptorSha256 || !Number.isSafeInteger(descriptorBytes) || descriptorBytes <= 0
+        || new Set(required).size !== required.length || new Set(descriptor.files.map(file => file.path.toLowerCase())).size !== files.size
+        || files.size !== descriptor.files.length || canonical([...files.keys()].sort()) !== canonical(required.sort())
+        || descriptor.files.some(file => !file.bytes || !runtimeFileAllowed(file.path, 'BILIBILI'))
+        || !['BILIBILI', 'MINIGAME', 'BUILD'].every(key => descriptor.constants[key] === true)
+        || !['HTML5', 'WECHAT', 'WECHAT_MINI_PROGRAM', 'NATIVE', 'JSB', 'EDITOR', 'EDITOR_NOT_IN_PREVIEW', 'PREVIEW', 'TEST', 'NODEJS',
+            'XIAOMI', 'ALIPAY', 'TAOBAO', 'TAOBAO_MINIGAME', 'BYTEDANCE', 'OPPO', 'VIVO', 'HUAWEI', 'MIGU', 'HONOR',
+            'COCOS_RUNTIME', 'SUD', 'SUDV2', 'RUNTIME_BASED', 'SUPPORT_JIT', 'SERVER_MODE', 'DEV'].every(key => descriptor.constants[key] === false)
+        || descriptor.constants.USE_3D !== world3d || canonical(descriptor.validationLevels) !== canonical(expectedLevels)
+        || canonical(descriptor.gameCompiler.sourceFiles) !== canonical(['tools/devkit/runtime/compile-game.cjs', 'tools/devkit/runtime/files.cjs'])
+        || canonical([...descriptor.typeFiles].sort()) !== canonical(['types/cc.d.ts', 'types/cc.editor.d.ts', 'types/webGPU.d.ts'].sort())
+        || descriptor.builtins.reportSha256 !== files.get('builtin-report.json')?.sha256
+        || files.get('types/cc.d.ts')!.bytes < 1024 * KiB || files.get('cocos-js/cc.js')!.bytes < 1024 * KiB) invalidPack();
+    const features = ['base', '2d', 'ui', 'audio', 'tween', 'gfx-webgl', 'gfx-webgl2', 'legacy-pipeline',
+        ...(world3d ? ['3d', 'animation', 'skeletal-animation', 'primitive'] : [])];
+    if (canonical([...descriptor.features].sort()) !== canonical(features.sort())) invalidPack();
+    for (const [file, sha256] of Object.entries(descriptor.variant === 'release' ? bilibiliReleaseBootstrapHashes : bilibiliBootstrapHashes)) {
+        if (files.get(file)?.sha256 !== sha256) invalidPack('BILIBILI bootstrap source pin mismatch.');
+    }
+    for (const name of ['tile.png', 'click.wav', 'rules.json']) {
+        if (files.get(`template/assets/${name}`)?.sha256 !== files.get(`assets/game/${name}`)?.sha256) invalidPack();
+    }
+    const total = descriptor.files.reduce((sum, file) => sum + file.bytes, descriptorBytes);
+    const preflight = report.evidence.preflight;
+    const warnings = [...(total > 4 * 1024 * KiB ? ['main: source files exceed 4 MiB; check the vendor-compiled package size.'] : []),
+        ...(total > 30 * 1024 * KiB ? ['Source files exceed 30 MiB total; check the vendor-compiled package size.'] : [])];
+    if (total > MAX_GAME_TOTAL || preflight.totalBytes !== total || preflight.packages[0].bytes !== total
+        || preflight.appId !== 'cocos4-local-validation-only' || preflight.version !== '0.0.0-local-validation'
+        || canonical(preflight.warnings) !== canonical(warnings)) invalidPack();
+    const loaded = ['game.js', 'web-adapter.js', 'fs-utils.js', 'loader.js', 'application.js', 'cocos-js/cc.js', 'engine-adapter.js', 'game/main.js', 'game/world.js'];
+    for (const evidence of [report.evidence.shared, report.evidence.distinct]) {
+        if (evidence.probe.world3d !== world3d || canonical(evidence.loaded) !== canonical(loaded)) invalidPack();
+    }
+    const edges = [ ['application.js', 'game/main.js'], ['engine-adapter.js', 'fs-utils.js'], ['game/main.js', 'cocos-js/cc.js'],
+        ['game/main.js', 'game/world.js'], ...(world3d ? [['game/world.js', 'cocos-js/cc.js']] : []),
+        ...['game.json', 'web-adapter.js', 'loader.js', 'import-map.json', 'application.js', 'cocos-js/cc.js', 'engine-adapter.js'].map(to => ['game.js', to]),
+        ['web-adapter.js', 'fs-utils.js'] ].map(([from, to]) => ({ from, to }));
+    const closure = report.evidence.closure;
+    if (canonical(closure.moduleEdges) !== canonical(edges) || closure.parsedScripts !== 11 || closure.systemModules !== 5
+        || closure.resourceCount !== assets.length + 5 || closure.requiredCCExportCount !== descriptor.tools.requiredCCExports.length
+        || new Set(descriptor.tools.requiredCCExports).size !== descriptor.tools.requiredCCExports.length
+        || closure.builtinEffects !== descriptor.builtins.effects.length || closure.builtinMaterials !== descriptor.builtins.materials.length
+        || canonical(report.evidence.failures.map(item => item.fault)) !== canonical(localFaults)
+        || report.evidence.failures.some(item => item.errors.some(error => !error.startsWith('[BILIBILI] Game startup failed: ')))) invalidPack();
 }
 
 export async function loadSdk(root: string): Promise<Sdk> {
@@ -479,6 +760,7 @@ export async function loadSdk(root: string): Promise<Sdk> {
             if (offset !== sourceFiles.get(source)?.bytes || hash(text) !== sourceFiles.get(source)?.sha256) invalidPack();
         }
         const profiles = new Map<string, SdkProfile>();
+        let indexedDocuments: IndexedDocument[] = [];
         if (game) {
             const development = manifest.development!;
             const json = async (file: string, max = 2 * 1024 * KiB): Promise<unknown> => {
@@ -532,43 +814,79 @@ export async function loadSdk(root: string): Promise<Sdk> {
             }
             for (const profile of manifest.catalog.profiles) {
                 const directory = `engine/profiles/${profile.target}/${profile.id}/${profile.variant}`;
+                const reportPath = profile.target === 'HTML5' ? profile.browserReport : profile.localReport;
                 if (profile.directory !== directory || profile.descriptor !== `${directory}/runtime.json`
-                    || profile.exports !== `${directory}/cc-exports.json` || profile.browserReport !== `${directory}/evidence/browser-report.json`
-                    || canonical(profile.validationLevels) !== canonical(validationLevels)) invalidPack();
+                    || profile.exports !== `${directory}/cc-exports.json`
+                    || reportPath !== `${directory}/evidence/${profile.target === 'HTML5' ? 'browser' : 'local'}-report.json`
+                    || canonical(profile.validationLevels) !== canonical(runtimeValidationLevels[profile.target])) invalidPack();
                 const descriptor = runtimeDescriptorSchema.parse(await json(profile.descriptor));
-                const report = browserReportSchema.parse(await json(profile.browserReport));
-                validateRuntime(descriptor, report, files.get(profile.descriptor)!.sha256);
-                if (descriptor.engineVersion !== manifest.engineVersion || descriptor.profile !== profile.id
+                let localReport: BilibiliReport | undefined;
+                if (profile.target === 'HTML5') {
+                    if (descriptor.target !== 'HTML5') invalidPack();
+                    const value = await json(profile.browserReport);
+                    const summary = (value as { kind?: unknown })?.kind === 'cocos4-browser-validation-summary';
+                    const report = summary ? browserSummarySchema.parse(value) : browserReportSchema.parse(value);
+                    validateRuntime(descriptor, report, files.get(profile.descriptor)!.sha256);
+                    unique(report.screenshots.map(file => file.path));
+                    for (const screenshot of summary ? [] : browserReportSchema.parse(value).screenshots) {
+                        const name = `${directory}/evidence/${screenshot.path}`;
+                        if (!screenshot.path.endsWith('.png') || files.get(name)?.sha256 !== screenshot.sha256) invalidPack();
+                        const image = await readFile(name, 16 * 1024 * KiB);
+                        if (image.length < 24 || !image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+                            || image.readUInt32BE(16) !== screenshot.width || image.readUInt32BE(20) !== screenshot.height) invalidPack();
+                        referenced.add(name);
+                    }
+                } else {
+                    if (descriptor.target !== 'BILIBILI') invalidPack();
+                    localReport = bilibiliReportSchema.parse(await json(profile.localReport));
+                    validateBilibiliRuntime(descriptor, localReport, files.get(profile.descriptor)!.sha256, files.get(profile.descriptor)!.bytes);
+                }
+                if (descriptor.engineVersion !== manifest.engineVersion || descriptor.profile !== profile.id || descriptor.variant !== profile.variant
                     || canonical(descriptor.features) !== canonical(profile.features) || descriptor.rootLockSha256 !== closure.rootLockSha256
                     || descriptor.gameCompiler.dependencyCount !== closure.packages.length) invalidPack();
                 bind(directory, descriptor.files);
+                await validateRuntimeScripts(descriptor, (file, max) => readFile(`${directory}/${file}`, max));
                 if (files.get(`${directory}/compiler-dependencies.json`)?.sha256 !== files.get(development.dependencies)?.sha256) invalidPack();
-                unique(report.screenshots.map(file => file.path));
-                for (const screenshot of report.screenshots) {
-                    const name = `${directory}/evidence/${screenshot.path}`;
-                    if (!screenshot.path.endsWith('.png') || files.get(name)?.sha256 !== screenshot.sha256) invalidPack();
-                    const image = await readFile(name, 16 * 1024 * KiB);
-                    if (image.length < 24 || !image.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
-                        || image.readUInt32BE(16) !== screenshot.width || image.readUInt32BE(20) !== screenshot.height) invalidPack();
-                    referenced.add(name);
+                if (descriptor.target === 'BILIBILI') {
+                    const builtin = z.object({ profile: id, features: z.array(id), effects: z.array(z.unknown()), materials: z.array(z.unknown()),
+                        files: z.array(inventoryFileSchema).max(1024) }).passthrough().parse(await json(`${directory}/builtin-report.json`));
+                    const assetFiles = builtin.files.filter(file => file.path.startsWith('assets/'));
+                    bind(directory, assetFiles);
+                    const uuids = [...descriptor.builtins.effects, ...descriptor.builtins.materials].map(asset => asset.uuid).sort();
+                    const settings = z.object({ engine: z.object({ builtinAssets: z.array(z.string().uuid()) }).passthrough(),
+                        assets: z.object({ projectBundles: z.array(id) }).passthrough() }).passthrough().parse(await json(`${directory}/settings.json`));
+                    const config = z.object({ uuids: z.array(z.string().uuid()), importBase: z.literal('import'),
+                        isZip: z.literal(false).optional() }).passthrough().parse(await json(`${directory}/assets/internal/config.json`));
+                    if (builtin.profile !== descriptor.profile || canonical(builtin.features) !== canonical(descriptor.features)
+                        || canonical(builtin.effects) !== canonical(descriptor.builtins.effects) || canonical(builtin.materials) !== canonical(descriptor.builtins.materials)
+                        || canonical(assetFiles.map(file => file.path).sort()) !== canonical(descriptor.files.filter(file => file.path.startsWith('assets/internal/')).map(file => file.path).sort())
+                        || canonical([...settings.engine.builtinAssets].sort()) !== canonical(uuids) || canonical([...config.uuids].sort()) !== canonical(uuids)
+                        || canonical(settings.assets.projectBundles) !== canonical(['internal'])) invalidPack();
+                    const build = await json(`${directory}/engine-build.json`);
+                    if (canonical(build) !== canonical({ chunkAliases: {}, exports: { cc: 'cc.js' }, chunkDepGraph: { 'cc.js': [] },
+                        assetDepGraph: { 'cc.js': [] }, hasCriticalWarns: false, dependencyGraph: { 'cc.js': [] } })) invalidPack();
+                    const { ccbuild: _ccbuild, moduleSystem: _moduleSystem, loaderPlatform: _loaderPlatform, ...gameTools } = descriptor.tools;
+                    if (canonical(await json(`${directory}/game-compiler.json`)) !== canonical(gameTools)) invalidPack();
                 }
                 const exports = exportInventorySchema.parse(await json(profile.exports));
                 if (new Set(exports.names).size !== exports.names.length) invalidPack();
-                if (exports.engineSha256 !== files.get(`${directory}/engine/cc.js`)?.sha256
+                if (exports.engineSha256 !== files.get(`${directory}/${descriptor.engineEntry.slice(2)}`)?.sha256
+                    || (localReport && localReport.evidence.closure.engineExportCount !== exports.names.length)
                     || descriptor.tools.requiredCCExports.some(name => !exports.names.includes(name))) invalidPack();
                 profiles.set(`${profile.target}/${profile.id}/${profile.variant}`, freeze({ ...descriptor,
-                    directory: path.join(root, directory), descriptor, ccExports: exports.names, typesDirectory: path.join(root, directory, 'types') }));
+                    directory: path.join(root, directory), descriptor, ccExports: exports.names, typesDirectory: path.join(root, directory, 'types') }) as SdkProfile);
                 if (!manifest.catalog.templates.some(template => template.profile === profile.id && template.target === profile.target
                     && template.variant === profile.variant && template.directory === `${directory}/template`)) invalidPack();
             }
             for (const template of manifest.catalog.templates) {
                 const profile = manifest.catalog.profiles.find(profile => profile.id === template.profile && profile.target === template.target && profile.variant === template.variant);
-                if (!profile || template.directory !== `${profile.directory}/template`) invalidPack();
+                if (!profile || template.directory !== `${profile.directory}/template`
+                    || template.id !== `${template.target === 'HTML5' ? '' : `${template.target.toLowerCase()}-`}${template.profile}${template.variant === 'release' ? '-release' : ''}-starter`) invalidPack();
             }
             for (const platform of manifest.catalog.platforms) {
                 const available = manifest.catalog.profiles.some(profile => profile.target === platform.id);
                 if (platform.prebuiltAvailable !== available || platform.exportAvailable !== available
-                    || canonical(platform.validationLevels) !== canonical(available ? validationLevels : [])) invalidPack();
+                    || canonical(platform.validationLevels) !== canonical(available ? runtimeValidationLevels[platform.id as RuntimeDescriptor['target']] : [])) invalidPack();
             }
             for (const feature of manifest.catalog.features) {
                 if (feature.prebuiltAvailable !== manifest.catalog.profiles.some(profile => profile.features.includes(feature.id))) invalidPack();
@@ -576,27 +894,42 @@ export async function loadSdk(root: string): Promise<Sdk> {
             if (manifest.catalog.profiles.some(profile => !manifest.catalog.platforms.some(platform => platform.id === profile.target)
                 || profile.features.some(id => !manifest.catalog.features.some(feature => feature.id === id)))) invalidPack();
         }
+        if (manifest.apiIndex) {
+            const descriptor = manifest.apiIndex;
+            const file = files.get(descriptor.path);
+            if (!file || file.bytes !== descriptor.bytes || file.sha256 !== descriptor.sha256) invalidPack();
+            const index = apiIndexSchema.parse(parseJson(decode(await readFile(descriptor.path, MAX_API_INDEX_BYTES))));
+            const generated = await generateApiIndex({ profiles: manifest.catalog.profiles.map(profile => ({ ...profile,
+                engineEntry: profiles.get(`${profile.target}/${profile.id}/${profile.variant}`)!.engineEntry })), templates: manifest.catalog.templates,
+                files: manifest.files, read: readFile });
+            if (hash(JSON.stringify(index)) !== hash(JSON.stringify(generated.index))
+                || descriptor.symbols !== index.entries.filter(entry => entry.kind === 'api').length
+                || descriptor.examples !== index.entries.filter(entry => entry.kind === 'example').length) invalidPack();
+            unique([...manifest.docs.map(doc => doc.id), ...index.entries.map(entry => entry.id)]);
+            indexedDocuments = generated.documents;
+            referenced.add(descriptor.path);
+        }
         if (referenced.size !== files.size) invalidPack();
         for (const [absolute, before] of observed) {
             const after = await lstat(absolute);
             if (after.isSymbolicLink() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
                 || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || await realpath(absolute) !== absolute) invalidPack();
         }
-        return makeSdk(root, manifest, content, profiles);
+        return makeSdk(root, manifest, content, profiles, indexedDocuments);
     } catch (error) {
         if (error instanceof AppError) throw error;
         invalidPack();
     }
 }
 
-function makeSdk(root: string, manifest: z.infer<typeof manifestSchema>, content: Map<string, string>, profiles: Map<string, SdkProfile>): Sdk {
+function makeSdk(root: string, manifest: z.infer<typeof manifestSchema>, content: Map<string, string>, profiles: Map<string, SdkProfile>, indexedDocuments: IndexedDocument[]): Sdk {
     const { sdkId } = manifest;
     freeze(manifest);
     const secret = randomBytes(32);
     const summary = sdkSummarySchema.parse({
         sdkId, schemaVersion: 1, kind: manifest.kind, engineVersion: manifest.engineVersion,
         description: manifest.description, capabilities: manifest.capabilities, sourceSha256: manifest.source.sha256,
-        attribution: manifest.source.attribution, fileCount: manifest.files.length, documentCount: manifest.docs.length,
+        attribution: manifest.source.attribution, fileCount: manifest.files.length, documentCount: manifest.docs.length + indexedDocuments.length,
     });
     const binding = (value: unknown): string => hash(canonical({ sdkId, query: value }));
     const sign = (body: string): Buffer => createHmac('sha256', secret).update(body).digest();
@@ -633,6 +966,25 @@ function makeSdk(root: string, manifest: z.infer<typeof manifestSchema>, content
         return response;
     };
     const documents = new Map(manifest.docs.map(doc => [doc.id, doc]));
+    const guideAnchors = new Map<string, z.infer<typeof sourceRangeSchema>>();
+    for (const source of manifest.source.files) {
+        const chunks = manifest.docs.filter(doc => doc.sourcePath === source.path).sort((a, b) => a.sourceOffset - b.sourceOffset);
+        let line = 1;
+        let column = 1;
+        for (const doc of chunks) {
+            const start = { offsetBytes: doc.sourceOffset, line, column };
+            const text = content.get(doc.path)!;
+            const lines = text.split('\n');
+            line += lines.length - 1;
+            column = [...lines.at(-1)!].length + (lines.length === 1 ? column : 1);
+            guideAnchors.set(doc.id, { path: source.path, sha256: source.sha256, start,
+                end: { offsetBytes: doc.sourceOffset + Buffer.byteLength(text), line, column } });
+        }
+    }
+    const indexed = new Map(indexedDocuments.map(doc => [doc.entry.id, doc]));
+    const metadata = (doc: IndexedDocument, profile?: string) => ({ ...(doc.entry.api ? { api: doc.entry.api,
+        runtimeAvailability: doc.availability.filter(item => !profile || item.profile === profile) } : {}),
+    ...(doc.entry.example ? { example: doc.entry.example } : {}) });
     const baseUri = `cocos4://sdk/${sdkId}/`;
     const resources = [{ uri: `${baseUri}manifest`, name: 'SDK manifest summary', mimeType: 'application/json',
         description: 'Bounded integrity/source summary, not provenance authentication or release certification.' },
@@ -671,7 +1023,7 @@ function makeSdk(root: string, manifest: z.infer<typeof manifestSchema>, content
             const available = !['profiles', 'templates'].includes(query.section) || items.length > 0;
             return catalogSchema.parse(paginate(items, offset(query.cursor, condition, items.length), query.limit, condition, {
                 section: query.section, target: query.target ?? null, available,
-                reason: available ? manifest.development ? 'Only the delivered HTML5 debug combinations are available; no vendor or portable release certification.'
+                reason: available ? manifest.development ? 'Only delivered target/profile/variant combinations are available. exportAvailable means source-game-package assembly, not vendor compilation or device certification.'
                     : 'Source catalog only; target-specific feature combinations and game capabilities are not delivered.'
                     : manifest.development ? 'No prebuilt profiles or runnable templates are delivered for the requested target.'
                         : 'No prebuilt profiles or runnable templates are delivered. This pack has no game development capability.',
@@ -679,7 +1031,8 @@ function makeSdk(root: string, manifest: z.infer<typeof manifestSchema>, content
             }));
         },
         search(args) {
-            const query = input(z.object({ query: z.string().min(1).max(256).refine(value => value.trim().length > 0),
+            const query = input(z.object({ query: z.string().min(1).max(256).refine(value => value.trim().length > 0
+                && Buffer.from(value).toString('utf8') === value),
                 kind: kindSchema, profile: id.optional(), cursor: cursorSchema.optional(),
                 limit: z.number().int().min(1).max(100).default(20) }).strict(), args);
             if (query.profile && !manifest.catalog.profiles.some(profile => profile.id === query.profile)) {
@@ -700,26 +1053,61 @@ function makeSdk(root: string, manifest: z.infer<typeof manifestSchema>, content
                             column: [...before.slice(before.lastIndexOf('\n') + 1)].length + 1 }] });
                 }
             }
+            for (const doc of indexedDocuments) {
+                if (query.kind !== 'all' && query.kind !== doc.entry.kind) continue;
+                if (!doc.text.includes(query.query) && !doc.entry.title.includes(query.query)) continue;
+                if (query.profile && (doc.entry.example ? doc.entry.example.profile !== query.profile
+                    : !doc.availability.some(item => item.profile === query.profile && item.status !== 'export-absent'))) continue;
+                // Match within actual source slices, never across synthetic joins.
+                let found = -1;
+                let source: z.infer<typeof sourceRangeSchema> | undefined;
+                for (const anchor of doc.anchors) {
+                    const slice = Buffer.from(doc.text).subarray(anchor.documentOffsetBytes, anchor.documentOffsetBytes + anchor.lengthBytes).toString('utf8');
+                    const at = slice.indexOf(query.query);
+                    if (at < 0) continue;
+                    const locate = (end: number) => {
+                        const before = slice.slice(0, end);
+                        const lines = before.split('\n');
+                        return { offsetBytes: anchor.source.start.offsetBytes + Buffer.byteLength(before),
+                            line: anchor.source.start.line + lines.length - 1,
+                            column: [...lines.at(-1)!].length + (lines.length === 1 ? anchor.source.start.column : 1) };
+                    };
+                    source = { path: anchor.source.path, sha256: anchor.source.sha256, start: locate(at), end: locate(at + query.query.length) };
+                    found = Buffer.from(doc.text).subarray(0, anchor.documentOffsetBytes).toString('utf8').length + at;
+                    break;
+                }
+                if (found < 0 && !doc.entry.title.includes(query.query)) continue;
+                const before = doc.text.slice(0, Math.max(0, found));
+                items.push({ documentId: doc.entry.id, kind: doc.entry.kind, title: doc.entry.title, engineVersion: manifest.engineVersion,
+                    summary: bytePrefix(doc.text.slice(Math.max(0, found)), 512), requiredFeatures: [], ...metadata(doc, query.profile),
+                    matches: found < 0 ? [] : [{ line: before.split('\n').length,
+                        column: [...before.slice(before.lastIndexOf('\n') + 1)].length + 1, source }] });
+            }
             return searchSchema.parse(paginate(items, offset(query.cursor, condition, items.length), query.limit, condition, {
-                query: query.query, kind: query.kind, profile: query.profile ?? null, availableKinds: ['guide'], items: [], nextCursor: null,
+                query: query.query, kind: query.kind, profile: query.profile ?? null,
+                availableKinds: indexedDocuments.length ? ['guide', 'api', 'example'] : ['guide'], items: [], nextCursor: null,
             }));
         },
         read(args) {
-            const query = input(z.object({ documentId: id, cursor: cursorSchema.optional(),
+            const query = input(z.object({ documentId: documentIdSchema, cursor: cursorSchema.optional(),
                 maxBytes: z.number().int().min(4).max(MAX_DOCUMENT).default(8 * KiB) }).strict(), args);
             const doc = documents.get(query.documentId);
-            if (!doc) throw new AppError('INVALID_ARGUMENTS', 'The document ID is not in this SDK.');
-            const text = content.get(doc.path)!;
+            const apiDoc = indexed.get(query.documentId);
+            if (!doc && !apiDoc) throw new AppError('INVALID_ARGUMENTS', 'The document ID is not in this SDK.');
+            const text = apiDoc ? apiDoc.text : content.get(doc!.path)!;
             const bytes = Buffer.from(text);
-            const condition = binding({ operation: 'read', documentId: doc.id, maxBytes: query.maxBytes });
+            const condition = binding({ operation: 'read', documentId: query.documentId, maxBytes: query.maxBytes });
             const start = offset(query.cursor, condition, bytes.length);
             if ((bytes[start] & 0xc0) === 0x80) throw new AppError('CURSOR_INVALID', 'The cursor is not a UTF-8 boundary.');
             let budget = query.maxBytes;
             for (;;) {
                 const chunk = bytePrefix(bytes.subarray(start).toString('utf8'), budget);
                 const end = start + Buffer.byteLength(chunk);
-                const result = { documentId: doc.id, kind: 'guide' as const, title: doc.title, engineVersion: manifest.engineVersion,
+                const result = { documentId: query.documentId, kind: apiDoc?.entry.kind ?? 'guide', title: apiDoc?.entry.title ?? doc!.title, engineVersion: manifest.engineVersion,
                     content: chunk, offsetBytes: start, totalBytes: bytes.length, sha256: hash(text),
+                    ...(apiDoc ? { ...metadata(apiDoc), anchors: apiDoc.anchors.filter(anchor => anchor.documentOffsetBytes < end
+                        && anchor.documentOffsetBytes + anchor.lengthBytes > start) }
+                        : { anchors: [{ documentOffsetBytes: 0, lengthBytes: bytes.length, role: 'source' as const, source: guideAnchors.get(doc!.id)! }] }),
                     nextCursor: end < bytes.length ? cursor(condition, end) : null };
                 if (fits(result)) return documentSchema.parse(result);
                 budget = Math.floor(budget / 2);

@@ -1,12 +1,12 @@
 # Cocos4 MCP 与便携开发套件
 
-状态：P0 验证进行中，尚无可交付套件。更新日期：2026-09-17。
+状态：开发 MCP、离线 SDK、v5 产物来源记录与 Linux 候选包已实现，完整发行验收仍在进行中；当前两版本全量矩阵尚未通过。
 
-初稿仅形成计划；后续已新增独立的 `tools/devkit/` P0 验证包、锁定依赖及只读 MCP/CLI，未配置客户端或发布制品。
+初稿仅形成计划；后续已新增独立工具包、锁定依赖、离线 SDK、授权逻辑测试、临时 OpenCode 接入和本地便携候选包。候选包未获准再分发，真实模型闭环与多宿主验收未完成。
 调研基线为分支 `v4.0.0`、引擎 `4.0.0-alpha.34`、提交 `2736376eb7`。
-下文为完整产品契约，不能全部视为已实现；当前十个只读工具及开发启动入口见 [MCP 说明](../../tools/devkit/MCP.md)。
-实际验证入口、结果及阻塞项见 [P0 记录](../../tools/devkit/README.md)。
-新增 [Effect 验证记录](../../tools/devkit/effects/README.md)：2D builtin 资源编译通过，3D 严格编译仍有阻塞。
+下文为完整产品契约，不能全部视为已实现；当前默认十个工具、develop 模式十三个工具、另开 preview 权限十五个工具，入口见 [MCP 说明](../../tools/devkit/MCP.md)。
+逐项契约、实际证据与未完成项见 [验收清单](../../tools/devkit/ACCEPTANCE.md)；历史 P0 记录仍保留在 [工具说明](../../tools/devkit/README.md)。
+新增 [Effect 验证记录](../../tools/devkit/effects/README.md)：2D/3D builtin 资源已通过严格编译；条件分支问题已修复，没有跳过 parser 或真实 GL 检查。
 
 ## 1. 目标与边界
 
@@ -59,7 +59,7 @@
 输出为未压缩、有 source map 的 SystemJS 引擎模块，固定在
 `bin/minigame/<platform>/`。连续构建可能残留旧文件，不能直接作为干净的发布目录。
 
-当前没有独立游戏编译器、完整无 Creator 资源链路或游戏预览服务器。
+初始盘点时没有独立游戏编译器或游戏预览服务器。当前已实现 SDK 内游戏编译、标准图片/JSON/音频资源组装、受限 HTML5 预览，以及真实 BILIBILI profile 的源码包组装和本地预检；完整 Creator 资源导入、厂商编译和真机验收仍未实现。
 `cocos/game/game.ts` 初始化还涉及 settings、builtin assets、渲染管线、脚本包和启动场景；
 仅复制一个 `cc.js` 并调用 `game.run()` 不能证明游戏可用。
 现有 skills 的平台表也需由新能力清单校验，包括已经加入引擎的 BILIBILI。
@@ -78,6 +78,9 @@ JS 是可直接执行的构建制品，并不意味着把引擎 TS 源码仓库�
 各包标注真实最低 OS/libc 要求、CPU 架构、签名状态及已验证客户端版本。
 
 拟定发布目录：
+
+当前候选布局将下述引擎、toolchain、catalog、templates 等原 SDK 内容保留在 `sdk/`，
+外层 `release.json` 包含宿主 Node、应用、skills 和发行文件清单；不修改内层 SDK 摘要。
 
 ```text
 cocos4-devkit/
@@ -113,7 +116,7 @@ cocos4-devkit/
 | --- | --- |
 | 引擎源码基线 | 保持 Node `>=18`、TypeScript `4.9.5` 的既有检查，不因本机 Node 版本而提升最低版本 |
 | 引擎依赖 | 保持 ccbuild `2.3.21`、tfig `3.3.4`、PAL `1.0.4`、platforms `1.0.6`；升级另行评审补丁 |
-| MCP SDK | P0 已锁定 `@modelcontextprotocol/sdk@1.30.0` 并通过 stdio 验证；生产错误路由和能力声明仍需实现 |
+| MCP SDK | 已锁定 `@modelcontextprotocol/sdk@1.30.0`；stdio、严格错误路由、固定能力声明和开发工具已接通官方客户端黑盒验证 |
 | MCP 类型工具链 | 独立 tsconfig/lockfile；TS `5.9.3`、Zod `3.25.76` 严格检查已通过，隔离于引擎 TS 4.9.5，不关闭库检查 |
 | 游戏类型检查 | 随包携带 TS `4.9.5` 和真实 `cc` 声明；装饰器、字段初始化、模块转换与引擎契约做实际运行对照 |
 | 发布包运行时 | 随包携带受维护的 Node LTS，首选 Node 24 系列；发布时锁定具体补丁、来源和 SHA-256，不依赖用户 PATH 上的 Node |
@@ -122,7 +125,7 @@ cocos4-devkit/
 SDK 类型组合及加载器探针已在 Linux x64、Node `18.20.8` 和 `24.21.0` 验证；私有探针包
 最低版本明确为 `18.20.8`，不改变引擎的 `>=18`，也不代表更早 Node 18 补丁已经验收。
 SDK 允许的 Hono node-server 2.x 需要 Node 20，故在独立包内锁定其同样允许的 `1.19.9`；
-没有修改依赖源码、升级根 TypeScript 或弱化检查。游戏类型/装饰器行为尚未运行验证。
+没有修改依赖源码、升级根 TypeScript 或弱化检查。已在真实浏览器验证模板的装饰器、类字段与修改后的玩法；这不保证任意游戏代码都正确。
 不选择要求 Node `>=20` 的 SDK 2.x 作为首版默认，也不运行 `npx ...@latest`。
 新的工具源码不在根 `tsconfig.json` 的默认 include 中，必须有明确的独立检查、构建和测试入口。
 工具服务按 Node 18 API 基线开发，并在最低版本和随包 Node 上分别验证；内置较新的
@@ -166,6 +169,12 @@ P0 源码追踪发现现有 smoke 默认 features 不注册渲染管线，不能
 正式输入。归档统一排序和非必要时间戳；相同输入的未签名 payload 应可复现，签名或
 平台元数据的差异单独说明。升级采用旁路解压新版本，默认不原地替换运行中的 SDK。
 项目产物记录使用的 kit/profile 摘要；不同版本的缓存不能混用。
+
+当前实现从执行中的应用验证外层 `release.json`，新 job 记录 `releaseId`，新产物的
+receipt/inventory 记录 `provenance: { releaseId, profileSha256 }`；profile 摘要取实际
+选中 descriptor 的清单 SHA-256，并与报告及发布上下文核对。源码工具的 `releaseId`
+为 `null`，不能冒充某个发行包。v2/v3/v4 导入不得补造原本缺失的发行或 profile 来源；
+历史 job 的默认 null 也不能证明其由源码工具产生。完整性绑定仍不等于发布者认证。
 
 ## 4. 无 Creator 游戏闭环
 
@@ -212,18 +221,29 @@ P0 源码追踪发现现有 smoke 默认 features 不注册渲染管线，不能
 
 ## 5. 用户流程
 
-以下命令是拟定的发布版 CLI，不应在当前仓库尝试执行：
+以下命令在对应候选包的解压目录运行，不是引擎仓库根目录的命令；正式下载和发行验收尚未完成：
 
 ```sh
 ./cocos4 doctor
-./cocos4 ai --client opencode --workspace "/absolute/path/to/games"
+./cocos4 ai --client opencode --executable "/absolute/path/to/opencode" --workspace "/absolute/path/to/games"
 ./cocos4 mcp --workspace "/absolute/path/to/games" --mode read-only
 ```
 
+当前 portable `./cocos4 doctor` 未指定 `--workspace` 时只验证发行清单、SDK 与宿主读取
+能力，不需要或创建 workspace、`HOME`、XDG 状态配置或私有 state，也不把当前目录
+当游戏扫描。输出为一个 `scope: "sdk-only"` 的 JSON 报告，包含 release/SDK ID；
+它不检查或启动 AI 客户端，不运行项目代码。显式 `--workspace` 保留原 worker/job 流程，
+状态默认位于 `$XDG_STATE_HOME/cocos4` 或 `$HOME/.local/state/cocos4`，可用外部
+`--state-root` 指定。无 workspace 时拒绝 state 参数和执行授权，而非静默忽略。
+portable `ai` 必须显式提供已安装客户端的 `--executable`；启动器固定本包 SDK，拒绝
+`--sdk-root`。源码 CLI 的三个显式根参数要求不变，不能与 portable 命令混写。
+
 1. 用户选择与宿主匹配的发布包，验证发布来源并解压；启动器从自身位置定位 SDK，
    不依赖原始安装路径、当前目录或系统 Node。SDK 可只读，状态和游戏项目放在外部目录。
-2. `doctor` 区分包损坏、宿主不兼容、profile 缺失、AI 客户端缺失和游戏配置问题。
-   没有 Creator 或引擎 checkout 不是 portable 模式错误，不运行准备或下载命令“修复”。
+2. 诊断区分包损坏、宿主不兼容、profile 缺失、AI 客户端缺失和游戏配置问题。
+   SDK-only `doctor` 只覆盖包和宿主读取检查；工作区诊断走显式 workspace 的 job 流程，
+   客户端存在性和版本检查由 `ai` 启动流程执行。没有 Creator 或引擎 checkout 不是
+   portable 模式错误，不运行准备或下载命令“修复”。
 3. `ai` 为已安装的 OpenCode 启动新会话，在用户明确选择工作区和权限后，通过子进程
    临时配置接入本地 stdio MCP 和随包 skills；默认不修改用户全局配置或全局 skills。
 4. AI 查询能力及示例，创建新游戏，编辑普通游戏代码，执行检查和构建，开启本地预览，
@@ -237,9 +257,14 @@ OpenCode 接入须依照当前 `https://opencode.ai/config.json` 校验：`mcp` 
 环境配置或同名 MCP/skill 冲突须展示并处理，不覆盖无关设置。实现时冻结支持的客户端
 版本和 schema，在发行包内携带验证所需信息，不要求用户联网获取 schema 才能启动。
 
+当前 Linux x64 的 AI 子 MCP 由随包 `cocos4-mcp-launch` 启动。它使用 `static-no-libc`
+链接，无 ELF interpreter 或共享库，在 Node 启动前构造固定命令和清理后的环境，消除
+运行时 `/usr/bin/env` 依赖，不回退到宿主 env 命令。Node 和其他辅助程序自身的 libc
+要求不因此消失；独立的 OpenCode/provider 认证环境仍按原边界保留，不传入 MCP。
+
 为其他客户端提供准确的 stdio 启动命令和完整 skills 目录，但不承诺其自动识别 OpenCode
 配置。需要持久配置时先预览差异，再经用户授权写入项目配置并备份；配置/skills 改动后
-提示退出并重启客户端。本轮不生成任何实际配置。
+提示退出并重启客户端。当前实现只为新客户端子进程创建临时接入，不默认生成持久配置。
 
 ## 6. MCP 契约
 
@@ -373,7 +398,10 @@ preview 为带 `ready` 状态的持续 running job，通过 cancel 正常停止�
   锁按真实 workspace/engine-root 定位，必须跨 MCP 进程和 SDK 版本生效。
   源码维护模式对同一引擎根保守串行化准备/声明/构建/测试。
 - SDK 只读，游戏构建对选定输入做快照并记录摘要；快照期间变化则拒绝发布不一致结果。
-  同一 requestKey 在 7 天保留窗口内返回同一 job；不同规范化参数复用 key 则拒绝。
+  同一 SDK、已验证 release 与 requestKey 在 7 天窗口内返回同一 job；不同规范化参数
+  或 timeout 复用该 key 则拒绝。新发行请求不能复用另一 release 或未知历史 producer 的
+  job，即使 SDK 与文本 key 相同；同一已验证 release 可重定位，保留同 workspace/state
+  下的去重。源码模式 `releaseId: null`，输入身份仍绑定 SDK 根路径。
   改代码后需要新 key，旧 job 的快照不能被当成最新输入。
 - 普通调用预算 5 秒，启动 receipt 目标 1 秒内返回。默认游戏构建 10 分钟、源码测试
   30 分钟，硬上限 60 分钟，截止时间从提交起计入排队；预览默认 TTL 30 分钟，
@@ -396,6 +424,13 @@ preview 为带 `ready` 状态的持续 running job，通过 cancel 正常停止�
 达到上限仍持续消费子进程输出，不能因停止读管道造成死锁。过期 cursor 明确返回失效或
 截断信息；终态元数据记录退出结果和丢弃字节数，不能用截断隐去失败。
 自动清理仅覆盖工具拥有的过期日志、元数据和失败 staging，不清理用户游戏或已交付产物。
+
+当前元数据 v5 将 SDK-scoped 产物所有权独立于七天 jobs/logs/keys 保存。v2/v3 成功
+receipt 在任务过期前迁移到登记表，v4 导入保留已有独立登记；不补造缺失 provenance，
+不从未登记目录推断所有权。已交付产物不随 job 过期，仍计入跨 SDK 配额，HTML5 产物
+仍可按 artifact ID 预览。另一 release 打开同一 SDK 状态时保持原 producer，不重新
+归属或改写历史来源；这不允许新发行请求复用旧 job。旧二进制不保证能读 v5，回滚需
+离线的升级前状态备份，不能通过覆盖未知或损坏的状态“修复”。
 
 ### 发布产物
 
@@ -500,7 +535,7 @@ manifest/catalog、工作区策略、job/进程、游戏构建/预览。单独�
 | 类型与依赖 | 引擎 TS 4.9.5 基线、独立工具 TS 检查、随包真实声明消费者、装饰器运行行为；不能关闭库检查 |
 | 文件与授权 | `..`、绝对/编码/Windows 特殊路径、symlink/junction、输出冲突、tsconfig 越界、日志秘密、巨量/特殊文件、目录链接竞争 |
 | 任务 | 重复 requestKey、排队/多进程锁、取消与完成竞争、超时、服务器强杀、worker 崩溃、磁盘满、输出背压、日志分页/过期、断连回收 |
-| 产物 | 无旧文件污染；资源引用与摘要有效；失败不覆盖成功；不同 SDK/profile 不混用；缺失 WASM/声明/adapter 必须报错 |
+| 产物 | 无旧文件污染；资源引用与摘要有效；失败不覆盖成功；不同 SDK/profile 不混用；验证 release/profile 来源及旧记录不补造来源、过期产物独立所有权、同 release 重定位与跨 release key 隔离；缺失 WASM/声明/adapter 必须报错 |
 | 无源码/离线 | 全新 VM，仅复制发行包和用户游戏，无源码挂载/旧缓存/系统 Node/npm/Git/Creator；阻断外网后检查、构建、预览均通过 |
 | 宿主 | 含空格/中文/较长路径、移动解压目录、只读 SDK、无管理员权限、不同 cwd、端口占用、后台进程清理、签名/系统警告 |
 | 许可证/发行 | 每个打包文件可追溯；Node/加载器/编译器/WASM/字体等许可保留；无法确认再分发权的组件不得混入通用包 |
@@ -575,7 +610,26 @@ git diff --check
 - [x] 实现只读 stdio MCP/CLI：十个真实工具、固定 resources、严格信封及错误路由；未提供游戏写入/构建/预览占位工具。
 - [x] 实现受限 Linux 文件读取、私有快照、canonical BILIBILI worker 校验、任务持久化/分页/锁/取消及跨 SDK 隔离。
 - [x] 官方 SDK 黑盒验证握手、元数据、非法参数、分页、真实任务、stdin EOF 及 stdout 背压清理。
-- [ ] 修复 3D deferred-lighting 的 EFX2404：上游 AST 检查未正确处理条件编译分支，不能跳过 parser。
+- [x] 修复 3D deferred-lighting 的 EFX2404：锁定 glslang 条件预处理补丁，保留严格 AST/parser 与真实 GL 检查。
+- [x] 生成实际 2D/3D HTML5 debug runtime、完整声明、模板和独立 compiler closure，验证离线 SDK 重定位。
+- [x] 接通项目创建、类型检查、游戏构建、预览启停；固定 worker 准备，父进程非覆盖发布，默认只读。
+- [x] 官方 MCP/CLI 测试修改后游戏与产物，真实 Chromium 验证两种 profile 绘制、输入、音效和重开。
+- [x] 声明驱动 API/成员索引与实际模板源码示例查询，绑定声明、源位置和各 target/profile 的运行时导出摘要。
+- [x] 真实 BILIBILI 2D/3D 引擎、loader、adapter 和 Application 纳入混合 SDK；本地宿主接口模拟与浏览器/厂商证据分开。
+- [x] game_build 接入 BILIBILI 源码包组装、项目 game.json、静态模块闭包和 canonical preflight；BILIBILI 产物禁止浏览器预览。
+- [x] 独立构建八种 debug/release profiles；修复 BILIBILI 同名 exporter 误判，两版本的四种公开 release 游戏流程均通过，HTML5 新产物有真实浏览器证据。
+- [x] 增加独立 execute-tests 授权、固定 Node 逻辑 runner、Linux 进程树监督及 8 MiB/job、256 MiB/workspace 日志；两版本逻辑/生命周期矩阵各 35 项通过。
+- [x] 修复已交付产物被元数据过期清理的问题；早期任务回归两版本各 31 项通过，原失败证据不覆盖。
+- [x] 元数据 v5 独立保留 SDK 产物所有权和原 producer，新增已验证 release/profile 来源；v2/v3/v4 导入不补造 provenance。过期 HTML5 产物仍可预览并计入跨 SDK 配额，未登记目录阻止发布；新发行 key 不复用旧发行或未知 producer，同一已验证 release 可重定位。父任务直接测试两版本各 139 项通过，历史 v4 的 136 项报告保留，不冒充当前全量结果。
+- [x] 临时 OpenCode 1.18.21 接入及受限文件工具通过两版本各 37 项 focused 测试、93 项真实客户端文件操作检查；未包含模型请求。
+- [x] 生成内置 Node 24.21.0 的 Linux v5-a 候选包；SDK-only doctor 无需 workspace/HOME/state，显式 workspace 保留 jobs；AI 子 MCP 使用 static-no-libc helper，不依赖运行时 `/usr/bin/env`，独立 provider 认证环境不变。实际 startup/archive 选定测试 34 项通过，无失败/跳过/取消，输入未变。
+- [x] v5-a 在无源码/宿主命令/用户缓存、只读挂载和断网 namespace 中完成八个实际构建及四个 HTML5 浏览器报告，release/profile 身份断言通过；覆盖 2D/3D、debug/release、修改后的玩法、输入、资源/音频和重开，浏览器及驱动单独显式挂载。这不是全新 VM、其他 OS、模型或厂商/真机验收。
+- [x] 修正 SPDX 归档摘要语义、补齐宿主声明及 schema 组件记录；修复 tar PAX 原路径泄漏，历史 e/f 两次实际完整归档具有相同摘要，不是 v5 重复制备证据。许可缺口仍明确阻止正式发行。
+- [x] 2026-09-25 的 variant-aware skill 检查及后续候选包组装已有保留证据，详见 [9 月 24-25 日历史记录](../../tools/devkit/ACCEPTANCE.md#september-24-25-checkpoint)；不代表完整候选包或模型验收。
+- [x] 修复验证输入传递、取消/结果发布边界和作业轮询时限；定向检查发现并修复 readiness JSON 发布竞态，只重跑失败文件。精确命令、通过与失败记录见 [9 月 26 日定向验证](../../tools/devkit/ACCEPTANCE.md#september-26-focused-verification)，当时没有重建 SDK 或候选包。
+- [x] 完成新候选包的 [Packaged 2048 Check](../../tools/devkit/ACCEPTANCE.md#packaged-2048-check) 定向交付；仅此项完成，不代表完整发行、全平台或全部 AI 目标完成。
+- [ ] 完整合并矩阵、候选包验收及实际模型闭环仍未完成；最新 Node 18 矩阵已中断，不是正在运行，也没有当前两版本全量通过记录。遵照用户要求不再执行全量矩阵，只做必要的 focused 检查；定向通过不代表完整发行验收。
+- [ ] 完成新增 CI 前置条件的干净 checkout 与 hosted rehearsal；历史 `verification-inputs` 两版本各六项通过只证明编排契约，尚未运行完整排练。
 - [ ] P0 独立启动、资源链路与工具链可行性验证。
 - [ ] P1-P2 预编译发行骨架和游戏 CLI。
 - [ ] P3 MCP 协议、任务和安全实现。
@@ -583,11 +637,38 @@ git diff --check
 - [ ] P5 无 Creator 小游戏组装与分层验收。
 - [ ] P6 干净机、多宿主、许可证及可追溯发行验收。
 
-当前新增内容包括维护者 P0 探针、独立锁文件、真实 mappings 构建、2D builtin 候选资源包，
-以及可运行的只读 MCP/CLI 和离线诊断数据包。它们不是完整游戏开发套件；没有客户端配置或发布制品。
-只读工具采用固定 worker threads；这不等于已经实现任意项目代码的跨宿主进程树监督。
-3D 严格编译按实际错误拒绝产出，保留先前成功结果。候选包的引擎资源加载、真实浏览器
-2D/3D、游戏装饰器、写入/构建/预览工具与多宿主验证仍未完成。
+当前实现包括真实 mappings、严格 2D/3D builtin 编译、SDK 内游戏编译器、预编译 runtime，
+以及受权限约束的开发 MCP/CLI。真实浏览器验证使用软件 WebGL，不代表硬件或厂商真机验收。
+它们仍不是完整发行套件：虽然 Linux 候选包已包含 Node、编译工具和宿主辅助程序，
+但完整合并矩阵、实际模型闭环、全新 VM、多宿主和许可/来源认证仍有未完成项。
+厂商编译、上传和真机仍未验证，不以本地源码包预检冒充发布成功。
+开发操作的 RequestKey 已必填，检查/构建支持有界 timeoutMs；需以当前 MCP schema 为准。
+新候选包身份与 2048 定向结果统一见 [当前验收记录](../../tools/devkit/ACCEPTANCE.md#packaged-2048-check)；
+该次组装取代“候选包未重建”的当前状态，但未重建引擎/SDK，也不承接旧矩阵通过结果。
+2026-09-24/25 的 SDK/候选包、skill 检查及中断结果保留为
+[历史检查点](../../tools/devkit/ACCEPTANCE.md#september-24-25-checkpoint)；以下历史证据不转移到新候选包。
+此前保留的 v5-a 候选包为 `tools/devkit/build/portable-candidate-20260922-v5-a`，6,037 个 payload
+文件、300,964,724 字节，归档 76,394,705 字节；完整 release/SDK/archive SHA-256 见
+[验收清单](../../tools/devkit/ACCEPTANCE.md)。实际 startup/archive 报告为
+`build/matrix-node24-93jqOD/result.json`（34 passed、0 fail/skip/cancel、unchanged），
+实际 namespace/browser 报告为 `build/portable-host-bAPi9z/result.json` 及其 workflow
+报告（八个构建、四个浏览器报告、来源断言通过）；路径相对 `tools/devkit/`。
+父任务 `node --test` 的 artifact-lifecycle/jobs/job-logs/preview 两版本各 139 passed、
+0 fail/skip，Node 24 game 测试 49 passed，含实际 profile SHA-256 与 release mismatch
+拒绝。这些是历史终端命令证据，没有捏造新的保留报告；本次定向结果单独记录，不重复引用旧计数作为新验证。
+旧 `build/matrix-node24-ktQbxU/result.json` 的 `interrupted: true` 与全 null totals 保留，
+前序 `build/matrix-node24-E9bbpP/result.json` 的 510 tests / 492 passed / 18 failed 也保留。
+模型尝试 `build/ai-model-20260921-7Qm4waaE/REPORT.md`、`audit.redacted.json` 使用真实
+OpenCode 1.18.21 和 `opencode/big-pickle`，收到 HTTP 403 `FreeTierError`，0 模型文本、
+0 工具调用；连接门禁失败后未提交玩法 prompt。它不是成功闭环，也不证明所有模型不可用。
+历史 agent 临时证据已归档到 `build/retained-*.tar.gz`，五份精确文件名和 SHA-256 见验收
+清单；归档只是保留，不是重跑。所有未完成的 P0-P6、干净源码来源、认证、许可、全新 VM、
+多宿主和真实模型要求继续保留，不能从局部通过推导完整目标完成。
+维护源码直接修改当前项目；需要保留的 SDK 和验收证据位于已忽略的 `tools/devkit/build/`，不以系统临时目录作为唯一存储。
+默认 worker 不运行项目代码；显式授权的逻辑测试不是沙箱。父进程通过随包 C helper、
+descriptor chains 和 renameat2 非覆盖发布，运行时不依赖 Python；Python 仍用于维护者 SDK 准备。
+发布与任务元数据并非单一事务，崩溃可能留下已创建项目或未登记产物；保留它们供核对，不自动重放或删除。
+Linux 监督不能代替 Windows Job Object/macOS 的实际实现和验收，namespace 也不是全新 VM。
 根 MIT 许可与部分源码限制性声明、编译器/加载器的许可元数据差异需要在发行前澄清；
 不能通过删除原声明绕过。详细证据和下一步见 [P0 记录](../../tools/devkit/README.md)。
 

@@ -18,8 +18,9 @@ const { compilerDependencies, compilerRoots } = require('../runtime/compiler-dep
 const { assertAbsent, inventory, readRegular, sha256 } = require('../runtime/files.cjs');
 
 async function temporary(t) {
-    await mkdir(join(runtime, 'build'), { recursive: true });
-    const directory = await mkdtemp(join(runtime, 'build/test-'));
+    const root = resolve(process.env.TMPDIR ?? join(runtime, 'build'));
+    await mkdir(root, { recursive: true });
+    const directory = await mkdtemp(join(root, 'cocos4-runtime-'));
     t.after(() => rm(directory, { recursive: true, force: true }));
     return directory;
 }
@@ -130,8 +131,7 @@ test('compiler rejects config-based filesystem discovery before reading declarat
 test('copied SDK compiler: no checkout reads, check-only, structured diagnostics and real fixture transforms',
     { skip: !process.env.RUNTIME_COMPILER_FIXTURES, timeout: 240000 }, async t => {
         const fixtureRoot = resolve(process.env.RUNTIME_COMPILER_FIXTURES);
-        const directory = await mkdtemp('/tmp/opencode/cocos4-compiler-');
-        t.after(() => rm(directory, { recursive: true, force: true }));
+        const directory = await temporary(t);
         const maintainer = await compileGame({ projectDirectory: join(fixtureRoot, '2d-basic/template'),
             typesDirectory: join(fixtureRoot, '2d-basic/types'), outDirectory: join(directory, 'maintainer-game') });
         assert.equal(maintainer.emitted, true);
@@ -179,6 +179,10 @@ test('copied SDK compiler: no checkout reads, check-only, structured diagnostics
             assert.equal(names.has('MeshRenderer'), profile === '3d-basic');
             await writeFile(join(destination, 'cc-exports.json'), JSON.stringify([...names].sort()));
         }
+        const working = join(directory, 'working');
+        await mkdir(working);
+        await writeFile(join(directory, 'package.json'), JSON.stringify({ browserslist: ['extends browserslist-config-hostile'] }));
+        for (const name of ['browserslist', '.browserslistrc']) await writeFile(join(directory, name), 'extends browserslist-config-hostile\n');
         const script = join(directory, 'acceptance.cjs');
         await writeFile(script, `
 const assert = require('node:assert/strict');
@@ -194,7 +198,11 @@ let configFile;
 async function compileGame(options) {
     inputRoots = [toolchainDirectory, path.join(options.projectDirectory, 'src'), options.typesDirectory];
     configFile = path.join(options.projectDirectory, 'tsconfig.json');
-    try { return await backend(options); } finally { inputRoots = undefined; }
+    const before = blockedInputAttempts.length;
+    try { return await backend(options); } finally {
+        inputRoots = undefined;
+        assert.deepEqual(blockedInputAttempts.slice(before), [], 'Caught/ignored outside probes are still isolation failures');
+    }
 }
 const ts = createRequire(path.join(toolchainDirectory, 'package.json'))('typescript');
 for (const name of ['readFile', 'readDirectory', 'fileExists', 'directoryExists', 'getDirectories']) {
@@ -212,14 +220,17 @@ fs.mkdirSync(outside);
 fs.writeFileSync(path.join(outside, 'leak.d.ts'), 'export interface Leak { value: string }');
 fs.writeFileSync(path.join(outside, 'leak.ts'), 'export const leak = 1;');
 const readAttempts = [];
+const blockedInputAttempts = [];
 const writes = [];
 let checking = false;
-for (const [object, names] of [[fs, ['readFileSync', 'openSync']], [fsp, ['readFile', 'open']]]) {
+for (const [object, names] of [[fs, ['readFileSync', 'openSync', 'existsSync', 'statSync']], [fsp, ['readFile', 'open']]]) {
     for (const name of names) {
         const original = object[name];
         object[name] = function (file, ...args) {
-            if (typeof file === 'string') {
+            if (typeof file === 'string' && (inputRoots || !['existsSync', 'statSync'].includes(name))) {
                 readAttempts.push(file);
+                if (inputRoots && !(path.resolve(file) === configFile
+                    || inputRoots.some(root => path.resolve(file).startsWith(root + path.sep)))) blockedInputAttempts.push({ operation: name, file });
                 assert.ok(!path.resolve(file).startsWith(outside + path.sep), 'OUTSIDE_INPUT_READ: ' + file);
                 if (inputRoots) assert.ok(path.resolve(file) === configFile
                     || inputRoots.some(root => path.resolve(file).startsWith(root + path.sep)), 'UNALLOWLISTED_READ: ' + file);
@@ -408,14 +419,16 @@ async function main() {
     const js = await compileGame({ ...options, checkOnly: false, outDirectory: path.join(__dirname, 'js-game'), availableCCExports: ['Node'] });
     assert.deepEqual(js.outputFiles, ['main.js']);
     assert.ok(!readAttempts.some(file => /(?:babel.config.cjs|\\.babelrc.js|tsconfig.js)$/.test(file)));
+    assert.deepEqual(blockedInputAttempts, []);
     assert.deepEqual(writes, []);
     console.log(JSON.stringify({ node: process.version, isolatedToolchain: true, noDefaultTsFilesystem: true,
-        noOutsideReads: true, noProjectExecution: true, checkOnlyWrites: writes.length, cases: cases.length, results }, null, 2));
+        noOutsideReads: true, blockedInputAttempts: blockedInputAttempts.length, noProjectExecution: true,
+        checkOnlyWrites: writes.length, cases: cases.length, results }, null, 2));
 }
 main().catch(error => { console.error(error, error.diagnostics); process.exitCode = 1; });
 `);
-        const result = await execute(process.execPath, [script], { cwd: directory, timeout: 210000,
-            env: { PATH: '', HOME: directory, LANG: 'C', NODE_PATH: '' }, maxBuffer: 1024 * 1024 });
+        const result = await execute(process.execPath, [script], { cwd: working, timeout: 210000,
+            env: { PATH: '', HOME: directory, TMPDIR: directory, LANG: 'C', NODE_PATH: '' }, maxBuffer: 1024 * 1024 });
         t.diagnostic(`Copied ${closure.packages.length} locked packages. ${result.stdout.trim()}`);
         assert.equal(result.stderr, '');
     });

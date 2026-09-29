@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Cocos4 Browser Bootstrap Probe</title>
+    <link rel="icon" href="data:,">
+    <style>
+        html, body { margin: 0; width: 100%; height: 100%; background: #101828; overflow: hidden; }
+        body { display: grid; place-items: center; }
+        #GameDiv { width: min(100vw, 640px); aspect-ratio: 4 / 3; }
+        #Cocos3dGameContainer, canvas { width: 100%; height: 100%; display: block; }
+        canvas { touch-action: none; }
+        #error { position: fixed; inset: 0; color: white; background: #600; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <div id="GameDiv" cc_exact_fit_screen="false">
+        <div id="Cocos3dGameContainer"><canvas id="GameCanvas" width="640" height="480" tabindex="0" aria-label="Tap the two-tone tile to move it and change its colour"></canvas></div>
+    </div>
+    <pre id="error" hidden></pre>
+    <script type="systemjs-importmap" src="import-map.json"></script>
+    <script src="loader.js"></script>
+    <script src="boot.js"></script>
+</body>
+</html>

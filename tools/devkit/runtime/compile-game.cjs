@@ -18,10 +18,12 @@ async function compileGame(input = {}) {
     try {
         if (!input || typeof input !== 'object' || Array.isArray(input)) reject('Invalid compileGame options');
         const { projectDirectory, typesDirectory, outDirectory, toolchainDirectory,
-            checkOnly = false, availableCCExports } = input;
+            checkOnly = false, availableCCExports, variant = 'debug' } = input;
         if (typeof projectDirectory !== 'string' || typeof typesDirectory !== 'string' || typeof checkOnly !== 'boolean'
             || (!checkOnly && typeof outDirectory !== 'string') || (outDirectory !== undefined && typeof outDirectory !== 'string')
-            || (toolchainDirectory !== undefined && typeof toolchainDirectory !== 'string')) reject('Invalid compileGame options');
+            || (toolchainDirectory !== undefined && typeof toolchainDirectory !== 'string')
+            || !['debug', 'release'].includes(variant)) reject('Invalid compileGame options');
+        const release = variant === 'release';
         if (availableCCExports !== undefined && (!Array.isArray(availableCCExports)
             || availableCCExports.some(name => typeof name !== 'string' || !/^[A-Za-z_$][\w$]*$/.test(name)))) {
             reject('availableCCExports must be a validated runtime export-name array');
@@ -310,18 +312,29 @@ async function compileGame(input = {}) {
             profileChecked: availableCCExports !== undefined, checkOnly, emitted: false,
             diagnostics, outputFiles: [], typescript: ts.version, babel: babelManifest.version,
             preset: `@cocos/babel-preset-cc@${presetManifest.version}`, decorators: 'legacy', useDefineForClassFields: false,
-            typeChecking: { strict: true, noImplicitAny: options.noImplicitAny, skipLibCheck: false, skipDefaultLibCheck: false, allowJs: true, checkJs: true } };
+            typeChecking: { strict: true, noImplicitAny: options.noImplicitAny, skipLibCheck: false, skipDefaultLibCheck: false, allowJs: true, checkJs: true },
+            emission: { variant, sourceMaps: false, minified: release, compact: release, comments: release ? 'license-only' : 'preserve' } };
         if (checkOnly) return metadata;
         const babel = toolRequire(tools.get('@babel/core'));
         const preset = tools.get('@cocos/babel-preset-cc');
         const systemjs = tools.get('@babel/plugin-transform-modules-systemjs');
         const transformed = new Map();
         for (const [file, source] of sources) {
-            const result = await babel.transformAsync(source, {
+            const transformOptions = {
                 filename: path.join(sourceRoot, file), sourceType: 'module', babelrc: false, configFile: false, sourceMaps: false,
+                // configFile does not disable Browserslist's separate ancestor discovery.
+                browserslistConfigFile: false,
+            };
+            // Type erasure can append `export {}` on Program exit. Finish the Cocos/TS
+            // pass before SystemJS visits the module, including type-only files.
+            const intermediate = await babel.transformAsync(source, {
+                ...transformOptions, ast: true, code: false,
                 presets: [[preset, { allowDeclareFields: true, onlyRemoveTypeImports: true, useDefineForClassFields: false }]],
-                plugins: [systemjs],
             });
+            if (!intermediate?.ast) reject('Missing transformed game module', `src/${file}`);
+            const result = await babel.transformFromAstAsync(intermediate.ast, source, { ...transformOptions, plugins: [systemjs],
+                ...(release ? { minified: true, compact: true, comments: false,
+                    shouldPrintComment: comment => /@license|@preserve|copyright|permission is hereby granted/i.test(comment) } : {}) });
             if (!result?.code?.includes('System.register(')) reject('Missing SystemJS game module', `src/${file}`);
             transformed.set(file.replace(/\.ts$/, '.js'), result.code);
         }

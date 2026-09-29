@@ -229,9 +229,9 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
     assert.equal(JSON.parse(preparation.output().stdout).sdkId, manifest.sdkId);
     const config = JSON5.parse(await readFile(join(engine, 'cc.config.json'), 'utf8'));
     const docs = await Promise.all(manifest.docs.map(async doc => ({ ...doc, text: await readFile(join(sdkRoot, doc.path), 'utf8') })));
-    const shortDoc = docs.filter(doc => /[^\x00-\x7f]/.test(doc.text))
+    const shortDoc = docs.filter(doc => Buffer.byteLength(doc.text) > 257 && /[^\x00-\x7f]/.test(doc.text))
         .sort((a, b) => Buffer.byteLength(a.text) - Buffer.byteLength(b.text))[0];
-    assert.ok(shortDoc, 'The real SDK must include a UTF-8 document for byte-boundary pagination tests');
+    assert.ok(shortDoc, 'The real SDK must include a UTF-8 document longer than 257 bytes for byte-boundary pagination tests');
     const resourceBase = `cocos4://sdk/${manifest.sdkId}/`;
     t.diagnostic(`Node ${process.version}; official SDK stdio/Ajv; Linux Python3 atomic SDK preparation; ${manifest.sdkId}`);
 
@@ -331,6 +331,7 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
             ['catalog', { section: 'sdk', limit: 101 }], ['docs_search', { query: '', kind: 'all' }],
             ['docs_search', { query: '   ', kind: 'all' }], ['docs_search', { query: 'x', kind: 'all', profile: 'invented' }],
             ['docs_read', { documentId: shortDoc.id, maxBytes: 3 }], ['docs_read', { documentId: shortDoc.id, maxBytes: 16385 }],
+            ['docs_read', { documentId: shortDoc.id, cursor: null }],
             ['docs_read', { documentId: '../README.md' }], ['project_inspect', { project: 1 }],
             ['doctor', { depth: 'repair' }], ['doctor', { workerUrl: 'file:///tmp/worker.js' }],
             ['job_get', { jobId: 'not-a-uuid' }], ['job_logs', { jobId: randomUUID(), maxBytes: 0 }],
@@ -413,6 +414,8 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
         assert.deepEqual((await pages(session, 'cocos4_docs_search', { query: literal, kind: 'all' })).flatMap(page => page.items.map(item => item.documentId)),
             docs.filter(doc => doc.text.includes(literal) || doc.title.includes(literal)).map(doc => doc.id));
         const docPages = await pages(session, 'cocos4_docs_read', { documentId: shortDoc.id, maxBytes: 257 });
+        assert.ok(docPages.length > 1, 'The UTF-8 document must span multiple 257-byte pages');
+        assert.equal(typeof docPages[0].nextCursor, 'string');
         let offset = 0;
         for (const page of docPages) {
             assert.equal(page.offsetBytes, offset);

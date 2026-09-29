@@ -56,6 +56,9 @@ typeMap[typeMap.image3D = Type.IMAGE3D] = 'image3D';
 typeMap[typeMap.imageCube = Type.IMAGE_CUBE] = 'imageCube';
 typeMap[typeMap.subpassInput = Type.SUBPASS_INPUT] = 'subpassInput';
 // variations
+// GL_EXT_shader_explicit_arithmetic_types_int32 aliases u32vec4 to uvec4.
+// This is not decode-base.chunk's WebGL vec4 fallback with RGBA16UI buffer storage.
+typeMap.u32vec4 = Type.UINT4;
 typeMap.int8_t = Type.INT;
 typeMap.i8vec2 = Type.INT2;
 typeMap.i8vec3 = Type.INT3;
@@ -117,6 +120,7 @@ const formatMap = {
     uvec2: Format.RG32UI,
     uvec3: Format.RGB32UI,
     uvec4: Format.RGBA32UI,
+    u32vec4: Format.RGBA32UI,
     float: Format.R32F,
     vec2: Format.RG32F,
     vec3: Format.RGB32F,

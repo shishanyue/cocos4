@@ -1,16 +1,60 @@
 # Devkit Tools And Probes
 
 Development tools and feasibility tests for the [portable devkit plan](../../docs/plans/cocos4-mcp-devkit.md).
-A working [readonly MCP/CLI](MCP.md) now exposes ten real tools with bounded
-workspace reads and worker-backed jobs. This is **not** a released portable SDK,
-game compiler or preview server, and does not complete the full MCP/game goal.
-P0 remains open until real, source-independent 2D/3D games work in a browser.
-The separate [builtin Effect probe](effects/README.md) now compiles the actual
-2D builtin assets; its strict 3D attempt exposes an unresolved compiler defect.
+The [development MCP/CLI](MCP.md) exposes 10 tools by default in read-only mode,
+13 with `--mode develop`, and 15 with `--mode develop --preview true`. Verified
+development packs enumerate their delivered HTML5/BILIBILI, 2D/3D and debug/release profiles, editable
+starters, a self-contained strict game compiler, and separately authorized
+loopback serving of retained artifacts. Project scripts/plugins never execute
+implicitly; pure logic tests require separate `--execute-tests true` authorization
+and run trusted code, not a sandbox. BILIBILI source-package assembly and canonical preflight are
+available when its profiles are delivered; vendor compilation, upload and device
+acceptance are not. Indexed packs provide declaration-driven [API and example
+queries](API-DOCS.md), not invented API/feature mappings.
+This is **not** a complete portable release, Creator replacement, or completion
+of the full MCP/game goal.
+
+The [acceptance checklist](ACCEPTANCE.md) maps the complete contract to current
+evidence. Linux candidate assembly, bundled Node 24.21.0, SPDX/file inventories and
+offline namespace verification are implemented; candidate status is not formal
+redistribution approval or fresh-VM/multi-host acceptance. See [MCP instructions](MCP.md)
+for `prepare:release` / `verify:portable` and the required offline Node archive.
+The historical v5-a candidate remains at `build/portable-candidate-20260922-v5-a`.
+The [current Packaged 2048 Check](ACCEPTANCE.md#packaged-2048-check) records the
+fresh candidate and focused results; the
+[September 24-25 checkpoint](ACCEPTANCE.md#september-24-25-checkpoint) retains
+earlier identities, skill checks and interrupted verification.
+
+Earlier [Effect work](effects/README.md) resolved the strict 3D EFX2404 blocker
+without dropping builtin roots or disabling parser/driver validation. The
+separate [runtime pipeline](runtime/README.md) records prior decorated 2D/3D
+browser, assets, input, audio and restart evidence. That evidence belongs to its
+exact runtime artifacts, not newly emitted MCP builds. Successful compilation or
+an HTTP-ready preview alone does not establish browser rendering or interaction.
 
 ## Run
 
-From the engine repository root:
+From an extracted Linux candidate, not the engine repository root:
+
+```sh
+./cocos4 doctor
+./cocos4 doctor --workspace /absolute/path/to/games --state-root /absolute/path/to/private-cocos4-state
+./cocos4 ai --client opencode --executable /absolute/path/to/opencode \
+  --workspace /absolute/path/to/games --mode develop --preview true
+```
+
+Portable `doctor` without `--workspace` is SDK-only: no workspace, `HOME`, XDG state
+configuration or private state is needed or created. It checks release/SDK integrity
+and host read capabilities, not projects, client availability or gameplay; output
+is one JSON object with `scope: "sdk-only"`. Explicit-workspace doctor keeps the
+worker/job flow and external private state. Without a workspace, state options and
+execution grants are rejected. Portable `ai` requires the absolute `--executable`
+of an installed supported OpenCode. The launcher fixes the SDK and rejects
+`--sdk-root`; source-mode CLI commands instead require all three explicit roots.
+For workspace commands, state defaults to `$XDG_STATE_HOME/cocos4` or
+`$HOME/.local/state/cocos4`, unless `--state-root` is supplied.
+
+Maintainer source workflow, from the engine repository root:
 
 ```sh
 npm ci --prefix tools/devkit --ignore-scripts --engine-strict --no-audit --no-fund
@@ -18,19 +62,119 @@ npm run check --prefix tools/devkit
 npm test --prefix tools/devkit
 ```
 
-Installation is an explicit, network-using maintainer step. Tests do not download
-anything, invoke Creator, prepare the engine, or execute game code. They prepare
-real source catalogs, inspect temporary project fixtures and build loader fixtures.
-Linux and `/usr/bin/python3` with libc `renameat2` are required for atomic pack
-preparation tests. TypeScript emits application and probe JS into ignored
-`build/src/` and `build/probes/`. No MCP/client configuration,
-global skills, ports, background service, or release artifacts are installed.
+Installation is an explicit, network-using maintainer step. Default source-catalog,
+workspace, compiler and job tests use temporary data and existing dependencies;
+they do not install project dependencies or run lifecycle scripts. Expensive
+source runtime builds and real browser checks have their own prerequisites and
+explicit integration settings; see the runtime guide. A checked/served artifact
+is not a substitute for those browser checks.
+
+Maintainer SDK preparation currently requires Linux `/usr/bin/python3` and
+`renameat2(RENAME_NOREPLACE)`. Installed publication uses the compiled
+`cocos4-publish` helper instead; `npm run build` compiles the three host helpers into
+`build/host/` and portable candidates include them. Staging and destination must
+share a filesystem and the canonical destination parent must exist. Publication
+uses pinned descriptor chains and a five-second timeout, without Python, a shell
+or check-then-rename/copy fallback in the installed game workflow.
+AI-spawned MCP uses the verified Linux x64 `cocos4-mcp-launch`, a `static-no-libc`
+helper with no ELF interpreter or shared libraries, to set a clean environment
+before Node starts. It eliminates runtime `/usr/bin/env` and host-env fallback;
+Node and the other helpers still have their own library requirements. The separate
+OpenCode/provider authentication environment remains preserved, not forwarded to MCP.
+TypeScript emits application and probe JS into ignored `build/src/` and
+`build/probes/`. No MCP/client configuration, global skills, background service
+or release artifacts are installed. Explicit preview requests bind a temporary
+token-protected IPv4 loopback listener until TTL or shutdown.
 
 The package has its own lockfile and TypeScript configuration. Engine TypeScript
 4.9.5, root dependencies, and the engine's Node >=18 baseline are unchanged.
 This private probe package requires Node >=18.20.8, the oldest tested runtime;
 that does not establish support for every earlier Node 18 patch. Node 18 is only
 a compatibility test target, not a runtime recommendation for a new release.
+
+## Game Operations
+
+See [MCP setup, exact input schemas and limits](MCP.md) before enabling develop
+mode. Workspace, SDK and private state roots must be absolute and disjoint.
+`scripts/prepare-sdk.mjs` creates the readonly catalog/validator pack;
+`scripts/prepare-game-sdk.mjs` packages verified existing runtimes, templates,
+declarations and the locked compiler closure. Source-mode use needs Node and the
+built helpers; `prepare-release.mjs` supplies these in its enclosing candidate.
+Manifests establish integrity, not release clearance.
+Keep maintained code in the project and retained SDKs/evidence in ignored
+`tools/devkit/build/`, not only in system temporary storage. The current eight-profile
+SDK is identified in the [acceptance checkpoint](ACCEPTANCE.md#packaged-2048-check).
+Historical SDKs remain at `build/game-sdk-isolated` (debug) and
+`build/game-sdk-release-workstream-20260919-lexical` (eight profiles). A compatibility fixture
+is retained at `build/legacy-game-sdk` with provenance in `build/legacy-sdk-preparation`.
+
+- `cocos4_project_create` requires `directory`, `templateId`, `projectName` and
+  `requestKey`. It creates only an absent directory, with editable
+  sources/assets and local declaration mapping; it never merges or overwrites.
+- `cocos4_project_check` requires `project`, `target`, `profile`, `checks` and
+  `requestKey`. Checks is a nonempty unique array of `types` and/or `logic`;
+  logic additionally requires startup execution permission. It uses strict real
+  SDK declarations and the fixed supervised Node test runner, not npm scripts.
+- `cocos4_game_build` requires `project`, `target`, `profile`, `variant` and
+  `requestKey`. Only delivered debug/release combinations are available. It compiles
+  current game sources and packages necessary runtime files plus standard assets,
+  not the old fixture's compiled game. It does not compile the engine or import
+  arbitrary Creator assets.
+- BILIBILI starters add root `game.json` with an empty appId. Supply your appId and
+  review version/platform settings before building; source config bytes are kept
+  unchanged, never replaced by the SDK validation fixture. The unsplit package
+  has entry `game.js`; HTML5 has `index.html`. BILIBILI cannot be browser-previewed.
+- Checks/builds accept `timeoutMs` from 1000 to 3600000 (default 600000), bound into
+  request-key identity and including queue/preparation time.
+- Separate `--preview true` enables `cocos4_preview_start` (`artifactId`, required
+  `requestKey`, optional `ttlSeconds`) and `cocos4_preview_stop` (`jobId`). Start returns a
+  receipt; poll `job.phase === "ready"` for the random tokenized loopback URL.
+  The CLI emits that URL and stays alive until TTL or shutdown. Opening it runs
+  the emitted game in the browser, not in the server worker.
+- Compiler source and its complete manifest-verified dependency closure are
+  copied and rehashed into private staging before loading. Engine/ancestor/global
+  dependency fallback is blocked. TypeScript is strict with neither library
+  check skipped; structured compiler diagnostics remain in failed job reports.
+- One preview may coexist with one heavy worker. Registered build payloads are
+  limited to 128 MiB each, 512 MiB and 64 outputs across the workspace/SDKs.
+  Artifact UUIDs equal build job IDs. Job metadata/logs/keys expire after seven
+  days; the independent SDK-scoped artifact registry and delivered files do not.
+  Outputs keep their original producer when another release opens the same SDK's
+  state. Expired HTML5 builds remain previewable and all outputs count toward the
+  quota. Unregistered directories block new artifact publication instead of being
+  silently adopted or ignored.
+  Stop the server before moving unneeded outputs outside private state to free quota.
+- Metadata v5 records each new job's verified outer `releaseId` and each new
+  artifact's `provenance: { releaseId, profileSha256 }` in its receipt/inventory.
+  The profile hash comes from the actual selected descriptor. Source tools use
+  `releaseId: null`. Valid v2/v3/v4 imports preserve ownership without inventing
+  missing producer/profile provenance or relabeling old outputs.
+- New packaged request keys bind SDK and verified release as well as normalized
+  arguments/timeout: another release or unknown legacy producer cannot supply a
+  cached result. The same verified release may relocate with the same workspace
+  and state without losing deduplication. Source-mode input identity remains bound
+  to the SDK root. Use a new key after editing game sources; keys do not track file contents.
+- The parent serializes publication after successful worker exit. Accepted
+  cancellation cannot become success. A persisted `committing` phase records
+  publication intent, not a complete transaction journal: process loss can leave
+  a created project whose job is interrupted. Inspect it before retrying; no
+  automatic project rollback/replay occurs. Unregistered artifacts are preserved
+  for manual inspection, not automatically served or deleted. Linux authorized
+  logic has real process-tree tests; power-loss and other hosts remain unverified.
+
+For focused compilation/publication tests after the devkit TypeScript build:
+
+```sh
+GAME_OPERATION_SDK_ROOT=/absolute/path/to/game-sdk GAME_SDK_INTEGRATION=1 \
+  node --test tools/devkit/test/game.test.mjs tools/devkit/test/workspace.test.mjs
+```
+
+Game-operation test temporary roots use canonical `os.tmpdir()`. The default SDK
+fixture is `tools/devkit/build/game-sdk`; selecting the explicit integration settings makes
+missing SDK inputs fatal rather than skipping. These tests check actual 2D/3D
+compilation, diagnostics, profile overflow, file/permission invariants, snapshot
+races, atomic conflicts, inventory integrity and bootstrap consistency. They do
+not establish rendering of newly emitted games or a full MCP-to-browser flow.
 
 ## Locked Inputs
 
@@ -47,12 +191,33 @@ a compatibility test target, not a runtime recommendation for a new release.
 
 The SDK permits Hono node-server `^1.19.9 || ^2.0.5`. Unconstrained resolution
 selected 2.1.1, which requires Node >=20. The override stays inside the SDK's
-supported range; no package source or engine requirement is patched. HTTP/OAuth
-are not exercised or exposed. Reassess this override on SDK upgrades.
+supported range; no package source or engine requirement is patched. MCP-over-HTTP
+and OAuth are not exercised or exposed; artifact preview is a separate loopback
+HTTP server, not an MCP transport. Reassess this override on SDK upgrades.
 Tarball locations and integrity hashes, including all transitive packages, are
 recorded in `package-lock.json`. This is not a release SBOM or license clearance.
 
 ## Executed Evidence
+
+The current [acceptance ledger](ACCEPTANCE.md) separates retained reports from
+parent-reported terminal-only tests. The historical v5-a candidate's Node 24 startup/archive
+report records 34 passed, zero failed/skipped/cancelled and unchanged inputs;
+the namespace workflow records eight builds and four browser reports with
+release/profile identity assertions. Parent direct runs passed 139
+job/log/artifact/preview cases on each pinned Node and 49 game cases on Node 24.
+No current full Node 18/24 matrix pass is established. See the
+[current checkpoint](ACCEPTANCE.md#packaged-2048-check) and historical
+[September 26 focused verification](ACCEPTANCE.md#september-26-focused-verification).
+The verification-script fixes passed scoped source/harness checks; no further full
+runs were performed. The later candidate assembly supersedes "not rebuilt"
+without inheriting earlier matrix passes.
+
+The actual OpenCode 1.18.21 `opencode/big-pickle` attempt retained in
+`build/ai-model-20260921-7Qm4waaE/REPORT.md` and `audit.redacted.json` received HTTP
+403 `FreeTierError`, zero model text and zero tool calls. The gameplay workflow did
+not run. This is a specific failed attempt, not success or proof all models are
+unavailable. Historical agent evidence has been archived under `build/`; the
+checklist records the five archive hashes. Retention is not a rerun.
 
 Initial protocol/loader evidence on 2026-09-16, Linux x64, engine baseline `2736376eb7`:
 
@@ -79,10 +244,12 @@ initial counts above as current regression results.
 The two additional Node versions were explicitly obtained as pinned
 `node-linux-x64` npm packages in temporary storage and invoked by absolute path.
 They are test executables, not bundled devkit runtimes or verified release inputs.
-The CI workflow repeats clean installation/checking/tests for Node 18.20.8 and
-24.21.0 with this tool package installed and selected engine config/doc inputs
-read from the checkout; no engine dependency installation. A checked-in workflow is not
-evidence of a completed CI run or a clean offline release-machine acceptance.
+The current CI workflow instead defines provisioned Node 18.20.8 and 24.21.0
+integration lanes with host/GL prerequisites, engine/tool dependencies, real runtime
+reports, reviewed official Node archive verification and offline candidate assembly
+before the unfiltered suite. Earlier six-test `verification-inputs` runs passed per
+pinned Node in parent-reported direct runs. No clean-checkout or hosted rehearsal
+has been performed; workflow/source assertions are not completed CI or release acceptance.
 
 ### MCP Results
 
@@ -137,15 +304,14 @@ Two integration issues were reproduced:
   This is a required host integration contract, **not** an implemented BILIBILI
   adapter fix. The unbridged failure remains an explicit regression assertion.
 
-## Remaining Graphics Work
+## Runtime Evidence And Gaps
 
-The portable profiles must explicitly include `legacy-pipeline`. The smoke
-default does not register a renderer; see `exports/legacy-pipeline.ts` and
-`cocos/root.ts:setRenderPipeline`. Do not change the existing smoke CLI defaults
-merely to make them appear to be production profiles. The first experiment
-should use HTML5 BUILD, `rendering.customPipeline: false`, no serialized launch
-scene and a disabled splash, then create scenes through public APIs after
-`game.init()`. A resolved init or an AFTER_DRAW event alone is not pixel evidence.
+The delivered profiles explicitly include `legacy-pipeline`; the separate smoke
+CLI default still does not register a renderer. See `exports/legacy-pipeline.ts`
+and `cocos/root.ts:setRenderPipeline`. The runtime uses HTML5 BUILD,
+`rendering.customPipeline: false`, no serialized launch scene and a disabled
+splash, then creates scenes through public APIs after `game.init()`.
+A resolved init or an AFTER_DRAW event alone is not pixel evidence.
 
 `builtin-res-mgr.ts:init()` generates textures, **not** Effects or materials.
 `loadBuiltinAssets()` consumes `engine.builtinAssets` from an `internal` bundle
@@ -169,15 +335,27 @@ separate maintainer Effect probe (not in this Node 18-compatible package):
   `skipParserTest` is not a substitute. Establish a separate maintainer build
   environment, not a Node minimum increase or a native engine backend.
 
-The 2D builtin roots compile to a candidate internal bundle with reproducible
-file digests. Strict 3D compilation fails at deferred-lighting's parser check;
-the parser and configured dependencies remain intact. Fix that compiler defect
-and validate resource loading first. Then compile decorated game TS, build the
-actual profiles, and demonstrate interactive 2D/3D pixels, resources, audio and
-restart in a real browser with source paths unavailable. Custom pipeline graph
-production, game assembly, BILIBILI bootstrap and host process-tree supervision
-remain separate work. None is completed by the original eight probe tests or the
-new readonly MCP/job tests.
+The earlier strict deferred-lighting EFX2404 failure came from parsing disabled
+conditional branches after stripping preprocessor directives. The separately
+pinned `glsl1-conditional-validation` patch uses real GLSL preprocessing before
+the ordinary AST check and retains driver validation of the original source.
+The Effect record now contains successful 2D and full configured 3D builtin
+compilation and reproducible resource digests. This resolves that historical
+blocker; it is not a claim that the Effect tests were rerun with this doc update.
+
+Prior runtime acceptance adds real Chrome/ANGLE SwiftShader 2D/3D pixels, builtin
+loading, decorated game code, input, image/JSON/audio and scene restarts. Software
+WebGL is not physical GPU or vendor-device evidence. See the hash-bound browser
+reports and runtime guide for the tested artifacts and configurations. Emitted
+MCP artifacts intentionally record compiler/linkage/inventory evidence without
+inheriting browser success from the SDK template. Any new build-to-preview
+end-to-end acceptance must identify and test those new output bytes separately.
+
+General Creator asset import and vendor compilation/upload remain outside the
+first local beta. BILIBILI source assembly and Linux supervision have separate
+evidence; redistribution, fresh-machine and multi-host acceptance remain open.
+Neither the historical eight probe tests nor the development tool count completes
+those gates; consult the current requirement-to-evidence checklist.
 
 ## Redistribution Gate
 

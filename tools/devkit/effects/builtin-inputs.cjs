@@ -50,8 +50,8 @@ function collectBuiltinInputs(engine, profile) {
         assert.ok(asset, `Unresolved builtin UUID: ${uuid}`);
         assert.ok(['.effect', '.mtl'].includes(path.extname(asset.file)), `Unsupported builtin: ${asset.file}`);
         const content = read(asset.file);
-        const name = path.basename(asset.file, path.extname(asset.file));
         if (asset.file.endsWith('.mtl')) {
+            const name = path.basename(asset.file, '.mtl');
             const material = JSON.parse(content);
             assert.equal(material.__type__, 'cc.Material');
             assert.equal(typeof material._effectAsset?.__uuid__, 'string');
@@ -59,6 +59,7 @@ function collectBuiltinInputs(engine, profile) {
             material._name = name;
             selected.push({ uuid, name, material, file: asset.file });
         } else {
+            const name = path.relative(path.join(engine, 'editor/assets/effects'), asset.file).replaceAll('\\', '/').slice(0, -7);
             selected.push({ uuid, name, content, file: asset.file });
         }
     }

@@ -2,22 +2,26 @@
   "name": "@cocos4/devkit-probes",
   "version": "0.0.0",
   "private": true,
-  "description": "Readonly development MCP/CLI and maintainer probes; not a portable game-development release.",
+  "description": "Development MCP/CLI, offline game SDK and maintainer tools; portable release acceptance is incomplete.",
   "type": "module",
   "engines": {
     "node": ">=18.20.8"
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "build": "tsc",
+    "build": "tsc && npm run build:host",
+    "build:host": "node scripts/build-publisher.mjs && node scripts/build-supervisor.mjs && node scripts/build-mcp-launch.mjs",
     "test": "npm run build && node --test build/probes/mcp-client.js test/*.test.mjs",
     "prepare:sdk": "node scripts/prepare-sdk.mjs",
+    "prepare:release": "npm run build && node scripts/prepare-release.mjs",
+    "verify:portable": "node scripts/verify-portable-host.mjs",
     "start": "node build/src/cli.js"
   },
   "devDependencies": {
     "@cocos/module-system": "0.0.21",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@types/node": "18.19.130",
+    "ajv": "8.20.0",
     "json5": "2.2.3",
     "typescript": "5.9.3",
     "zod": "3.25.76"

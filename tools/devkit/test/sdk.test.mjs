@@ -343,6 +343,7 @@ test('copied pack and copied runtime load and run validator without any engine p
     await mkdir(runtime);
     await cp(path.join(devkit, 'build/src/sdk.js'), path.join(runtime, 'sdk.js'));
     await cp(path.join(devkit, 'build/src/contracts.js'), path.join(runtime, 'contracts.js'));
+    await cp(path.join(devkit, 'build/src/api-index.js'), path.join(runtime, 'api-index.js'));
     await writeFile(path.join(runtime, 'package.json'), '{"type":"module"}');
     await mkdir(path.join(runtime, 'node_modules'));
     await cp(path.join(devkit, 'node_modules/zod'), path.join(runtime, 'node_modules/zod'), { recursive: true });

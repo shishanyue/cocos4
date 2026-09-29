@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "version": "24.21.0",
+  "target": "linux-x64",
+  "url": "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz",
+  "sha256": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6",
+  "checksumsUrl": "https://nodejs.org/dist/v24.21.0/SHASUMS256.txt",
+  "archiveRoot": "node-v24.21.0-linux-x64",
+  "files": ["bin/node", "LICENSE", "README.md"],
+  "authentication": "Pinned SHA-256 from the official Node HTTPS distribution. No detached-signature verification is claimed.",
+  "npmComparison": {
+    "package": "node-linux-x64@24.21.0",
+    "url": "https://registry.npmjs.org/node-linux-x64/-/node-linux-x64-24.21.0.tgz",
+    "integrity": "sha512-3nULszZ5X0fciYpG0t6TrdApJzAn8+FlINP6OiMX7V8HrvpATPN936U1LlReOJriLRa4e8yEqQBYCnLyPNAs7Q==",
+    "archiveSha256": "61ecf27ad70afee991b671c28561eb497028294a67d132f9bbaac9ad73f81d3b",
+    "observedBinarySha256": "7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c"
+  }
+}

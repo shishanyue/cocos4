@@ -857,7 +857,7 @@ export class Skeleton extends UIRenderer {
             }
         } else {
             this._skeleton = this._instance!.initSkeleton(skeletonData);
-            this._state = this._instance!.getAnimationState();
+            this._state = this._instance!.getAnimationState()!;
             this._instance!.setPremultipliedAlpha(this._premultipliedAlpha);
         }
         if (this._isRenderable) {

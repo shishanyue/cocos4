@@ -73,6 +73,8 @@ if (isMainThread) {
         throw new Error('password=worker-crash-secret');
     case 'empty':
         break;
+    case 'exit-code':
+        process.exit(7);
     case 'result-crash':
         done();
         throw new Error('token=post-result-secret');

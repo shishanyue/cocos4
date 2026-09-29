@@ -9,16 +9,28 @@ const { assertAbsent, inventory, readRegular, sha256 } = require('./files.cjs');
 async function verifyBrowser({ runtimeDirectory, executablePath, outDirectory, headless = true }) {
     assert.ok(path.isAbsolute(executablePath), 'An explicit absolute Chrome executablePath is required');
     await fs.access(executablePath, fs.constants.X_OK);
+    const executableSha256 = sha256(await fs.readFile(executablePath));
     const root = await fs.realpath(runtimeDirectory);
     const descriptorBytes = await readRegular(root, 'runtime.json');
     const descriptor = JSON.parse(descriptorBytes);
+    assert.equal(descriptor.target, 'HTML5', 'Browser evidence requires an actual HTML5 runtime');
+    assert.ok(['debug', 'release'].includes(descriptor.variant));
+    assert.equal(descriptor.constants.DEBUG, descriptor.variant === 'debug');
+    assert.equal(descriptor.compressed, descriptor.variant === 'release');
+    assert.equal(descriptor.sourceMap, false);
     assert.deepEqual((await inventory(root)).filter(file => file.path !== 'runtime.json'), descriptor.files,
         'Runtime descriptor/file integrity mismatch');
     const output = path.resolve(outDirectory);
     await assertAbsent(output);
     await fs.mkdir(output);
     const report = { schemaVersion: 1, profile: descriptor.profile, runtimeSha256: sha256(descriptorBytes),
-        executablePath, headless, browser: '', graphics: null, requests: [], console: [], pageErrors: [],
+        ...(descriptor.buildOptions ? { build: { target: descriptor.target, variant: descriptor.variant,
+            optionsSha256: sha256(JSON.stringify(descriptor.buildOptions)),
+            engineSha256: descriptor.files.find(file => file.path === descriptor.engineEntry.slice(2)).sha256 } } : {}),
+        executablePath, headless, browser: '',
+        tools: { executableSha256, verifierSha256: sha256(await fs.readFile(__filename)),
+            playwright: require('playwright-core/package.json').version, node: process.version },
+        graphics: null, requests: [], console: [], pageErrors: [],
         screenshots: [], validation: {}, success: false,
         limitations: ['Real Chrome with explicit ANGLE SwiftShader software WebGL, not physical GPU/device validation',
             'Audio evidence observes decoded PCM, real WebAudio start/end and running context, not physical speaker output'] };
@@ -81,6 +93,10 @@ async function verifyBrowser({ runtimeDirectory, executablePath, outDirectory, h
         assert.equal(await page.evaluate(() => globalThis.__runtimeError), undefined);
         await page.waitForTimeout(250);
         report.initial = await page.evaluate(() => globalThis.__runtimeProbe);
+        report.runtimeConstants = await page.evaluate(() => Object.fromEntries(
+            ['CC_DEBUG', 'CC_BUILD', 'CC_JSB', 'CC_EDITOR', 'CC_PREVIEW', 'CC_BILIBILI', 'CC_MINIGAME'].map(name => [name, globalThis[name]])));
+        assert.deepEqual(report.runtimeConstants, { CC_DEBUG: descriptor.variant === 'debug', CC_BUILD: true,
+            CC_JSB: false, CC_EDITOR: false, CC_PREVIEW: false, CC_BILIBILI: false, CC_MINIGAME: false });
         for (const field of ['classRegistered', 'imageLoaded', 'jsonLoaded', 'audioLoaded']) assert.equal(report.initial[field], true, field);
         assert.equal(report.initial.decoratedDefault, 7);
         assert.equal(report.initial.world3d, descriptor.profile === '3d-basic');
@@ -163,6 +179,9 @@ async function verifyBrowser({ runtimeDirectory, executablePath, outDirectory, h
         assert.ok(report.requests.every(request => request.status < 400 || request.path.endsWith('/intentionally-missing.png')));
         assert.deepEqual(report.pageErrors, []);
         assert.equal(await page.evaluate(() => globalThis.__runtimeError), undefined);
+        assert.equal(sha256(await readRegular(root, 'runtime.json')), report.runtimeSha256);
+        assert.deepEqual((await inventory(root)).filter(file => file.path !== 'runtime.json'), descriptor.files);
+        assert.equal(sha256(await fs.readFile(executablePath)), executableSha256, 'Browser executable changed during verification');
         report.success = true;
     } catch (error) {
         report.error = String(error.stack || error);

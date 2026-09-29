@@ -472,6 +472,8 @@ test('Bilibili preflight validates configuration, subpackage ownership and unsup
     assert.equal(result.packages[1].bytes, 7);
     assert.equal(result.packages[2].bytes, 7);
     assert.equal(result.packages.reduce((sum, item) => sum + item.bytes, 0), result.totalBytes);
+    save({ ...config, plugins: {} });
+    assert.doesNotThrow(() => validateBilibili(directory));
     for (const [invalid, message] of [
         [{ ...config, appId: '' }, /appId/],
         [{ ...config, deviceOrientation: false }, /deviceOrientation/],
@@ -483,6 +485,7 @@ test('Bilibili preflight validates configuration, subpackage ownership and unsup
         [{ ...config, subpackages: [{ name: 'x', root: 'game.js' }] }, /bootstrap/],
         [{ ...config, openDataContext: 'open-data' }, /open-data/],
         [{ ...config, plugins: { wx: {} } }, /plugins/],
+        ...[null, true, false, 0, '', [], 'plugin'].map(plugins => [{ ...config, plugins }, /plugins must be an object/]),
     ]) { save(invalid); assert.throws(() => validateBilibili(directory), message); }
     save(config);
     write('physics.wasm.br', 'fixture');
