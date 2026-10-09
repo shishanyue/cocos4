@@ -8,13 +8,19 @@ import { inspectProject, readSdkValidator, validateRelativePath, withPackageSnap
 const require = createRequire(import.meta.url);
 const text = (value: string, length = 512): string => value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, length);
 
-type BilibiliResult = { packages: { name: string; root: string; bytes: number }[]; totalBytes: number; warnings: string[] };
+type PackageResult = { target?: string; packages: { name: string; root: string; bytes: number }[]; totalBytes: number; warnings: string[] };
+
+function validatorPath(target: 'BILIBILI' | 'WECHAT' | 'BYTEDANCE'): string {
+    return target === 'BILIBILI' ? 'app/validate-bilibili.cjs' : 'app/validate-minigame.cjs';
+}
 
 // The caller loads/verifies the SDK. These diagnostics need no workspace, job or writable state.
 export async function diagnoseSdk(sdk: Sdk): Promise<Report> {
-    const validator = sdk.manifest.files.find((file) => file.path === 'app/validate-bilibili.cjs');
-    if (!validator) throw new AppError('SDK_INCOMPLETE', 'The SDK manifest does not contain the packaged Bilibili validator.');
-    await readSdkValidator(sdk.root, validator.sha256);
+    for (const filename of new Set(sdk.manifest.capabilities.packageValidation.map(validatorPath))) {
+        const validator = sdk.manifest.files.find(file => file.path === filename);
+        if (!validator) throw new AppError('SDK_INCOMPLETE', 'The SDK manifest does not contain a required packaged validator.');
+        await readSdkValidator(sdk.root, validator.sha256, path.basename(filename));
+    }
     return reportSchema.parse({
         summary: sdk.toolchainRoot
             ? 'SDK integrity and host read checks passed. Delivered game profiles are present; release, browser and vendor acceptance are separate.'
@@ -23,10 +29,10 @@ export async function diagnoseSdk(sdk: Sdk): Promise<Report> {
             { name: 'SDK manifest', status: 'passed', message: `Schema and payload SHA-256 integrity verified for ${sdk.sdkId}. Hashes are not provenance authentication.` },
             { name: 'SDK scope', status: 'info', message: sdk.toolchainRoot
                 ? 'Verified game profiles and compiler; startup permissions govern project development and loopback preview.'
-                : 'Readonly source catalog, selected source guides and Bilibili package preflight only.' },
+                : 'Readonly source catalog, selected source guides and the advertised mini-game package preflight only.' },
             { name: 'Engine catalog', status: 'info', message: `${sdk.manifest.catalog.platforms.length} source targets and ${sdk.manifest.catalog.features.length} source features; catalog entries alone are not delivered engine binaries.` },
             sdk.toolchainRoot
-                ? { name: 'Game development', status: 'info', message: `${sdk.manifest.catalog.profiles.length} delivered profiles and ${sdk.manifest.catalog.templates.length} templates verified. They support template creation, strict type checks and game builds. Preview is HTML5-only; BILIBILI source preflight requires its delivered profiles and project game.json. Vendor publishing is not validated.` }
+                ? { name: 'Game development', status: 'info', message: `${sdk.manifest.catalog.profiles.length} delivered profiles and ${sdk.manifest.catalog.templates.length} templates verified. They support template creation, strict type checks and game builds. Preview is HTML5-only; mini-game source preflight requires platform configuration. Vendor publishing is not validated.` }
                 : { name: 'Game development', status: 'warning', code: 'PROFILE_NOT_AVAILABLE', message: 'No prebuilt profiles, runnable templates, game build, preview, export or vendor publishing capability is established.' },
             { name: 'Host filesystem', status: 'passed', message: 'Linux pinned-descriptor, no-follow reads verified for the packaged validator.' },
             { name: 'Host runtime', status: 'info', message: `Running Node ${process.version} on ${process.platform}/${process.arch}. Read checks do not establish publisher/supervisor kernel support, browser availability or supported-host acceptance.` },
@@ -64,9 +70,13 @@ export async function runOperation(request: WorkerRequest, log: (text: string) =
         return reportSchema.parse(report);
     }
 
-    const validator = sdk.manifest.files.find((file) => file.path === 'app/validate-bilibili.cjs');
-    if (!validator) throw new AppError('SDK_INCOMPLETE', 'The SDK manifest does not contain the packaged Bilibili validator.');
-    const validatorBytes = await readSdkValidator(sdk.root, validator.sha256);
+    const target = args.input.target;
+    if (!sdk.manifest.capabilities.packageValidation.some(value => value === target)) {
+        throw new AppError('PROFILE_NOT_AVAILABLE', 'This SDK does not provide the requested source-package validator.');
+    }
+    const validator = sdk.manifest.files.find((file) => file.path === validatorPath(target));
+    if (!validator) throw new AppError('SDK_INCOMPLETE', `The SDK manifest does not contain ${validatorPath(target)}.`);
+    const validatorBytes = await readSdkValidator(sdk.root, validator.sha256, path.basename(validator.path));
     const stageRelative = path.relative(sdk.root, path.resolve(args.staging));
     if (!stageRelative || (!stageRelative.startsWith(`..${path.sep}`) && stageRelative !== '..' && !path.isAbsolute(stageRelative))) {
         throw new AppError('PERMISSION_DENIED', 'Job staging must not write into the read-only SDK.');
@@ -75,21 +85,25 @@ export async function runOperation(request: WorkerRequest, log: (text: string) =
     return withPackageSnapshot(args.workspace, args.input.directory, args.staging, validatorBytes, (snapshot, script) => {
         // Requiring the verified private copy avoids a hash-then-require race on
         // the mutable SDK pathname. The project is never a module resolution root.
-        const module: unknown = require(script);
-        if (!module || typeof module !== 'object' || !('validateBilibili' in module) || typeof module.validateBilibili !== 'function') {
-            throw new AppError('SDK_INCOMPLETE', 'The packaged validator does not export validateBilibili.');
+        const loaded: unknown = require(script);
+        const exportName = target === 'BILIBILI' ? 'validateBilibili' : 'validateMiniGame';
+        const module = loaded && typeof loaded === 'object' ? loaded as Record<string, unknown> : undefined;
+        if (!module || typeof module[exportName] !== 'function') {
+            throw new AppError('SDK_INCOMPLETE', `The packaged validator does not export ${exportName}.`);
         }
-        let validation: BilibiliResult;
-        try { validation = module.validateBilibili(snapshot) as BilibiliResult; }
+        let validation: PackageResult;
+        try {
+            validation = (target === 'BILIBILI' ? module[exportName](snapshot) : module[exportName](snapshot, target)) as PackageResult;
+        }
         catch (error) {
-            throw new AppError('ARTIFACT_INVALID', error instanceof Error ? text(error.message, 1024) : 'Bilibili package validation failed.',
+            throw new AppError('ARTIFACT_INVALID', error instanceof Error ? text(error.message, 1024) : `${target} package validation failed.`,
                 ['Correct the package data and retry validation. No project scripts were executed.']);
         } finally { delete require.cache[script]; }
         const report: Report = {
-            summary: 'Bilibili source-package preflight passed on a bounded private snapshot. Vendor compilation, publishing and runtime behavior remain unverified.',
-            items: [{ name: 'BILIBILI package', status: 'passed', bytes: validation.totalBytes,
+            summary: `${target} source-package preflight passed on a bounded private snapshot. Vendor compilation, publishing and runtime behavior remain unverified.`,
+            items: [{ name: `${target} package`, status: 'passed', bytes: validation.totalBytes,
                 message: 'The canonical packaged validator accepted the snapshot structure, configuration and source sizes.' }],
-            validationLevels: ['manifest-sha256', 'bounded-private-snapshot', 'bilibili-source-preflight', 'input-change-detection'],
+            validationLevels: ['manifest-sha256', 'bounded-private-snapshot', `${target.toLowerCase()}-source-preflight`, 'input-change-detection'],
         };
         for (const item of validation.packages.slice(0, 32)) report.items.push({ name: text(item.name, 256), status: 'info', bytes: item.bytes,
             message: 'Source bytes only, not vendor-compiled package size.' });
@@ -98,5 +112,5 @@ export async function runOperation(request: WorkerRequest, log: (text: string) =
             message: 'All files were validated; the report includes only the first 32 packages and 32 size warnings.' });
         log('Canonical preflight completed; checking the snapshot and original inputs again before returning success.');
         return reportSchema.parse(report);
-    });
+    }, path.basename(validator.path));
 }

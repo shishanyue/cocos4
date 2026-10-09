@@ -19,12 +19,14 @@ const rootRequire = createRequire(path.join(engine, 'package.json'));
 const execute = promisify(execFile);
 
 async function buildRuntime({ profile, builtinDirectory, outDirectory, target = 'HTML5', variant = 'debug' }) {
-    assert.ok(['HTML5', 'BILIBILI'].includes(target), `TARGET_NOT_AVAILABLE: ${target}`);
+    assert.ok(['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE'].includes(target), `TARGET_NOT_AVAILABLE: ${target}`);
     assert.ok(['debug', 'release'].includes(variant), `VARIANT_NOT_AVAILABLE: ${variant}`);
     const release = variant === 'release';
     const bilibili = target === 'BILIBILI';
-    const engineDirectory = bilibili ? 'cocos-js' : 'engine';
-    const loaderPlatform = bilibili ? 'bilibili' : 'web-desktop';
+    const minigame = target !== 'HTML5';
+    const engineDirectory = minigame ? 'cocos-js' : 'engine';
+    // module-system 0.0.21 uses commonjs-like for all non-browser platforms.
+    const loaderPlatform = { HTML5: 'web-desktop', BILIBILI: 'bilibili', WECHAT: 'wechatgame', BYTEDANCE: 'bytedance-mini-game' }[target];
     assert.ok(Object.hasOwn(profiles, profile), `PROFILE_NOT_AVAILABLE: ${profile}`);
     assert.equal(typeof builtinDirectory, 'string');
     assert.equal(typeof outDirectory, 'string');
@@ -62,9 +64,8 @@ async function buildRuntime({ profile, builtinDirectory, outDirectory, target = 
         for (const name of ['NATIVE', 'JSB', 'EDITOR', 'PREVIEW', 'TEST', 'NODEJS']) assert.equal(constants[name], false, name);
         assert.equal(constants.BUILD, true);
         assert.equal(constants.DEBUG, !release);
-        for (const name of ['MINIGAME', 'BILIBILI']) assert.equal(constants[name], bilibili, name);
-        assert.equal(constants.HTML5, !bilibili);
-        assert.equal(constants.WECHAT, false);
+        assert.equal(constants.MINIGAME, minigame);
+        for (const name of ['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE']) assert.equal(constants[name], target === name, name);
         const subprocess = { cwd: engine, timeout: 300000, maxBuffer: 16 * 1024 * 1024 };
         const checkedExecute = async (...args) => {
             const result = await execute(...args);
@@ -111,6 +112,14 @@ async function buildRuntime({ profile, builtinDirectory, outDirectory, target = 
         await fs.writeFile(path.join(staging, 'template/tsconfig.json'), JSON.stringify(templateConfig, null, 2) + '\n');
         await makeFixtureAssets(path.join(staging, 'template/assets'));
         if (bilibili) await prepareBilibili({ engine, output: staging });
+        if (target === 'WECHAT') {
+            const { prepareWechat } = require('../runtime/prepare-wechat.cjs');
+            await prepareWechat({ engine, output: staging });
+        }
+        if (target === 'BYTEDANCE') {
+            const { prepareBytedance } = require('../runtime/prepare-bytedance.cjs');
+            await prepareBytedance({ engine, output: staging });
+        }
         const game = await compileGame({ projectDirectory: path.join(staging, 'template'), typesDirectory: types, outDirectory: path.join(staging, 'game'), variant });
         await fs.cp(path.join(staging, 'template/assets'), path.join(staging, 'assets/game'), { recursive: true });
         await writeJson('game-compiler.json', game);
@@ -126,12 +135,12 @@ async function buildRuntime({ profile, builtinDirectory, outDirectory, target = 
             assets: { projectBundles: ['internal'], preloadBundles: [], preloadAssets: [] },
             scripting: { scriptPackages: [] }, launch: { launchScene: '' }, profiling: { showFPS: false },
         });
-        for (const name of bilibili ? ['internal-prerequisites.js'] : ['index.html', 'boot.js', 'internal-prerequisites.js']) {
+        for (const name of minigame ? ['internal-prerequisites.js'] : ['index.html', 'boot.js', 'internal-prerequisites.js']) {
             await fs.copyFile(path.join(runtime, name), path.join(staging, name));
         }
         if (release) {
             const { transformAsync } = rootRequire('@babel/core');
-            for (const name of bilibili ? ['game.js', 'application.js', 'web-adapter.js', 'engine-adapter.js', 'fs-utils.js', 'internal-prerequisites.js']
+            for (const name of minigame ? ['game.js', 'application.js', 'web-adapter.js', 'engine-adapter.js', 'fs-utils.js', 'internal-prerequisites.js']
                 : ['boot.js', 'internal-prerequisites.js']) {
                 const { code, map } = await transformAsync(await fs.readFile(path.join(staging, name), 'utf8'), {
                     sourceType: 'script', babelrc: false, configFile: false, browserslistConfigFile: false,
@@ -144,7 +153,7 @@ async function buildRuntime({ profile, builtinDirectory, outDirectory, target = 
         }
         await fs.copyFile(path.join(engine, 'LICENSE'), path.join(staging, 'ENGINE-LICENSE'));
         const descriptor = {
-            schemaVersion: 1, kind: bilibili ? 'cocos4-bilibili-runtime' : 'cocos4-html5-runtime', profile, target, mode: 'BUILD', variant,
+            schemaVersion: 1, kind: `cocos4-${target.toLowerCase()}-runtime`, profile, target, mode: 'BUILD', variant,
             moduleFormat: 'system', sourceMap: false, compressed: release, features, constants, targets,
             buildOptions: { engine: engineOptions, loader: { ...loaderOptions, minifierWorkers: 1 }, game: game.emission,
                 bootstrap: { minified: release, sourceMaps: false, comments: release ? 'license-only' : 'preserve' } },
@@ -153,7 +162,7 @@ async function buildRuntime({ profile, builtinDirectory, outDirectory, target = 
             tools: { ccbuild: '2.3.21', moduleSystem: '0.0.21', loaderPlatform, ...game },
             builtins: { report: 'builtin-report.json', reportSha256: builtin.reportSha256,
                 effects: builtin.report.effects, materials: builtin.report.materials },
-            entry: bilibili ? 'game.js' : 'index.html', engineEntry: imports.cc, types: 'types/cc.d.ts', template: 'template',
+            entry: minigame ? 'game.js' : 'index.html', engineEntry: imports.cc, types: 'types/cc.d.ts', template: 'template',
             delivery: 'PREBUILT',
             typeFiles: (await inventory(types)).map(file => `types/${file.path}`),
             gameCompiler: { entry: 'tools/devkit/runtime/compile-game.cjs', export: 'compileGame',
@@ -164,10 +173,11 @@ async function buildRuntime({ profile, builtinDirectory, outDirectory, target = 
                 gameTypecheck: true, loaderTypecheck: true, browserFirstFrame: false, browserInteraction: false,
                 vendorBuild: false, device: false, portableSDK: false },
             limitations: ['Maintainer source build, not a portable SDK release',
-                bilibili ? 'Local mocked lifecycle evidence is separate and hash-bound; vendor compilation and device rendering are unverified'
+                minigame ? 'Local mocked lifecycle evidence is separate and hash-bound; vendor compilation and device rendering are unverified'
                     : 'Browser evidence is a separate hash-bound report, not inferred from compilation',
                 ...(bilibili ? ['Syntax targets: engine Chrome 100; prepared adapters Chrome 66; game compiler removes TS/decorators without preset-env; launcher/Application use ES2017; loader TypeScript target ES2021, module ES2022, Rollup IIFE',
                     'game.json appId/version are explicit local-validation placeholders, not vendor credentials'] : []),
+                ...(minigame && !bilibili ? ['project.config.json contains local-validation metadata, not vendor credentials or publishing evidence'] : []),
                 'Engine/compiler/loader redistribution license review remains required'],
             files: await inventory(staging),
         };
@@ -201,7 +211,7 @@ async function buildRuntime({ profile, builtinDirectory, outDirectory, target = 
 module.exports = { buildRuntime };
 if (require.main === module) {
     if (![5, 6, 7].includes(process.argv.length)) {
-        console.error('Usage: node build-runtime.cjs <2d-basic|3d-basic> <builtin-directory> <absent-output-directory> [HTML5|BILIBILI] [debug|release]');
+        console.error('Usage: node build-runtime.cjs <2d-basic|3d-basic> <builtin-directory> <absent-output-directory> [HTML5|BILIBILI|WECHAT|BYTEDANCE] [debug|release]');
         process.exitCode = 1;
     } else buildRuntime({ profile: process.argv[2], builtinDirectory: process.argv[3], outDirectory: process.argv[4], target: process.argv[5], variant: process.argv[6] })
         .then(result => console.log(JSON.stringify(result, null, 2)))

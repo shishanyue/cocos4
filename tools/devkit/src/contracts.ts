@@ -54,12 +54,12 @@ const artifactIdentity = z.object({
     provenance: artifactProvenance.optional(),
 }).strict();
 const html5ArtifactIdentity = artifactIdentity.extend({ target: z.literal('HTML5'), entry: z.literal('index.html') });
-const bilibiliArtifactIdentity = artifactIdentity.extend({ target: z.literal('BILIBILI'), entry: z.literal('game.js') });
+const minigameArtifactIdentity = artifactIdentity.extend({ target: z.enum(['BILIBILI', 'WECHAT', 'BYTEDANCE']), entry: z.literal('game.js') });
 const artifactTotals = {
     bytes: z.number().int().nonnegative(), files: z.number().int().positive(), sha256: z.string().regex(/^[a-f0-9]{64}$/),
 };
 export const artifactSchema = z.discriminatedUnion('target', [
-    html5ArtifactIdentity.extend(artifactTotals), bilibiliArtifactIdentity.extend(artifactTotals),
+    html5ArtifactIdentity.extend(artifactTotals), minigameArtifactIdentity.extend(artifactTotals),
 ]);
 export type Artifact = z.infer<typeof artifactSchema>;
 export const MAX_ARTIFACT_BYTES = 128 * 1024 * 1024;
@@ -69,7 +69,7 @@ const artifactInventory = {
         sha256: z.string().regex(/^[a-f0-9]{64}$/) }).strict()).min(1).max(10000),
 };
 export const artifactInventorySchema = z.discriminatedUnion('target', [
-    html5ArtifactIdentity.extend(artifactInventory), bilibiliArtifactIdentity.extend(artifactInventory),
+    html5ArtifactIdentity.extend(artifactInventory), minigameArtifactIdentity.extend(artifactInventory),
 ]);
 export const logicSummarySchema = z.object({
     runner: z.literal('node:test'), files: z.number().int().positive().max(256),
@@ -118,7 +118,7 @@ export const operationRequestSchema = z.discriminatedUnion('operation', [
         project: relative.optional(), depth: z.enum(['quick', 'full']).default('quick'),
     }).strict() }).strict(),
     z.object({ operation: z.literal('package_validate'), input: z.object({
-        directory: relative, target: z.literal('BILIBILI').default('BILIBILI'),
+        directory: relative, target: z.enum(['BILIBILI', 'WECHAT', 'BYTEDANCE']).default('BILIBILI'),
     }).strict() }).strict(),
     z.object({ operation: z.literal('project_create'), input: z.object({
         directory: relative, templateId: identifier, projectName: z.string().min(1).max(128).regex(/^[a-z][a-z0-9-]*$/),

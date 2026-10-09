@@ -875,8 +875,8 @@ export class JobManager {
                     const target = outcome.report!.artifacts?.[0]?.target;
                     outcome.report = { ...outcome.report!, summary: job.operation === 'project_create'
                         ? 'Editable SDK project published without replacing any existing destination.'
-                        : target === 'BILIBILI'
-                            ? 'BILIBILI source-package artifact published; source-package preflight only. Vendor compilation, publishing, browser, Creator and device validation were not performed.'
+                        : target !== 'HTML5'
+                            ? `${target} source-package artifact published; source-package preflight only. Vendor compilation, publishing, browser, Creator and device validation were not performed.`
                             : `${target} game artifact published. Browser, Creator and device validation were not performed.`,
                     validationLevels: [...outcome.report!.validationLevels, 'atomicPublication'] };
                 } catch (error) {

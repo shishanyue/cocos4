@@ -153,13 +153,16 @@ export async function generateApiIndex(input: ApiIndexInput): Promise<{ index: A
     const exportNames = new Map<string, Set<string>>();
     const sortedProfiles = [...input.profiles].sort((a, b) => `${a.target}/${a.id}/${a.variant}`.localeCompare(`${b.target}/${b.id}/${b.variant}`, 'en'));
     for (const profile of sortedProfiles) {
+        if (!['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE'].includes(profile.target) || !['debug', 'release'].includes(profile.variant)) fail();
         const declaration = `${profile.directory}/types/cc.d.ts`;
-        if (!profile.engineEntry.startsWith('./') || !sourcePath.safeParse(profile.engineEntry.slice(2)).success) fail();
+        if (profile.engineEntry !== (profile.target === 'HTML5' ? './engine/cc.js' : './cocos-js/cc.js')) fail();
         const engine = `${profile.directory}/${profile.engineEntry.slice(2)}`;
         await read(declaration);
         const engineBytes = await read(engine, 128 * 1024 * 1024);
         const names = extractRuntimeExports(ts, decode(engineBytes), { CC_DEBUG: profile.variant === 'debug', CC_BUILD: true,
-            CC_JSB: false, CC_EDITOR: false, CC_PREVIEW: false, CC_BILIBILI: profile.target === 'BILIBILI', CC_MINIGAME: profile.target === 'BILIBILI' });
+            CC_JSB: false, CC_EDITOR: false, CC_PREVIEW: false, CC_BILIBILI: profile.target === 'BILIBILI', CC_MINIGAME: profile.target !== 'HTML5',
+            ...(profile.target === 'WECHAT' || profile.target === 'BYTEDANCE'
+                ? { CC_WECHAT: profile.target === 'WECHAT', CC_BYTEDANCE: profile.target === 'BYTEDANCE', CC_NODEJS: false, CC_RUNTIME_BASED: false } : {}) });
         const exports = JSON.parse(decode(await read(profile.exports))) as { engineSha256?: string; names?: string[] };
         if (exports.engineSha256 !== hash(engineBytes) || JSON.stringify(exports.names) !== JSON.stringify(names)) fail();
         exportNames.set(profile.exports, new Set(names));

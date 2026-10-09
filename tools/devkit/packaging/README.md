@@ -6,9 +6,16 @@ any files. License provenance, clean-machine and supported-host acceptance remai
 open. Source integrity and archive checksums are not publisher authentication.
 
 The package contains Node 24.21.0, compiled MCP/CLI code, the application dependency
-closure, host helpers, real Node declarations, eight HTML5/BILIBILI 2D/3D
-debug/release profiles, game compiler, API docs, resources and skills. The original
-SDK lives in `sdk/` unchanged; `release.json` describes the enclosing distribution.
+closure, host helpers, real Node declarations, the SDK's delivered game profiles,
+game compiler, API docs, resources and skills. Legacy eight-profile HTML5/BILIBILI
+SDKs remain valid. Current source exporters also support WECHAT/BYTEDANCE when
+their profiles are delivered; every candidate target requires genuine 2D/3D
+debug/release profiles. The four-target, 16-profile SDK, Linux candidate and
+packaged 2048 WeChat/ByteDance demo were assembled locally on October 1, 2026.
+Their retained evidence is described in the checkout's `tools/devkit/ACCEPTANCE.md`;
+assembly and local source preflight do not establish complete package acceptance
+or vendor/device rendering. The original SDK lives in `sdk/` unchanged;
+`release.json` describes this particular enclosing distribution.
 Its own statement that Node is not bundled describes that inner SDK, not the kit.
 
 Use the `cocos4` launcher from any working directory. It locates
@@ -54,6 +61,14 @@ installed browser and, for AI, supported OpenCode 1.18.21 and model access remai
 external prerequisites. AI networking is separate from offline kit operation.
 Windows and macOS are not verified or supported by this candidate.
 
+Windows host development is separate from engine publishing targets. The checkout's
+`tools/devkit/packaging/WINDOWS-COMPONENTS.md` describes a separately assembled
+Windows x64 **component qualification ZIP**, with official Node and a Job Object
+supervisor test harness. It is not a Windows devkit release: it has no application,
+SDK, game build or preview capability. Windows filesystem/ACL/state/publication
+integration and real-host acceptance remain required. Neither that component work
+nor this Linux package enables native game applications, NATIVE or JSB.
+
 MCP tools default to read-only. Startup grants cannot be elevated through tool
 arguments. Project creation, checks, builds and preview require `requestKey`;
 reusing a key reuses its retained job, not newly edited inputs. Read the terminal
@@ -67,9 +82,18 @@ and `cocos4_apply_patch`. Built-in file tools are disabled for known permission
 problems in the supported client. Normal game edits use those guarded tools;
 SDK, secret and client configuration files are not editable through them.
 
-HTML5 artifacts can be previewed on a tokenized loopback URL. BILIBILI artifacts
-are source game packages with static module/resource validation and local
-preflight, not vendor-compiled/uploaded packages or verified device rendering.
+HTML5 artifacts can be previewed on a tokenized loopback URL. BILIBILI, WECHAT and
+BYTEDANCE artifacts are unsplit `game.js` source packages with preserved licenses,
+static closure/source preflight, not browser previews, vendor-compiled/uploaded
+packages or verified device rendering. WECHAT/BYTEDANCE use genuine `wx`/`tt`
+adapters, matching loaders and engine flags, not renamed BILIBILI bundles.
+Their starters create `platforms/wechat/{game.json,project.config.json}` or
+`platforms/bytedance/{game.json,project.config.json}` with blank `appid`; users set
+real `wx`/`tt` IDs in `project.config.json`. Build copies both files verbatim to
+the export root. Subpackages, plugins, open-data contexts, workers and cloud
+export remain unsupported. Shipped BILIBILI projects retain root `game.json`.
+The adapters' `@cocos/engine-platforms@1.0.6` metadata declares `UNLICENSED`;
+preserving it and the engine license does not resolve redistribution approval.
 Browser pixels/input/audio must be tested separately from HTTP preview delivery.
 
 Upgrade by extracting a new kit beside the old one, verify its source and

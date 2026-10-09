@@ -5,7 +5,7 @@ SDK in the [plan](../../docs/plans/cocos4-mcp-devkit.md). The official MCP SDK s
 10 tools by default in read-only mode, 13 with `--mode develop`, and 15 with
 `--mode develop --preview true`. Permissions are startup settings, not tool inputs.
 
-A verified development pack enumerates its delivered HTML5/BILIBILI,
+A verified development pack enumerates its delivered HTML5/BILIBILI/WECHAT/BYTEDANCE,
 2D/3D and debug/release profiles, editable starters and a self-contained game compiler. Develop mode
 enables project creation, strict type checks and compilation of current game
 sources; separate preview permission enables loopback serving of retained build
@@ -13,11 +13,15 @@ artifacts. Project scripts and plugins are never implicitly executed. Pure logic
 tests require an additional startup grant, `--execute-tests true`, in develop mode.
 This runs trusted project code, not a sandbox, and is separate from rendering tests.
 The server does not prepare the engine, import arbitrary Creator assets, perform
-vendor compilation, upload packages, or change AI configuration. BILIBILI builds
+vendor compilation, upload packages, or change AI configuration. Mini-game builds
 assemble source packages and perform static closure/canonical preflight, not device
 execution. Indexed packs also provide [API and template-source documents](API-DOCS.md).
 Opening a preview in a browser runs the emitted game in that browser; merely
 building or serving it is not browser, interaction or device acceptance.
+All four source exporters are implemented, but a target is available only when
+the selected SDK delivers its profile. Legacy eight-profile HTML5/BILIBILI SDKs
+remain valid; the new four-target kit is expected to have 16 profiles. Its final
+SDK, candidate and packaged demo have not yet been assembled.
 
 ## Prepare And Start
 
@@ -43,8 +47,9 @@ shell, caller-selected executable, check-then-rename or copy fallback.
 Staging and destination must be on the same filesystem; the destination's parent
 must already exist and be canonical. Python is not an installed game-workflow dependency.
 The prepared pack contains a manifest, source-derived catalog, selected guide
-excerpts, the unchanged canonical Bilibili validator and its license. Hashes
-establish integrity, not source authenticity or redistribution clearance.
+excerpts, the canonical BILIBILI validator, shared WECHAT/BYTEDANCE source validator
+and license material. Hashes establish integrity, not source authenticity or
+redistribution clearance.
 
 To prepare the development pack, first produce verified 2D/3D runtime artifacts
 and their hash-bound browser reports using the separate
@@ -72,7 +77,7 @@ Maintainer-only Linux x64 candidate assembly and retained namespace verification
 
 ```sh
 npm run prepare:release --prefix tools/devkit -- \
-  --sdk-root /absolute/path/to/eight-profile-sdk \
+  --sdk-root /absolute/path/to/verified-game-sdk \
   --node-archive /absolute/path/to/node-v24.21.0-linux-x64.tar.xz \
   --out /absolute/path/to/new-candidate
 npm run verify:portable --prefix tools/devkit -- \
@@ -86,11 +91,15 @@ installed by assembly. Read [candidate instructions](packaging/README.md) and th
 `bwrap`/`tar` and explicit browser test drivers; these are not installed kit
 dependencies. Its running receipt is not a pass, and namespaces are not a new VM.
 
-To include BILIBILI, add both genuine BILIBILI directories with further `--runtime`
-arguments. They require sibling `<runtime>-local/local-report.json` reports, or
-ordered `--local-report` arguments. These explicitly use a mock host/engine boundary,
-not browser/device evidence. HTML5 still requires its browser reports; BILIBILI is
-never a renamed HTML5 engine. Keep sources in this project and retained packs and
+To include BILIBILI, WECHAT or BYTEDANCE, add genuine runtime directories with
+further `--runtime` arguments, both 2D/3D for each included target/variant. They
+require sibling `<runtime>-local/local-report.json` reports, or `--local-report`
+arguments ordered across all mini-game runtimes. These explicitly use a mock
+host/engine boundary, not browser/device evidence. HTML5 still requires its browser
+reports. WECHAT/BYTEDANCE need a newly prepared readonly base containing
+`app/validate-minigame.cjs`; do not patch an old SDK in place. Candidate assembly
+accepts legacy eight-profile kits and requires a complete 2D/3D debug/release set
+for every added target. Keep sources in this project and retained packs and
 evidence under ignored `tools/devkit/build/`, not only in system temporary storage.
 
 ### Portable Commands
@@ -203,7 +212,7 @@ The MCP transport remains stdio; the preview HTTP listener is not an MCP endpoin
 | `cocos4_docs_read` | Versioned document text and source anchors, UTF-8-safe pagination; no arbitrary file paths |
 | `cocos4_project_inspect` | Bounded data-only inspection of configuration, entry and unsupported inputs |
 | `cocos4_doctor` | Worker job rechecking pack integrity and optional bounded project data; no repair |
-| `cocos4_package_validate` | Worker job applying the existing BILIBILI validator to a private snapshot |
+| `cocos4_package_validate` | Worker job applying the SDK's canonical BILIBILI/WECHAT/BYTEDANCE source validator to a private snapshot; requires its advertised `packageValidation` capability, not a game profile |
 | `cocos4_jobs_list` | SDK/workspace-scoped retained job summaries |
 | `cocos4_job_get` | Job state and paginated report |
 | `cocos4_job_logs` | Bounded, redacted, paginated logs |
@@ -253,11 +262,67 @@ bootstrap or SDK development files. Reports separate `staticModuleClosure`,
 requests, runtime behavior and vendor package sizes have not been proven.
 The same source project can separately build HTML5 for browser preview.
 
+### WECHAT And BYTEDANCE Source Packages
+
+Select the catalog's `wechat-<profile>-starter` or `bytedance-<profile>-starter`
+(`-release-starter` for a release template) only when delivered. Creation adds:
+
+| Target | Game-owned metadata | App ID field |
+| --- | --- | --- |
+| WECHAT | `platforms/wechat/game.json`, `platforms/wechat/project.config.json` | `project.config.json` field `appid`, real `wx`-prefixed ID |
+| BYTEDANCE | `platforms/bytedance/game.json`, `platforms/bytedance/project.config.json` | `project.config.json` field `appid`, real `tt`-prefixed ID |
+
+`project_create` blanks `appid` and sets `projectname`. Supply your own ID and
+review platform settings before building; local validation IDs are not vendor
+credentials. Both config files are copied byte-for-byte to the export root as
+`game.json` and `project.config.json`, never replaced by SDK fixtures. BILIBILI
+continues using root `game.json` and its case-sensitive `appId` field.
+Missing config is `UNSUPPORTED_PROJECT`; invalid config/preflight fails rather
+than silently rewriting it. Only unsplit source packages are supported: nonempty
+`subpackages`/`subPackages`, plugins, `openDataContext`, workers and cloud export
+are rejected. No platform-specific directories from other targets are exported.
+
+These use genuine `wx`/`tt` adapters, `wechatgame`/`bytedance-mini-game` loader
+platforms and target-specific engine constants/PAL, not renamed BILIBILI bundles.
+Each output has `game.js`, engine/loader/Application, current game modules/assets
+and preserved license/notice files. Reports include `staticModuleClosure`,
+`wechatSourcePreflight` or `bytedanceSourcePreflight`, and `copiedResourceInventory`.
+The same resource/runtime warnings and vendor/device limits as BILIBILI apply.
+`@cocos/engine-platforms@1.0.6` declares `UNLICENSED`; preserving its metadata and
+the engine license is not redistribution approval.
+
+`cocos4_package_validate` accepts `target: "BILIBILI" | "WECHAT" | "BYTEDANCE"`
+(default BILIBILI) and an authorized workspace-relative `directory`. It runs
+canonical source preflight, not the build's full static module-closure analysis,
+and never executes package scripts or invokes vendor tools.
+
+### 2048 Target Selection
+
+The source example runner now accepts an optional `--targets` CSV (default
+`HTML5,BILIBILI`) and optional `--bilibili-app-id`, `--wechat-app-id` and
+`--bytedance-app-id` flags. With a separately assembled kit delivering the selected
+profiles, run from the repository root to select only the new mini-game exports:
+
+```sh
+/absolute/path/to/kit/runtime/node tools/devkit/examples/2048/run.mjs \
+  --kit /absolute/path/to/kit --out /absolute/path/to/absent-run \
+  --targets WECHAT,BYTEDANCE
+```
+
+Omitted app-ID flags use explicit local-test identities, not publishable IDs;
+provide real IDs for your vendor project. The runner still needs the kit's HTML5
+2D debug starter, even when exporting only mini-games. Without HTML5 in `--targets`
+it neither enables preview nor runs a browser; `--drivers`, `--pngjs` and
+`--chromium` are required only when HTML5 is selected. This is an implemented
+workflow, not a claim that the new final kit/demo has passed.
+
+### HTML5 Preview
+
 Develop mode with separate preview permission adds two more tools:
 
 | Tool | Input | Actual behavior |
 | --- | --- | --- |
-| `cocos4_preview_start` | `artifactId` (UUID), `ttlSeconds?` (integer 1..7200, default 1800), `requestKey` | Serve only an owned successful HTML5 build; BILIBILI is rejected before job/listener creation; readiness is `job.phase === "ready"` with `job.preview.url` |
+| `cocos4_preview_start` | `artifactId` (UUID), `ttlSeconds?` (integer 1..7200, default 1800), `requestKey` | Serve only an owned successful HTML5 build; all mini-game targets are rejected before job/listener creation; readiness is `job.phase === "ready"` with `job.preview.url` |
 | `cocos4_preview_stop` | `jobId` (UUID of a preview job) | Stop sockets/worker; returns `{ jobId, state, accepted }`, and repeated terminal stops have no effect |
 
 Preview uses a random port on `127.0.0.1` and a random 256-bit path token. It
@@ -281,7 +346,7 @@ Protocol negotiation to `2025-11-25` is exercised by the official SDK client.
 Job receipts acknowledge admission only. A successful `job_get` envelope means
 the query succeeded; callers must inspect `job.state`, `job.error` and report
 items. Warnings can accompany success; failed report checks must not become a
-successful job. Bilibili source preflight does not establish rendering, vendor
+successful job. Mini-game source preflight does not establish rendering, vendor
 compilation, final compiled size, upload, or real-device acceptance.
 
 Compiler errors fail the job with `TYPECHECK_FAILED`, `FEATURE_NOT_IN_PROFILE` or
@@ -300,7 +365,8 @@ profile descriptor's actual manifest SHA-256 and matches `report.profile.descrip
 Publication rejects disagreement with the producing job/profile. Release identity
 comes from the executing application's verified release, not an MCP argument or
 environment override. These integrity bindings do not authenticate a publisher.
-Target/entry pairs are strictly `HTML5`/`index.html` and `BILIBILI`/`game.js`,
+Target/entry pairs are strictly `HTML5`/`index.html` and
+`BILIBILI`/`WECHAT`/`BYTEDANCE` with `game.js`,
 including persisted receipts and inventories.
 
 ## Isolation And Limits
@@ -366,7 +432,7 @@ including persisted receipts and inventories.
   64 outputs across the workspace/SDKs, separately from staging and metadata. Artifacts
   live at `artifact-<build-job-id>` under the private workspace state directory.
   That directory is `<state-root>/<sha256(canonical-workspace-path)>/`. For vendor
-  tools, use a separately retained copy of the BILIBILI source package; do not edit
+  tools, use a separately retained copy of the mini-game source package; do not edit
   a registered immutable artifact. The SDK-scoped artifact registry outlives the
   seven-day job metadata, logs and request keys: expired jobs still have usable
   artifact IDs and their outputs still count toward the quota. Opening the same
@@ -500,8 +566,13 @@ fix without disabling parser/driver checks. The separate
 including software WebGL, input, assets, audio and restart. That prior evidence is
 not a fresh test of this MCP session or every game emitted by the new build tool.
 
-See the [current packaged checkpoint](ACCEPTANCE.md#packaged-2048-check) for the
-fresh candidate's focused 2048 result, and the
+`build/minigame-exporters-20260930/summary.json` records eight successful new
+WECHAT/BYTEDANCE runtime/local-report combinations, not a final SDK or packaged
+game run. The local checks mock host/`cc` boundaries and do not execute the engine
+or render. The new SDK/candidate/demo proof is still pending.
+
+See the [packaged checkpoint](ACCEPTANCE.md#packaged-2048-check) for the
+earlier HTML5/BILIBILI candidate's focused 2048 result, and the
 [September 24-25 checkpoint](ACCEPTANCE.md#september-24-25-checkpoint) for historical
 SDK/candidate identities, completed skill checks and interrupted Node 18 run.
 The earlier logic/lifecycle, release-game, OpenCode and v5-a evidence remains historical. Retained

@@ -25,11 +25,14 @@ const version = z.string().min(1).max(128);
 const cursorSchema = z.string().min(1).max(1024);
 const sectionSchema = z.enum(['sdk', 'platforms', 'features', 'profiles', 'templates']);
 const kindSchema = z.enum(['api', 'guide', 'example', 'all']);
+const runtimeTargets = ['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE'] as const;
+// module-system 0.0.21 dist/build.js selects commonjs-like for non-browser platforms.
+const loaderPlatforms = { HTML5: 'web-desktop', BILIBILI: 'bilibili', WECHAT: 'wechatgame', BYTEDANCE: 'bytedance-mini-game' } as const;
 const sourcePathSchema = z.enum([
-    'package.json', 'cc.config.json', 'scripts/validate-bilibili.cjs', 'LICENSE',
+    'package.json', 'cc.config.json', 'scripts/validate-bilibili.cjs', 'scripts/validate-minigame.cjs', 'LICENSE',
     'README.md', 'AGENTS.md', 'docs/bilibili_minigame/README.md', 'docs/plans/cocos4-mcp-devkit.md',
 ]);
-const filePathSchema = z.string().max(160).regex(/^(?:LICENSE|app\/validate-bilibili\.cjs|docs\/[a-z0-9-]+\.md)$/);
+const filePathSchema = z.string().max(160).regex(/^(?:LICENSE|app\/validate-(?:bilibili|minigame)\.cjs|docs\/[a-z0-9-]+\.md)$/);
 const fileSchema = z.object({ path: filePathSchema, bytes: z.number().int().positive().max(32 * KiB), sha256: digest }).strict();
 export const sdkPathSchema = z.string().min(1).max(512).refine(value => value.split('/').every(part =>
     /^[A-Za-z0-9_@.+=,-]+$/.test(part) && part !== '.' && part !== '..' && !part.endsWith('.')
@@ -38,7 +41,10 @@ export const inventoryFileSchema = z.object({ path: sdkPathSchema,
     bytes: z.number().int().nonnegative().max(128 * 1024 * KiB), sha256: digest }).strict();
 const sourceFileSchema = z.object({ path: sourcePathSchema, bytes: z.number().int().positive().max(1024 * KiB), sha256: digest }).strict();
 const capabilitiesSchema = z.object({
-    catalog: z.literal(true), docs: z.literal(true), packageValidation: z.tuple([z.literal('BILIBILI')]),
+    catalog: z.literal(true), docs: z.literal(true), packageValidation: z.union([
+        z.tuple([z.literal('BILIBILI')]),
+        z.tuple([z.literal('BILIBILI'), z.literal('WECHAT'), z.literal('BYTEDANCE')]),
+    ]),
     gameDevelopment: z.boolean(), gameBuild: z.boolean(), preview: z.boolean(), export: z.boolean(),
 }).strict();
 const platformSchema = z.object({
@@ -52,9 +58,10 @@ const featureSchema = z.object({
 
 const validationLevels = Object.freeze(['engineTypecheck', 'engineBuild', 'builtinIntegrity', 'gameTypecheck', 'loaderTypecheck',
     'browserFirstFrame', 'browserInteraction'] as const);
+const minigameValidationLevels = Object.freeze(['engineTypecheck', 'engineBuild', 'builtinIntegrity', 'gameTypecheck', 'loaderTypecheck',
+    'moduleClosure', 'canonicalPreflight', 'loaderBootstrapSharedGlobal', 'loaderBootstrapDistinctGlobal', 'entryLifecycle', 'startupFailure'] as const);
 export const runtimeValidationLevels = Object.freeze({ HTML5: validationLevels,
-    BILIBILI: Object.freeze(['engineTypecheck', 'engineBuild', 'builtinIntegrity', 'gameTypecheck', 'loaderTypecheck',
-        'moduleClosure', 'canonicalPreflight', 'loaderBootstrapSharedGlobal', 'loaderBootstrapDistinctGlobal', 'entryLifecycle', 'startupFailure'] as const) });
+    BILIBILI: minigameValidationLevels, WECHAT: minigameValidationLevels, BYTEDANCE: minigameValidationLevels });
 const profileFields = {
     id, variant: z.enum(['debug', 'release']), directory: sdkPathSchema,
     descriptor: sdkPathSchema, exports: sdkPathSchema,
@@ -62,13 +69,10 @@ const profileFields = {
 };
 export const profileSchema = z.discriminatedUnion('target', [
     z.object({ ...profileFields, target: z.literal('HTML5'), browserReport: sdkPathSchema }).strict(),
-    z.object({ ...profileFields, target: z.literal('BILIBILI'), localReport: sdkPathSchema }).strict(),
+    z.object({ ...profileFields, target: z.enum(['BILIBILI', 'WECHAT', 'BYTEDANCE']), localReport: sdkPathSchema }).strict(),
 ]);
-const templateFields = { id, directory: sdkPathSchema, profile: id, variant: z.enum(['debug', 'release']) };
-export const templateSchema = z.discriminatedUnion('target', [
-    z.object({ ...templateFields, target: z.literal('HTML5') }).strict(),
-    z.object({ ...templateFields, target: z.literal('BILIBILI') }).strict(),
-]);
+export const templateSchema = z.object({ id, directory: sdkPathSchema, profile: id,
+    variant: z.enum(['debug', 'release']), target: z.enum(runtimeTargets) }).strict();
 const developmentSchema = z.object({
     baseSdkId: sdkIdSchema, baseManifest: z.literal('provenance/readonly-manifest.json'),
     directory: z.literal('toolchain'), compiler: z.literal('toolchain/compiler/compile-game.cjs'),
@@ -88,7 +92,7 @@ const docEntrySchema = z.object({
 export const manifestSchema = z.object({
     schemaVersion: z.literal(1), sdkId: sdkIdSchema, kind: z.enum(['readonly-development', 'portable-development']), engineVersion: version,
     description: z.string().min(1).max(1024), capabilities: capabilitiesSchema,
-    source: z.object({ sha256: digest, files: z.array(sourceFileSchema).length(8), attribution: z.string().min(1).max(1024) }).strict(),
+    source: z.object({ sha256: digest, files: z.array(sourceFileSchema).min(8).max(9), attribution: z.string().min(1).max(1024) }).strict(),
     license: z.object({ path: z.literal('LICENSE'), spdx: z.literal('MIT') }).strict(),
     files: z.array(inventoryFileSchema).min(3).max(20000),
     catalog: z.object({
@@ -100,6 +104,16 @@ export const manifestSchema = z.object({
     development: developmentSchema.optional(),
 }).strict().superRefine((manifest, context) => {
     const game = manifest.kind === 'portable-development';
+    // Shipped packs have eight sources and only the Bilibili validator. Do not
+    // reinterpret their capabilities or require new profiles when loading them.
+    const minigame = manifest.source.files.some(file => file.path === 'scripts/validate-minigame.cjs');
+    if (canonical(manifest.source.files.map(file => file.path).sort()) !== canonical(sourcePathSchema.options
+        .filter(file => minigame || file !== 'scripts/validate-minigame.cjs').sort())
+        || canonical(manifest.capabilities.packageValidation) !== canonical(minigame ? ['BILIBILI', 'WECHAT', 'BYTEDANCE'] : ['BILIBILI'])
+        || manifest.files.filter(file => file.path === 'app/validate-minigame.cjs').length !== Number(minigame)
+        || (!minigame && manifest.catalog.profiles.some(profile => profile.target === 'WECHAT' || profile.target === 'BYTEDANCE'))) {
+        context.addIssue({ code: z.ZodIssueCode.custom, message: 'Package validation capabilities require the matching source-bound validator.' });
+    }
     if (['gameDevelopment', 'gameBuild', 'preview', 'export'].some(key => manifest.capabilities[key as 'gameBuild'] !== game)
         || game !== !!manifest.development || (!game && (manifest.apiIndex || manifest.files.length > 128
             || manifest.files.some(file => !fileSchema.safeParse(file).success)
@@ -107,8 +121,7 @@ export const manifestSchema = z.object({
             || manifest.catalog.platforms.some(item => item.prebuiltAvailable || item.exportAvailable || item.validationLevels.length)
             || manifest.catalog.features.some(item => item.prebuiltAvailable)))
         || (game && (!['2d-basic', '3d-basic'].every(id => manifest.catalog.profiles.some(item => item.id === id && item.target === 'HTML5'))
-            || (manifest.catalog.profiles.some(item => item.target === 'BILIBILI') && (!manifest.apiIndex
-                || !['2d-basic', '3d-basic'].every(id => manifest.catalog.profiles.some(item => item.id === id && item.target === 'BILIBILI'))))
+            || (manifest.catalog.profiles.some(item => item.target !== 'HTML5') && !manifest.apiIndex)
             || !manifest.catalog.templates.length))) {
         context.addIssue({ code: z.ZodIssueCode.custom, message: 'Capabilities require complete delivered profiles, templates and toolchain.' });
     }
@@ -241,15 +254,15 @@ const ccExport = z.string().regex(/^[A-Za-z_$][A-Za-z0-9_$]*$/).max(256);
 const emissionSchema = z.object({ variant: z.enum(['debug', 'release']), sourceMaps: z.literal(false), minified: z.boolean(),
     compact: z.boolean(), comments: z.enum(['preserve', 'license-only']) }).strict();
 const buildOptionsSchema = z.object({
-    engine: z.object({ platform: z.enum(['HTML5', 'BILIBILI']), mode: z.literal('BUILD'), moduleFormat: z.literal('system'),
+    engine: z.object({ platform: z.enum(runtimeTargets), mode: z.literal('BUILD'), moduleFormat: z.literal('system'),
         features: z.array(id).min(1).max(128), flags: z.record(z.union([z.boolean(), z.number()])), compress: z.boolean(),
         sourceMap: z.literal(false), split: z.literal(false), targets: z.object({ chrome: z.literal('100') }).strict() }).strict(),
-    loader: z.object({ platform: z.enum(['web-desktop', 'bilibili']), sourceMap: z.literal(false), minify: z.boolean(),
+    loader: z.object({ platform: z.enum(['web-desktop', 'bilibili', 'wechatgame', 'bytedance-mini-game']), sourceMap: z.literal(false), minify: z.boolean(),
         hmr: z.literal(false), editor: z.literal(false), minifierWorkers: z.literal(1) }).strict(),
     game: emissionSchema,
     bootstrap: z.object({ minified: z.boolean(), sourceMaps: z.literal(false), comments: z.enum(['preserve', 'license-only']) }).strict(),
 }).strict();
-const buildEvidenceSchema = z.object({ target: z.enum(['HTML5', 'BILIBILI']), variant: z.enum(['debug', 'release']),
+const buildEvidenceSchema = z.object({ target: z.enum(runtimeTargets), variant: z.enum(['debug', 'release']),
     optionsSha256: digest, engineSha256: digest }).strict();
 export const html5RuntimeDescriptorSchema = z.object({
     schemaVersion: z.literal(1), kind: z.literal('cocos4-html5-runtime'), profile: id,
@@ -282,7 +295,16 @@ export const bilibiliRuntimeDescriptorSchema = html5RuntimeDescriptorSchema.exte
         materials: z.array(z.object({ uuid: z.string().uuid(), name: version }).passthrough()).min(1).max(128),
     }),
 });
-export const runtimeDescriptorSchema = z.discriminatedUnion('target', [html5RuntimeDescriptorSchema, bilibiliRuntimeDescriptorSchema]);
+export const wechatRuntimeDescriptorSchema = bilibiliRuntimeDescriptorSchema.extend({
+    kind: z.literal('cocos4-wechat-runtime'), target: z.literal('WECHAT'), buildOptions: buildOptionsSchema,
+    tools: bilibiliRuntimeDescriptorSchema.shape.tools.extend({ loaderPlatform: z.literal('wechatgame'), emission: emissionSchema }),
+});
+export const bytedanceRuntimeDescriptorSchema = bilibiliRuntimeDescriptorSchema.extend({
+    kind: z.literal('cocos4-bytedance-runtime'), target: z.literal('BYTEDANCE'), buildOptions: buildOptionsSchema,
+    tools: bilibiliRuntimeDescriptorSchema.shape.tools.extend({ loaderPlatform: z.literal('bytedance-mini-game'), emission: emissionSchema }),
+});
+export const runtimeDescriptorSchema = z.discriminatedUnion('target', [html5RuntimeDescriptorSchema, bilibiliRuntimeDescriptorSchema,
+    wechatRuntimeDescriptorSchema, bytedanceRuntimeDescriptorSchema]);
 export const browserReportSchema = z.object({
     schemaVersion: z.literal(1), profile: id, runtimeSha256: digest, success: z.literal(true),
     build: buildEvidenceSchema.optional(),
@@ -370,8 +392,67 @@ export const bilibiliReportSchema = z.object({
         failures: z.array(z.object({ fault: z.enum(localFaults), errors: z.array(z.string().min(1).max(2048)).min(1).max(8) }).strict()).length(localFaults.length),
     }).strict(),
 }).strict();
+const minigamePreflightSchema = bilibiliReportSchema.shape.evidence.shape.preflight.omit({ version: true }).extend({ target: z.enum(['WECHAT', 'BYTEDANCE']) });
+const localWarnings = z.array(z.string().min(1).max(2048)).max(8);
+const wechatFaults = ['missing-host', 'missing-fs', ...localFaults] as const;
+const bytedanceFaults = ['missing-game-config', 'invalid-game-config', 'web-adapter', 'loader', 'engine-adapter',
+    'missing-settings', 'missing-export', 'missing-builtin', 'invalid-material', 'init-sync', 'init', 'run', 'start-sync', 'start-async', 'missing-main', 'missing-asset'] as const;
+const wechatLifecycleSchema = localLifecycleSchema.omit({ launchSuccessCount: true }).extend({
+    separateSelf: z.boolean(), platform: z.literal('android'),
+    reads: z.array(z.union([sdkPathSchema, z.literal('wxfile://mock-user/gamecaches/cacheList.json')])).min(1).max(1024),
+    warnings: z.array(z.never()).max(0), initCalls: z.literal(1), runCalls: z.literal(1), phase: z.literal('running'), adapterTouchEvents: z.literal(1),
+});
+const bytedanceLifecycleSchema = localLifecycleSchema.omit({ launchSuccessCount: true }).extend({
+    devtools: z.literal(false),
+    fileReads: z.array(z.union([sdkPathSchema, z.literal('ttfile://mock-user/gamecaches/cacheList.json')])).min(1).max(1024),
+    warnings: z.array(z.never()).max(0), initCount: z.literal(1), runCount: z.literal(1),
+});
+const localFailureFields = { errors: z.array(z.string().min(1).max(2048)).length(1), warnings: localWarnings };
+const localNotes = bilibiliReportSchema.shape.notes.items;
+export const wechatReportSchema = bilibiliReportSchema.extend({
+    kind: z.literal('cocos4-wechat-local-report'), build: buildEvidenceSchema,
+    notes: z.tuple([localNotes[0],
+        z.literal('Real generated loader, launcher, pinned adapters, Application and game modules; engine flags/exports/resources inspected statically'),
+        z.literal('cc lifecycle, builtin instances, asset/media wrappers and wx host services are explicit contract mocks'), localNotes[3],
+        z.literal('@cocos/engine-platforms 1.0.6 declares UNLICENSED; redistribution authorization remains a separate requirement')]),
+    evidence: bilibiliReportSchema.shape.evidence.extend({
+        preflight: minigamePreflightSchema.extend({ target: z.literal('WECHAT') }),
+        closure: bilibiliReportSchema.shape.evidence.shape.closure.extend({
+            adapterModules: z.object({ 'web-adapter.js': z.literal(35), 'engine-adapter.js': z.literal(7) }).strict(),
+            compiledGlobals: z.object({ CC_DEBUG: z.boolean(), CC_BUILD: z.literal(true), CC_JSB: z.literal(false), CC_EDITOR: z.literal(false),
+                CC_PREVIEW: z.literal(false), CC_WECHAT: z.literal(true), CC_BILIBILI: z.literal(false), CC_BYTEDANCE: z.literal(false), CC_MINIGAME: z.literal(true) }).strict(),
+        }),
+        shared: wechatLifecycleSchema.extend({ distinct: z.literal(false), separateSelf: z.literal(false) }),
+        distinct: wechatLifecycleSchema.extend({ distinct: z.literal(true), separateSelf: z.literal(true) }),
+        failures: z.array(z.object({ ...localFailureFields, fault: z.enum(wechatFaults), loaded: z.array(sdkPathSchema).min(1).max(32),
+            initCalls: z.number().int().min(0).max(1), runCalls: z.number().int().min(0).max(1), phase: z.literal('failed') }).strict()).length(wechatFaults.length),
+    }),
+});
+export const bytedanceReportSchema = bilibiliReportSchema.extend({
+    kind: z.literal('cocos4-bytedance-local-report'), build: buildEvidenceSchema,
+    notes: z.tuple([localNotes[0],
+        z.literal('Real generated loader, launcher, prepared ByteDance adapters, Application and game modules; engine inspected statically only'),
+        z.literal('cc, legacy window.cc, scene/component lifecycle, builtin instances, media wrappers and tt host services are explicit contract mocks'),
+        z.literal('ByteDance fs-utils is embedded in the published engine adapter; fs-utils.js exposes the same instance'),
+        z.literal('Static module/resource closure plus exercised local bundle loading; remote services, plugins and subpackage delivery remain unverified'), localNotes[3],
+        z.literal('@cocos/engine-platforms declares UNLICENSED; preserved metadata/engine license do not establish redistribution rights')]),
+    evidence: bilibiliReportSchema.shape.evidence.extend({
+        preflight: minigamePreflightSchema.extend({ target: z.literal('BYTEDANCE') }),
+        closure: bilibiliReportSchema.shape.evidence.shape.closure.extend({ adapters: z.object({
+            'web-adapter.js': z.object({ modules: z.literal(34), dependencies: z.literal(54), entries: z.tuple([z.literal(27)]) }).strict(),
+            'engine-adapter.js': z.object({ modules: z.literal(8), dependencies: z.literal(7), entries: z.tuple([z.literal(7)]), fsUtilsModule: z.literal(8) }).strict(),
+        }).strict() }),
+        shared: bytedanceLifecycleSchema.extend({ distinct: z.literal(false) }),
+        distinct: bytedanceLifecycleSchema.extend({ distinct: z.literal(true) }),
+        failures: z.array(z.object({ ...localFailureFields, fault: z.enum(bytedanceFaults),
+            initCount: z.number().int().min(0).max(1), runCount: z.number().int().min(0).max(1) }).strict()).length(bytedanceFaults.length),
+    }),
+});
+export const minigameReportSchema = z.discriminatedUnion('kind', [bilibiliReportSchema, wechatReportSchema, bytedanceReportSchema]);
 export type BilibiliRuntimeDescriptor = z.infer<typeof bilibiliRuntimeDescriptorSchema>;
 export type BilibiliReport = z.infer<typeof bilibiliReportSchema>;
+export type MiniGameRuntimeDescriptor = Exclude<RuntimeDescriptor, { target: 'HTML5' }>;
+export type MiniGameReport = z.infer<typeof minigameReportSchema>;
 const exportInventorySchema = z.object({ engineSha256: digest, names: z.array(ccExport).min(1).max(4096) }).strict();
 const packageName = z.string().regex(/^(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+$/).max(214);
 const packagePath = sdkPathSchema.refine(value => /^(?:node_modules\/(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+)(?:\/node_modules\/(?:@[a-z0-9_.-]+\/)?[a-z0-9_.-]+)*$/.test(value));
@@ -468,6 +549,12 @@ const bilibiliFixedFiles = [
     'template/package.json', 'template/tsconfig.json', 'template/src/main.ts', 'template/src/world.ts', 'template/tests/contract.mjs',
     'template/assets/tile.png', 'template/assets/click.wav', 'template/assets/rules.json', 'types/cc.d.ts', 'types/cc.editor.d.ts', 'types/webGPU.d.ts',
 ] as const;
+const minigameExtraFiles = {
+    BILIBILI: [],
+    WECHAT: ['project.config.json', 'WECHAT-ADAPTER-LICENSE'],
+    BYTEDANCE: ['project.config.json', 'licenses/bytedance/package.json', 'licenses/bytedance/README.md',
+        'licenses/bytedance/ENGINE-LICENSE', 'licenses/bytedance/NOTICE.txt'],
+} as const;
 // Reviewed bootstrap emitted by templates/bilibili/game.ejs, the checked adapter
 // preparation, bilibili-application.js, and @cocos/module-system 0.0.21. These are
 // source pins, not vendor certification. Revisit them when those inputs change.
@@ -496,6 +583,43 @@ export const bilibiliReleaseBootstrapHashes = Object.freeze({
     'internal-prerequisites.js': 'e3d5b4de7e45bc60a74f50e9a3bbf145446abbfca4d282f06f1dbdc67e22f968',
 });
 
+// Reviewed platform helpers, unmodified engine-platforms 1.0.6 adapters, and the
+// same Babel bootstrap emission options as build-runtime.cjs. Configs stay mutable.
+export const minigameBootstrapHashes = freeze({
+    WECHAT: {
+        debug: {
+            'game.js': '0a98f24da039f7936a98199ec7946edc1fd4f33b87db6cff1deee6e311937728',
+            'application.js': '1cf9dc072272714abf53c1236de9848ad3e36dee3f5016f9a94b2d0760fe6c0f',
+            'web-adapter.js': 'c0c19caf7480d07268580f9492d6376b88359eae74c5c865f01cd4cd47bbbdad',
+            'engine-adapter.js': '4f3d6a3148449b899ae1b61e6b1387f8dcde8bbf4ce7422d2a8de0fff129942e',
+            'fs-utils.js': 'b98bfd6333a20655516e2f609d690616f9c1371b7d72cca28fd737cdf77b4370',
+        },
+        release: {
+            'game.js': 'f70beb864bd9eb7361f9486165f1ac7906f09ede7639e5c06a79724381517c55',
+            'application.js': '48ccc31315fdccde1211c021fe7e276190c8cf2f0d86d84a28e4025d3a47a5d2',
+            'web-adapter.js': '77578e55a0cc02a82854ed2c64d437ff60747f2b255656b6776b8494f6f7f672',
+            'engine-adapter.js': 'd0a14e7a4c8c282cbfebbdf21ab6ce1282e116c91677083c731fad09fbb9eae3',
+            'fs-utils.js': 'da25811d7e08535bb4597bd856e02b218e1c894309c7e933cb3afe7057427f3c',
+        },
+    },
+    BYTEDANCE: {
+        debug: {
+            'game.js': '3a907daa6f676e98036aaa2303dd4fb473f2db2b2f7071e74c2207d1637d86ed',
+            'application.js': 'f5a47ea8c37bc9db38cd421542718d1013ba6cca99f739d365470da9d4500bc4',
+            'web-adapter.js': '6956a6256ae4a15a1b0c6dd41883acd1cba655e049681e0490f9a301f96443e3',
+            'engine-adapter.js': '634012352eb5c560b26337c055ef836cd3726aba67e88e39b9afcb165ff2c56c',
+            'fs-utils.js': 'ed59c1c6ceca603b433457a606572f64c371c222ba6c898bfe4a0d5ab7c52cb4',
+        },
+        release: {
+            'game.js': 'c6747b3be971b611380c9e3fa228ce7993d4b4ccd1c496efe74b4bbf47ecd94c',
+            'application.js': '6e39c8fb658151a925585f59dd041b082c97ceaf5d53d3573f3b4af69cc7b15a',
+            'web-adapter.js': 'c3b640462e708c030cb466c0c185071c09c4b67d7a1881fe04cf19b3a801b2ee',
+            'engine-adapter.js': 'b26471141fa2e44f7a43106b535ac8a47dc1d1730f84e644cf58f7b1b4ee43fb',
+            'fs-utils.js': 'f891446f44965419a87d560a1886f08a5ff43f3d361306195376a1c8ee70a423',
+        },
+    },
+});
+
 function validateRuntimeVariant(descriptor: RuntimeDescriptor, evidence: z.infer<typeof buildEvidenceSchema> | undefined): void {
     const release = descriptor.variant === 'release';
     if (!['debug', 'release'].includes(descriptor.variant) || descriptor.compressed !== release
@@ -511,7 +635,7 @@ function validateRuntimeVariant(descriptor: RuntimeDescriptor, evidence: z.infer
             flags: { ...(descriptor.profile === '3d-basic' ? { USE_3D: true } : {}),
                 DEBUG: !release, NATIVE: false, JSB: false, EDITOR: false, PREVIEW: false },
             compress: release, sourceMap: false, split: false, targets: { chrome: '100' } },
-        loader: { platform: descriptor.target === 'BILIBILI' ? 'bilibili' : 'web-desktop', sourceMap: false, minify: release, hmr: false, editor: false, minifierWorkers: 1 },
+        loader: { platform: loaderPlatforms[descriptor.target], sourceMap: false, minify: release, hmr: false, editor: false, minifierWorkers: 1 },
         game: { variant: descriptor.variant, sourceMaps: false, minified: release, compact: release, comments },
         bootstrap: { minified: release, sourceMaps: false, comments },
     };
@@ -539,7 +663,8 @@ export async function validateRuntimeScripts(descriptor: RuntimeDescriptor, read
 }
 
 export function runtimeFileAllowed(file: string, target: RuntimeDescriptor['target'] = 'HTML5'): boolean {
-    if (target === 'BILIBILI') return sdkPathSchema.safeParse(file).success && ((bilibiliFixedFiles as readonly string[]).includes(file)
+    if (target === 'BILIBILI' || target === 'WECHAT' || target === 'BYTEDANCE') return sdkPathSchema.safeParse(file).success
+        && ((bilibiliFixedFiles as readonly string[]).includes(file) || (minigameExtraFiles[target] as readonly string[]).includes(file)
         || /^assets\/internal\/import\/[a-f0-9]{2}\/[a-f0-9-]{36}\.json$/.test(file));
     if (target !== 'HTML5') return false;
     return sdkPathSchema.safeParse(file).success && (/^(?:engine\/|assets\/(?:internal|game)\/|template\/(?:src|assets|tests)\/)/.test(file)
@@ -548,6 +673,18 @@ export function runtimeFileAllowed(file: string, target: RuntimeDescriptor['targ
             'game/main.js', 'game/world.js', 'template/package.json', 'template/tsconfig.json',
             'types/cc.d.ts', 'types/cc.editor.d.ts', 'types/webGPU.d.ts'].includes(file))
         && !file.split('/').some(part => part === 'node_modules' || part.startsWith('.')) && !file.endsWith('.map');
+}
+
+export function validateMiniGameConfigs(target: 'WECHAT' | 'BYTEDANCE', game: unknown, project: unknown, appId: string): void {
+    if (target !== 'WECHAT' && target !== 'BYTEDANCE') invalidPack();
+    const config = z.object({ appid: version.refine(value => value.trim() === value && !!value.trim()),
+        compileType: z.literal('game').optional(), miniprogramRoot: z.enum(['', '.', './']).optional(),
+        gameRoot: z.enum(['', '.', './']).optional() }).passthrough().parse(project);
+    z.object({ deviceOrientation: z.enum(['portrait', 'landscape']).optional(),
+        openDataContext: z.literal('').optional(), plugins: z.record(z.never()).optional(),
+        subpackages: z.array(z.never()).max(0).optional(), subPackages: z.array(z.never()).max(0).optional(),
+    }).passthrough().parse(game);
+    if (config.appid !== appId) invalidPack('Project configuration and local preflight identity disagree.');
 }
 
 export function validateRuntime(descriptor: z.infer<typeof html5RuntimeDescriptorSchema>,
@@ -585,10 +722,20 @@ export function validateBilibiliRuntime(descriptor: BilibiliRuntimeDescriptor, r
     descriptorSha256: string, descriptorBytes: number): void {
     bilibiliRuntimeDescriptorSchema.parse(descriptor);
     bilibiliReportSchema.parse(report);
+    validateMiniGameRuntime(descriptor, report, descriptorSha256, descriptorBytes);
+}
+
+export function validateMiniGameRuntime(descriptor: MiniGameRuntimeDescriptor, report: MiniGameReport,
+    descriptorSha256: string, descriptorBytes: number): void {
+    runtimeDescriptorSchema.parse(descriptor);
+    minigameReportSchema.parse(report);
+    const { target } = descriptor;
+    if (!['BILIBILI', 'WECHAT', 'BYTEDANCE'].includes(target) || report.kind !== `cocos4-${target.toLowerCase()}-local-report`) invalidPack();
     validateRuntimeVariant(descriptor, report.build);
     const files = new Map(descriptor.files.map(file => [file.path, file]));
     const assets = [...descriptor.builtins.effects, ...descriptor.builtins.materials];
-    const required = [...bilibiliFixedFiles, ...assets.map(asset => `assets/internal/import/${asset.uuid.slice(0, 2)}/${asset.uuid}.json`)];
+    const required = [...bilibiliFixedFiles, ...minigameExtraFiles[target],
+        ...assets.map(asset => `assets/internal/import/${asset.uuid.slice(0, 2)}/${asset.uuid}.json`)];
     const world3d = descriptor.profile === '3d-basic';
     const expectedLevels = Object.fromEntries([...validationLevels.slice(0, 5).map(name => [name, true]),
         ...['browserFirstFrame', 'browserInteraction', 'vendorBuild', 'device', 'portableSDK'].map(name => [name, false])]);
@@ -596,11 +743,11 @@ export function validateBilibiliRuntime(descriptor: BilibiliRuntimeDescriptor, r
         || report.runtimeSha256 !== descriptorSha256 || !Number.isSafeInteger(descriptorBytes) || descriptorBytes <= 0
         || new Set(required).size !== required.length || new Set(descriptor.files.map(file => file.path.toLowerCase())).size !== files.size
         || files.size !== descriptor.files.length || canonical([...files.keys()].sort()) !== canonical(required.sort())
-        || descriptor.files.some(file => !file.bytes || !runtimeFileAllowed(file.path, 'BILIBILI'))
-        || !['BILIBILI', 'MINIGAME', 'BUILD'].every(key => descriptor.constants[key] === true)
-        || !['HTML5', 'WECHAT', 'WECHAT_MINI_PROGRAM', 'NATIVE', 'JSB', 'EDITOR', 'EDITOR_NOT_IN_PREVIEW', 'PREVIEW', 'TEST', 'NODEJS',
+        || descriptor.files.some(file => !file.bytes || !runtimeFileAllowed(file.path, target))
+        || ![target, 'MINIGAME', 'BUILD'].every(key => descriptor.constants[key] === true)
+        || !['HTML5', 'BILIBILI', 'WECHAT', 'WECHAT_MINI_PROGRAM', 'NATIVE', 'JSB', 'EDITOR', 'EDITOR_NOT_IN_PREVIEW', 'PREVIEW', 'TEST', 'NODEJS',
             'XIAOMI', 'ALIPAY', 'TAOBAO', 'TAOBAO_MINIGAME', 'BYTEDANCE', 'OPPO', 'VIVO', 'HUAWEI', 'MIGU', 'HONOR',
-            'COCOS_RUNTIME', 'SUD', 'SUDV2', 'RUNTIME_BASED', 'SUPPORT_JIT', 'SERVER_MODE', 'DEV'].every(key => descriptor.constants[key] === false)
+            'COCOS_RUNTIME', 'SUD', 'SUDV2', 'RUNTIME_BASED', 'SUPPORT_JIT', 'SERVER_MODE', 'DEV'].filter(key => key !== target).every(key => descriptor.constants[key] === false)
         || descriptor.constants.USE_3D !== world3d || canonical(descriptor.validationLevels) !== canonical(expectedLevels)
         || canonical(descriptor.gameCompiler.sourceFiles) !== canonical(['tools/devkit/runtime/compile-game.cjs', 'tools/devkit/runtime/files.cjs'])
         || canonical([...descriptor.typeFiles].sort()) !== canonical(['types/cc.d.ts', 'types/cc.editor.d.ts', 'types/webGPU.d.ts'].sort())
@@ -609,8 +756,11 @@ export function validateBilibiliRuntime(descriptor: BilibiliRuntimeDescriptor, r
     const features = ['base', '2d', 'ui', 'audio', 'tween', 'gfx-webgl', 'gfx-webgl2', 'legacy-pipeline',
         ...(world3d ? ['3d', 'animation', 'skeletal-animation', 'primitive'] : [])];
     if (canonical([...descriptor.features].sort()) !== canonical(features.sort())) invalidPack();
-    for (const [file, sha256] of Object.entries(descriptor.variant === 'release' ? bilibiliReleaseBootstrapHashes : bilibiliBootstrapHashes)) {
-        if (files.get(file)?.sha256 !== sha256) invalidPack('BILIBILI bootstrap source pin mismatch.');
+    const sharedHashes = descriptor.variant === 'release' ? bilibiliReleaseBootstrapHashes : bilibiliBootstrapHashes;
+    const bootstrapHashes = target === 'BILIBILI' ? sharedHashes : { ...minigameBootstrapHashes[target][descriptor.variant],
+        'loader.js': sharedHashes['loader.js'], 'import-map.json': sharedHashes['import-map.json'], 'internal-prerequisites.js': sharedHashes['internal-prerequisites.js'] };
+    for (const [file, sha256] of Object.entries(bootstrapHashes)) {
+        if (files.get(file)?.sha256 !== sha256) invalidPack(`${target} bootstrap source pin mismatch.`);
     }
     for (const name of ['tile.png', 'click.wav', 'rules.json']) {
         if (files.get(`template/assets/${name}`)?.sha256 !== files.get(`assets/game/${name}`)?.sha256) invalidPack();
@@ -620,23 +770,51 @@ export function validateBilibiliRuntime(descriptor: BilibiliRuntimeDescriptor, r
     const warnings = [...(total > 4 * 1024 * KiB ? ['main: source files exceed 4 MiB; check the vendor-compiled package size.'] : []),
         ...(total > 30 * 1024 * KiB ? ['Source files exceed 30 MiB total; check the vendor-compiled package size.'] : [])];
     if (total > MAX_GAME_TOTAL || preflight.totalBytes !== total || preflight.packages[0].bytes !== total
-        || preflight.appId !== 'cocos4-local-validation-only' || preflight.version !== '0.0.0-local-validation'
+        || (report.kind === 'cocos4-bilibili-local-report' && (report.evidence.preflight.appId !== 'cocos4-local-validation-only'
+            || report.evidence.preflight.version !== '0.0.0-local-validation'))
+        || (report.kind !== 'cocos4-bilibili-local-report' && report.evidence.preflight.target !== target)
         || canonical(preflight.warnings) !== canonical(warnings)) invalidPack();
     const loaded = ['game.js', 'web-adapter.js', 'fs-utils.js', 'loader.js', 'application.js', 'cocos-js/cc.js', 'engine-adapter.js', 'game/main.js', 'game/world.js'];
+    const minigameLoaded = [...loaded, ...(target === 'BYTEDANCE'
+        ? ['assets/internal/index.js', 'internal-prerequisites.js']
+        : ['game.json', 'import-map.json', 'game-compiler.json', 'builtin-report.json', 'assets/internal/index.js'])].sort();
     for (const evidence of [report.evidence.shared, report.evidence.distinct]) {
-        if (evidence.probe.world3d !== world3d || canonical(evidence.loaded) !== canonical(loaded)) invalidPack();
+        if (evidence.probe.world3d !== world3d || evidence.loaded[0] !== 'game.js'
+            || (target === 'BILIBILI' ? canonical(evidence.loaded) !== canonical(loaded)
+                : canonical([...evidence.loaded].sort()) !== canonical(minigameLoaded))) invalidPack();
+        if ('reads' in evidence || 'fileReads' in evidence) {
+            const reads = 'reads' in evidence ? evidence.reads : evidence.fileReads;
+            const cache = `${target === 'WECHAT' ? 'wx' : 'tt'}file://mock-user/gamecaches/cacheList.json`;
+            const requiredReads = ['settings.json', 'assets/internal/config.json', 'assets/game/rules.json',
+                ...(target === 'WECHAT' ? assets.map(asset => `assets/internal/import/${asset.uuid.slice(0, 2)}/${asset.uuid}.json`) : [])];
+            if (!requiredReads.every(file => reads.includes(file))
+                || reads.some(file => file !== cache && file !== 'assets/game/intentionally-missing.png' && !files.has(file))) invalidPack();
+        }
     }
-    const edges = [ ['application.js', 'game/main.js'], ['engine-adapter.js', 'fs-utils.js'], ['game/main.js', 'cocos-js/cc.js'],
+    const edges = [ ...(target === 'BILIBILI' ? [['application.js', 'game/main.js'], ['engine-adapter.js', 'fs-utils.js']]
+        : [['application.js', 'game-compiler.json'], ['application.js', 'builtin-report.json'], ['application.js', 'game/main.js'],
+            ['fs-utils.js', target === 'WECHAT' ? 'web-adapter.js' : 'engine-adapter.js']]), ['game/main.js', 'cocos-js/cc.js'],
         ['game/main.js', 'game/world.js'], ...(world3d ? [['game/world.js', 'cocos-js/cc.js']] : []),
-        ...['game.json', 'web-adapter.js', 'loader.js', 'import-map.json', 'application.js', 'cocos-js/cc.js', 'engine-adapter.js'].map(to => ['game.js', to]),
-        ['web-adapter.js', 'fs-utils.js'] ].map(([from, to]) => ({ from, to }));
+        ...['game.json', 'web-adapter.js', ...(target === 'WECHAT' ? ['fs-utils.js'] : []), 'loader.js', 'import-map.json',
+            'application.js', 'cocos-js/cc.js', 'engine-adapter.js', ...(target === 'BYTEDANCE' ? ['fs-utils.js'] : [])].map(to => ['game.js', to]),
+        ...(target === 'BILIBILI' ? [['web-adapter.js', 'fs-utils.js']] : []) ].map(([from, to]) => ({ from, to }));
     const closure = report.evidence.closure;
     if (canonical(closure.moduleEdges) !== canonical(edges) || closure.parsedScripts !== 11 || closure.systemModules !== 5
         || closure.resourceCount !== assets.length + 5 || closure.requiredCCExportCount !== descriptor.tools.requiredCCExports.length
         || new Set(descriptor.tools.requiredCCExports).size !== descriptor.tools.requiredCCExports.length
         || closure.builtinEffects !== descriptor.builtins.effects.length || closure.builtinMaterials !== descriptor.builtins.materials.length
-        || canonical(report.evidence.failures.map(item => item.fault)) !== canonical(localFaults)
-        || report.evidence.failures.some(item => item.errors.some(error => !error.startsWith('[BILIBILI] Game startup failed: ')))) invalidPack();
+        || canonical(report.evidence.failures.map(item => item.fault)) !== canonical(target === 'WECHAT' ? wechatFaults : target === 'BYTEDANCE' ? bytedanceFaults : localFaults)
+        || report.evidence.failures.some(item => item.errors.some(error => !error.startsWith(`[${target}] Game startup failed: `)))) invalidPack();
+    if (report.kind === 'cocos4-wechat-local-report' && (report.evidence.closure.compiledGlobals.CC_DEBUG !== (descriptor.variant === 'debug')
+        || report.evidence.failures.some(item => item.loaded.some(file => !files.has(file))))) invalidPack();
+    for (const failure of report.evidence.failures) {
+        if ('initCalls' in failure || 'initCount' in failure) {
+            const beforeInit = ['missing-host', 'missing-fs', 'missing-export', 'missing-game-config', 'invalid-game-config', 'web-adapter', 'loader', 'engine-adapter'].includes(failure.fault);
+            const ran = ['run', 'start-sync', 'start-async', 'missing-asset'].includes(failure.fault);
+            if (('initCalls' in failure ? failure.initCalls : failure.initCount) !== Number(!beforeInit)
+                || ('runCalls' in failure ? failure.runCalls : failure.runCount) !== Number(ran)) invalidPack();
+        }
+    }
 }
 
 export async function loadSdk(root: string): Promise<Sdk> {
@@ -737,12 +915,14 @@ export async function loadSdk(root: string): Promise<Sdk> {
             }
         }
         const sourceFiles = new Map(manifest.source.files.map(file => [file.path, file]));
-        for (const [destination, source] of [['LICENSE', 'LICENSE'], ['app/validate-bilibili.cjs', 'scripts/validate-bilibili.cjs']] as const) {
+        const validatorFiles = [['LICENSE', 'LICENSE'], ['app/validate-bilibili.cjs', 'scripts/validate-bilibili.cjs'],
+            ...(sourceFiles.has('scripts/validate-minigame.cjs') ? [['app/validate-minigame.cjs', 'scripts/validate-minigame.cjs']] : [])];
+        for (const [destination, source] of validatorFiles) {
             const file = files.get(destination);
-            const original = sourceFiles.get(source);
+            const original = sourceFiles.get(source as z.infer<typeof sourcePathSchema>);
             if (!file || file.sha256 !== original?.sha256 || file.bytes !== original.bytes) invalidPack();
         }
-        const referenced = new Set(['LICENSE', 'app/validate-bilibili.cjs']);
+        const referenced = new Set(validatorFiles.map(([destination]) => destination));
         for (const doc of manifest.docs) {
             const text = content.get(doc.path);
             if (!doc.path.startsWith('docs/') || text === undefined || Buffer.byteLength(text) > MAX_DOCUMENT || !fits(text)) invalidPack();
@@ -781,6 +961,7 @@ export async function loadSdk(root: string): Promise<Sdk> {
             const { sdkId: baseId, ...basePayload } = base;
             if (base.kind !== 'readonly-development' || baseId !== development.baseSdkId || baseId !== `sha256-${hash(canonical(basePayload))}`
                 || base.engineVersion !== manifest.engineVersion || canonical(base.source) !== canonical(manifest.source)
+                || canonical(base.capabilities.packageValidation) !== canonical(manifest.capabilities.packageValidation)
                 || canonical(base.docs) !== canonical(manifest.docs) || canonical(base.license) !== canonical(manifest.license)
                 || canonical(base.catalog.platforms) !== canonical(manifest.catalog.platforms.map(platform => ({ ...platform,
                     prebuiltAvailable: false, exportAvailable: false, validationLevels: [] })))
@@ -820,7 +1001,7 @@ export async function loadSdk(root: string): Promise<Sdk> {
                     || reportPath !== `${directory}/evidence/${profile.target === 'HTML5' ? 'browser' : 'local'}-report.json`
                     || canonical(profile.validationLevels) !== canonical(runtimeValidationLevels[profile.target])) invalidPack();
                 const descriptor = runtimeDescriptorSchema.parse(await json(profile.descriptor));
-                let localReport: BilibiliReport | undefined;
+                let localReport: MiniGameReport | undefined;
                 if (profile.target === 'HTML5') {
                     if (descriptor.target !== 'HTML5') invalidPack();
                     const value = await json(profile.browserReport);
@@ -837,9 +1018,9 @@ export async function loadSdk(root: string): Promise<Sdk> {
                         referenced.add(name);
                     }
                 } else {
-                    if (descriptor.target !== 'BILIBILI') invalidPack();
-                    localReport = bilibiliReportSchema.parse(await json(profile.localReport));
-                    validateBilibiliRuntime(descriptor, localReport, files.get(profile.descriptor)!.sha256, files.get(profile.descriptor)!.bytes);
+                    if (descriptor.target !== profile.target) invalidPack();
+                    localReport = minigameReportSchema.parse(await json(profile.localReport));
+                    validateMiniGameRuntime(descriptor, localReport, files.get(profile.descriptor)!.sha256, files.get(profile.descriptor)!.bytes);
                 }
                 if (descriptor.engineVersion !== manifest.engineVersion || descriptor.profile !== profile.id || descriptor.variant !== profile.variant
                     || canonical(descriptor.features) !== canonical(profile.features) || descriptor.rootLockSha256 !== closure.rootLockSha256
@@ -847,7 +1028,7 @@ export async function loadSdk(root: string): Promise<Sdk> {
                 bind(directory, descriptor.files);
                 await validateRuntimeScripts(descriptor, (file, max) => readFile(`${directory}/${file}`, max));
                 if (files.get(`${directory}/compiler-dependencies.json`)?.sha256 !== files.get(development.dependencies)?.sha256) invalidPack();
-                if (descriptor.target === 'BILIBILI') {
+                if (descriptor.target !== 'HTML5') {
                     const builtin = z.object({ profile: id, features: z.array(id), effects: z.array(z.unknown()), materials: z.array(z.unknown()),
                         files: z.array(inventoryFileSchema).max(1024) }).passthrough().parse(await json(`${directory}/builtin-report.json`));
                     const assetFiles = builtin.files.filter(file => file.path.startsWith('assets/'));
@@ -867,12 +1048,27 @@ export async function loadSdk(root: string): Promise<Sdk> {
                         assetDepGraph: { 'cc.js': [] }, hasCriticalWarns: false, dependencyGraph: { 'cc.js': [] } })) invalidPack();
                     const { ccbuild: _ccbuild, moduleSystem: _moduleSystem, loaderPlatform: _loaderPlatform, ...gameTools } = descriptor.tools;
                     if (canonical(await json(`${directory}/game-compiler.json`)) !== canonical(gameTools)) invalidPack();
+                    if (descriptor.target !== 'BILIBILI') {
+                        // These root configs belong to the profile inventory, but
+                        // project builds replace them with mutable game metadata.
+                        if (!localReport || localReport.kind === 'cocos4-bilibili-local-report') invalidPack();
+                        validateMiniGameConfigs(descriptor.target, await json(`${directory}/game.json`, 32 * KiB),
+                            await json(`${directory}/project.config.json`, 32 * KiB), localReport.evidence.preflight.appId);
+                        if (descriptor.target === 'BYTEDANCE') {
+                            z.object({ name: z.literal('@cocos/engine-platforms'), version: z.literal('1.0.6'), license: z.literal('UNLICENSED') })
+                                .passthrough().parse(await json(`${directory}/licenses/bytedance/package.json`, 32 * KiB));
+                            if (files.get(`${directory}/licenses/bytedance/ENGINE-LICENSE`)?.sha256 !== files.get(`${directory}/ENGINE-LICENSE`)?.sha256) invalidPack();
+                        }
+                    }
                 }
                 const exports = exportInventorySchema.parse(await json(profile.exports));
                 if (new Set(exports.names).size !== exports.names.length) invalidPack();
+                const requiredExports = [...descriptor.tools.requiredCCExports,
+                    ...(['WECHAT', 'BYTEDANCE'].includes(descriptor.target) ? ['game', 'assetManager', 'Material', 'isValid'] : []),
+                    ...(descriptor.target === 'WECHAT' ? ['cclegacy'] : [])];
                 if (exports.engineSha256 !== files.get(`${directory}/${descriptor.engineEntry.slice(2)}`)?.sha256
                     || (localReport && localReport.evidence.closure.engineExportCount !== exports.names.length)
-                    || descriptor.tools.requiredCCExports.some(name => !exports.names.includes(name))) invalidPack();
+                    || requiredExports.some(name => !exports.names.includes(name))) invalidPack();
                 profiles.set(`${profile.target}/${profile.id}/${profile.variant}`, freeze({ ...descriptor,
                     directory: path.join(root, directory), descriptor, ccExports: exports.names, typesDirectory: path.join(root, directory, 'types') }) as SdkProfile);
                 if (!manifest.catalog.templates.some(template => template.profile === profile.id && template.target === profile.target

@@ -146,10 +146,12 @@ engineEntry and its nested descriptor:
 | --- | --- | --- | --- | --- |
 | `HTML5` | `html5RuntimeDescriptorSchema` | `index.html` | `./engine/cc.js` | Mandatory `browserReport` and screenshots |
 | `BILIBILI` | `bilibiliRuntimeDescriptorSchema` | `game.js` | `./cocos-js/cc.js` | Mandatory `localReport`, no browser claims |
+| `WECHAT` | `wechatRuntimeDescriptorSchema` | `game.js` | `./cocos-js/cc.js` | Mandatory target-specific `localReport`, no browser claims |
+| `BYTEDANCE` | `bytedanceRuntimeDescriptorSchema` | `game.js` | `./cocos-js/cc.js` | Mandatory target-specific `localReport`, no browser claims |
 
 Every game pack still requires HTML5 `2d-basic` and `3d-basic`. It may additionally
-contain the complete BILIBILI pair, never a partial or cross-target substitute.
-BILIBILI packs require the verified API index. Saved HTML5 packs with or without
+contain complete BILIBILI, WECHAT or BYTEDANCE pairs for each delivered variant,
+never partial or cross-target substitutes. Mini-game packs require the verified API index. Saved HTML5 packs with or without
 an index remain readable. HTML5 evidence checks are unchanged.
 
 `validateBilibiliRuntime(descriptor, report, descriptorSha256, descriptorBytes)`
@@ -159,8 +161,11 @@ and positive/negative mocked lifecycle evidence. Loading additionally binds the
 builtin report, assets, settings, engine-build and compiler output inventories.
 `bilibiliBootstrapHashes` pins the reviewed launcher, generated loader, adapters,
 Application and bootstrap configuration bytes; upgrades require explicit review.
+`validateMiniGameRuntime` additionally validates the WeChat and ByteDance local
+contracts with their distinct loaded-module, adapter and startup-failure evidence.
+`minigameBootstrapHashes` binds the reviewed target/variant bootstrap bytes.
 `runtimeFileAllowed(file, target = 'HTML5')` is target-aware. Only the delivered
-unsplit basic BILIBILI layouts are supported, not arbitrary extra chunks/files.
+unsplit basic mini-game layouts are supported, not arbitrary extra chunks/files.
 
 `runtimeValidationLevels` contains the per-target catalog gates. BILIBILI adds
 `moduleClosure`, `canonicalPreflight`, `loaderBootstrapSharedGlobal`,
@@ -179,12 +184,14 @@ packs whose export flags were already true.
 `runtime` and optional `browserReport` or `localReport`, according to the actual
 descriptor target. Reports default to sibling `<runtime>-browser/browser-report.json`
 or `<runtime>-local/local-report.json`. CLI `--browser-report` values are ordered
-among HTML5 inputs, and `--local-report` values among BILIBILI inputs. If supplied,
-each list must cover all inputs of that target. The programmatic `browserReports`
+among HTML5 inputs, and `--local-report` values among all BILIBILI, WECHAT and
+BYTEDANCE inputs in runtime order. If supplied, each list must cover its full
+input group. The programmatic `browserReports`
 and `localReports` arrays expose the same ordered form and cannot be mixed with
 per-runtime overrides of the same kind. Compiler checks use target/profile/variant
 directories to avoid collisions. HTML5 template IDs remain `<profile>-starter`;
-BILIBILI IDs are `bilibili-<profile>-starter`.
+Mini-game IDs use `bilibili-`, `wechat-` or `bytedance-` before `<profile>-starter`;
+release templates insert `-release` before `-starter`.
 
 `test/bilibili-sdk.test.mjs` covers the genuine mixed inputs, rehashed corruption,
 cross-target evidence, distinct declaration variants, relocation and explicit CLI

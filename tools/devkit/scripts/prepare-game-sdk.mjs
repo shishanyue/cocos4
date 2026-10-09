@@ -7,8 +7,8 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify, TextDecoder } from 'node:util';
-import { bilibiliReportSchema, browserReportSchema, canonical, compilerClosureSchema, hash, loadSdk, parseJson,
-    runtimeDescriptorSchema, runtimeValidationLevels, sdkPathSchema, summarizeBrowserReport, validateBilibiliRuntime, validateCompilerClosure, validateRuntime, validateRuntimeScripts } from '../build/src/sdk.js';
+import { browserReportSchema, canonical, compilerClosureSchema, hash, loadSdk, minigameReportSchema, parseJson,
+    runtimeDescriptorSchema, runtimeValidationLevels, sdkPathSchema, summarizeBrowserReport, validateMiniGameConfigs, validateMiniGameRuntime, validateCompilerClosure, validateRuntime, validateRuntimeScripts } from '../build/src/sdk.js';
 import { publishSdk } from './prepare-sdk.mjs';
 import { extractRuntimeExports, generateApiIndex } from '../build/src/api-index.js';
 import { builtinIdentity } from '../runtime/builtins.cjs';
@@ -145,20 +145,28 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
         for (const input of runtimes) {
             const bytes = await read(input.runtime, 'runtime.json', 2 * 1024 * 1024);
             const descriptor = runtimeDescriptorSchema.parse(parseJson(decode(bytes)));
-            const bilibili = descriptor.target === 'BILIBILI';
+            const minigame = descriptor.target !== 'HTML5';
+            if (descriptor.target === 'WECHAT' || descriptor.target === 'BYTEDANCE') {
+                assert.ok(readonly.manifest.capabilities.packageValidation.includes(descriptor.target),
+                    'New mini-game runtimes require a base SDK containing app/validate-minigame.cjs');
+            }
             const key = `${descriptor.target}/${descriptor.profile}/${descriptor.variant}`;
             assert.ok(!descriptors.has(key), 'Duplicate target/profile/variant');
             descriptors.set(key, descriptor);
-            assert.ok(bilibili ? input.browserReport === undefined : input.localReport === undefined, 'Report kind must match the actual runtime target');
-            const ordered = bilibili ? localReports : browserReports;
-            const reportPath = (bilibili ? input.localReport : input.browserReport)
-                ?? ordered[profiles.filter(profile => profile.target === descriptor.target).length]
-                ?? `${input.runtime}-${bilibili ? 'local/local' : 'browser/browser'}-report.json`;
+            assert.ok(minigame ? input.browserReport === undefined : input.localReport === undefined, 'Report kind must match the actual runtime target');
+            const ordered = minigame ? localReports : browserReports;
+            const reportPath = (minigame ? input.localReport : input.browserReport)
+                ?? ordered[profiles.filter(profile => (profile.target !== 'HTML5') === minigame).length]
+                ?? `${input.runtime}-${minigame ? 'local/local' : 'browser/browser'}-report.json`;
             const reportRoot = path.dirname(reportPath);
             const reportBytes = await read(reportRoot, path.basename(reportPath), 2 * 1024 * 1024);
-            const report = (bilibili ? bilibiliReportSchema : browserReportSchema).parse(parseJson(decode(reportBytes)));
-            if (bilibili) validateBilibiliRuntime(descriptor, report, hash(bytes), bytes.length);
+            const report = (minigame ? minigameReportSchema : browserReportSchema).parse(parseJson(decode(reportBytes)));
+            if (minigame) validateMiniGameRuntime(descriptor, report, hash(bytes), bytes.length);
             else validateRuntime(descriptor, report, hash(bytes));
+            if (descriptor.target === 'WECHAT' || descriptor.target === 'BYTEDANCE') {
+                validateMiniGameConfigs(descriptor.target, parseJson(decode(await read(input.runtime, 'game.json', 32 * 1024))),
+                    parseJson(decode(await read(input.runtime, 'project.config.json', 32 * 1024))), report.evidence.preflight.appId);
+            }
             await validateRuntimeScripts(descriptor, (file, max) => read(input.runtime, file, max));
             assert.equal(descriptor.engineVersion, readonly.manifest.engineVersion, 'Engine version differs from base SDK');
             const expected = ['runtime.json', ...descriptor.files.map(file => file.path)].sort();
@@ -180,24 +188,24 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
                 await retain(`${directory}/builtin-result.json`, original);
                 await retain(`${directory}/runtime-receipt.json`, receiptBytes);
             }
-            const evidence = `${directory}/evidence/${bilibili ? 'local' : 'browser'}-report.json`;
+            const evidence = `${directory}/evidence/${minigame ? 'local' : 'browser'}-report.json`;
             await retain(evidence, reportBytes);
-            const summary = bilibili ? undefined : await summarizeBrowserReport(report, async (file, max) => {
+            const summary = minigame ? undefined : await summarizeBrowserReport(report, async (file, max) => {
                 const image = await read(reportRoot, file, max);
                 await retain(`${directory}/evidence/${file}`, image);
                 return image;
             });
-            await write(evidence, bilibili ? reportBytes : jsonBytes(summary));
+            await write(evidence, minigame ? reportBytes : jsonBytes(summary));
             const dependencies = await read(input.runtime, 'compiler-dependencies.json', 2 * 1024 * 1024);
             if (closureBytes) assert.ok(dependencies.equals(closureBytes), 'Runtime compiler closures differ');
             else { closureBytes = dependencies; closure = compilerClosureSchema.parse(parseJson(decode(dependencies))); }
             profiles.push({ id: descriptor.profile, target: descriptor.target, variant: descriptor.variant, directory,
-                descriptor: `${directory}/runtime.json`, ...(bilibili ? { localReport: evidence } : { browserReport: evidence }),
+                descriptor: `${directory}/runtime.json`, ...(minigame ? { localReport: evidence } : { browserReport: evidence }),
                 exports: `${directory}/cc-exports.json`, features: descriptor.features, delivery: 'PREBUILT', validationLevels: runtimeValidationLevels[descriptor.target] });
-            templates.push({ id: `${bilibili ? 'bilibili-' : ''}${descriptor.profile}${descriptor.variant === 'release' ? '-release' : ''}-starter`, directory: `${directory}/template`,
+            templates.push({ id: `${minigame ? `${descriptor.target.toLowerCase()}-` : ''}${descriptor.profile}${descriptor.variant === 'release' ? '-release' : ''}-starter`, directory: `${directory}/template`,
                 profile: descriptor.profile, target: descriptor.target, variant: descriptor.variant });
         }
-        for (const target of ['HTML5', ...(profiles.some(profile => profile.target === 'BILIBILI') ? ['BILIBILI'] : [])]) {
+        for (const target of new Set(['HTML5', ...profiles.map(profile => profile.target)])) {
             assert.ok(['2d-basic', '3d-basic'].every(id => profiles.some(profile => profile.id === id && profile.target === target)), `Both real ${target} profiles are required`);
             for (const variant of new Set(profiles.filter(profile => profile.target === target).map(profile => profile.variant))) {
                 assert.ok(['2d-basic', '3d-basic'].every(id => profiles.some(profile => profile.id === id && profile.target === target && profile.variant === variant)),
@@ -205,7 +213,7 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
             }
         }
         assert.ok((!browserReports.length || browserReports.length === profiles.filter(profile => profile.target === 'HTML5').length)
-            && (!localReports.length || localReports.length === profiles.filter(profile => profile.target === 'BILIBILI').length), 'Usage: one explicit report per runtime of the matching target');
+            && (!localReports.length || localReports.length === profiles.filter(profile => profile.target !== 'HTML5').length), 'Usage: one explicit report per runtime of the matching kind');
         const sourceLock = await read(engineRoot, 'package-lock.json', 8 * 1024 * 1024);
         assert.equal(hash(sourceLock), closure.rootLockSha256, 'Compiler source lock does not match runtime provenance');
         const dependencyInventory = [];
@@ -254,11 +262,15 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
             await mkdir(path.dirname(outDirectory), { recursive: true });
             const { stdout } = await run(process.execPath, ['--input-type=commonjs', '-e', `
                 const Module = require('node:module');
+                const path = require('node:path');
                 const resolve = Module._resolveFilename;
                 Module._resolveFilename = function (...args) {
                     const resolved = resolve.apply(this, args);
-                    if (!Module.isBuiltin(resolved) && !resolved.startsWith(${JSON.stringify(`${toolchainRoot}/`)})) {
-                        throw new Error('Compiler resolved outside the delivered toolchain: ' + resolved);
+                    if (!Module.isBuiltin(resolved)) {
+                        const relative = path.relative(${JSON.stringify(toolchainRoot)}, resolved);
+                        if (!relative || relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+                            throw new Error('Compiler resolved outside the delivered toolchain: ' + resolved);
+                        }
                     }
                     return resolved;
                 };
@@ -289,7 +301,7 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
         const manifest = { ...readonly.manifest,
             apiIndex,
             kind: 'portable-development',
-            description: `${profiles.some(profile => profile.target === 'BILIBILI') ? 'HTML5 and BILIBILI' : 'HTML5'} ${[...new Set(profiles.map(profile => profile.variant))].sort().join('/')} 2D/3D prebuilt development pack, editable starters and a lock-checked standalone game compiler. Export means source-game-package assembly. Requires host Node; not a portable release, vendor publisher, or device certification.`,
+            description: `${['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE'].filter(target => profiles.some(profile => profile.target === target)).join(' and ')} ${[...new Set(profiles.map(profile => profile.variant))].sort().join('/')} 2D/3D prebuilt development pack, editable starters and a lock-checked standalone game compiler. Export means source-game-package assembly. Requires host Node; not a portable release, vendor publisher, or device certification.`,
             capabilities: { ...readonly.manifest.capabilities, gameDevelopment: true, gameBuild: true, preview: true, export: true },
             files: files.sort((a, b) => a.path < b.path ? -1 : 1),
             catalog: {
@@ -349,7 +361,7 @@ async function main() {
     const runtimes = [];
     const reports = [];
     const localReports = [];
-    const usage = 'Usage: node scripts/prepare-game-sdk.mjs --base <absolute readonly pack> --runtime <absolute directory or runtime.json> --runtime ... [--browser-report <absolute report.json> (one per HTML5 runtime)] [--local-report <absolute report.json> (one per BILIBILI runtime)] --out <absolute absent directory> [--engine-root <absolute trusted checkout>]. Reports default to sibling <runtime>-browser/browser-report.json or <runtime>-local/local-report.json.';
+    const usage = 'Usage: node scripts/prepare-game-sdk.mjs --base <absolute readonly pack> --runtime <absolute directory or runtime.json> --runtime ... [--browser-report <absolute report.json> (one per HTML5 runtime)] [--local-report <absolute report.json> (one per BILIBILI/WECHAT/BYTEDANCE runtime, in runtime order)] --out <absolute absent directory> [--engine-root <absolute trusted checkout>]. Reports default to sibling <runtime>-browser/browser-report.json or <runtime>-local/local-report.json.';
     for (let index = 2; index < process.argv.length; index += 2) {
         const key = process.argv[index];
         const value = process.argv[index + 1];

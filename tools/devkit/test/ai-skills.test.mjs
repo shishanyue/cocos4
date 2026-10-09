@@ -4,6 +4,7 @@ import * as fs from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { verifyReleaseProfiles } from '../scripts/verify-portable.mjs';
 
 const devkit = fileURLToPath(new URL('../', import.meta.url));
 const build = path.resolve(process.env.AI_TEST_BUILD_ROOT ?? path.join(devkit, 'build'));
@@ -59,9 +60,9 @@ test('all packaged Markdown links resolve within the skills payload and names ar
     assert.ok(links >= 9);
 });
 
-test('packaged example checks all eight target/profile/variant combinations once with real SDK declarations/compiler', async () => {
+test('packaged example checks every delivered target/profile/variant once with real SDK declarations/compiler', async () => {
     const manifest = JSON.parse(await fs.readFile(path.join(sdkRoot, 'manifest.json'), 'utf8'));
-    assert.equal(manifest.catalog.profiles.length, 8);
+    verifyReleaseProfiles(manifest.catalog.profiles);
     const reports = [];
     for (const profile of manifest.catalog.profiles) {
         const result = await check(checker, profile.target, profile.id, '--variant', profile.variant);
@@ -81,7 +82,7 @@ test('packaged example checks all eight target/profile/variant combinations once
         reports.push(report);
     }
     assert.deepEqual(reports.map(report => `${report.target}/${report.profile}/${report.variant}`).sort(),
-        ['BILIBILI', 'HTML5'].flatMap(target => ['2d-basic', '3d-basic'].flatMap(profile =>
+        [...new Set(manifest.catalog.profiles.map(profile => profile.target))].sort().flatMap(target => ['2d-basic', '3d-basic'].flatMap(profile =>
             ['debug', 'release'].map(variant => `${target}/${profile}/${variant}`))));
     if (process.env.AI_TEST_EVIDENCE_ROOT) await fs.writeFile(path.join(process.env.AI_TEST_EVIDENCE_ROOT, 'skills-types-evidence.json'),
         `${JSON.stringify(reports, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
@@ -104,7 +105,7 @@ test('packaged checker rejects missing, malformed and duplicate variant values',
 });
 
 test('packaged checker rejects an undelivered target/profile/variant through the real SDK verifier', async () => {
-    const result = await check(checker, 'WECHAT', '2d-basic', '--variant', 'release');
+    const result = await check(checker, 'OPPO', '2d-basic', '--variant', 'release');
     assert.equal(result.code, 1, result.stderr || result.stdout);
     assert.equal(result.signal, null);
     assert.equal(result.stdout, '');

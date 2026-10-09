@@ -14,6 +14,18 @@ export const canonical = value => Array.isArray(value) ? `[${value.map(canonical
 export const safePath = value => typeof value === 'string' && value.length > 0 && value.length <= 1024
     && value.split('/').every(part => /^[A-Za-z0-9_@.+=,-]+$/.test(part) && !['.', '..'].includes(part) && !part.endsWith('.'));
 
+export function verifyReleaseProfiles(profiles) {
+    assert(Array.isArray(profiles) && profiles.length <= 16 && profiles.every(profile => profile && typeof profile === 'object'),
+        'Expected a bounded release profile inventory');
+    const targets = [...new Set(profiles.map(profile => profile.target))].sort();
+    assert(targets.includes('HTML5') && targets.includes('BILIBILI'), 'The HTML5 and BILIBILI base profiles are required');
+    assert(targets.every(target => ['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE'].includes(target)), 'Unsupported release target');
+    assert.deepEqual(profiles.map(profile => `${profile.target}/${profile.id}/${profile.variant}`).sort(),
+        targets.flatMap(target => ['2d-basic', '3d-basic'].flatMap(profile =>
+            ['debug', 'release'].map(variant => `${target}/${profile}/${variant}`))).sort(),
+        'Every delivered target requires genuine 2D/3D debug/release profiles without duplicates');
+}
+
 export function archiveChecksums(integrity) {
     if (integrity === undefined) return undefined;
     const match = /^(sha1|sha256|sha512)-([A-Za-z0-9+/]+={0,2})$/.exec(integrity);
@@ -258,7 +270,8 @@ export async function verifyWorkflow(root, evidence, verifyBrowser) {
         };
         const wait = (receipt, preview = false) => waitForJob(call, receipt, report, preview);
         const profiles = (await call('catalog', { section: 'profiles', limit: 100 })).items;
-        assert.equal(profiles.length, 8, 'Requires the actual eight-profile SDK');
+        verifyReleaseProfiles(profiles);
+        assert.deepEqual(profiles, JSON.parse(await readRegular(root, 'sdk/manifest.json')).catalog.profiles);
         const templates = (await call('catalog', { section: 'templates', limit: 100 })).items;
         const docs = await call('docs_search', { query: 'Node', kind: 'api', limit: 1 });
         assert(docs.items.length);
@@ -281,6 +294,11 @@ export async function verifyWorkflow(root, evidence, verifyBrowser) {
                 const config = JSON.parse(await fs.readFile(filename));
                 config.appId = 'TEST_ONLY_PORTABLE_ACCEPTANCE';
                 await fs.writeFile(filename, `${JSON.stringify(config)}\n`);
+            } else if (profile.target !== 'HTML5') {
+                const filename = path.join(workspace, project, 'platforms', profile.target.toLowerCase(), 'project.config.json');
+                const config = JSON.parse(await fs.readFile(filename));
+                config.appid = `${profile.target === 'WECHAT' ? 'wx' : 'tt'}0000000000000000`;
+                await fs.writeFile(filename, `${JSON.stringify(config)}\n`);
             }
             await wait(await call('project_check', { project, target: profile.target, profile: profile.id,
                 checks: ['types'], requestKey: `check-${project}` }));
@@ -291,7 +309,7 @@ export async function verifyWorkflow(root, evidence, verifyBrowser) {
             assert.deepEqual(artifact.provenance, { releaseId: manifest.releaseId,
                 profileSha256: manifest.files.find(file => file.path === `sdk/${profile.descriptor}`).sha256 });
             const input = { artifactId: artifact.artifactId, ttlSeconds: 300, requestKey: `preview-${project}` };
-            if (profile.target === 'BILIBILI') await call('preview_start', input, 'UNSUPPORTED_PROJECT');
+            if (profile.target !== 'HTML5') await call('preview_start', input, 'UNSUPPORTED_PROJECT');
             else {
                 const ready = await wait(await call('preview_start', input), true);
                 const url = ready.job.preview.url;

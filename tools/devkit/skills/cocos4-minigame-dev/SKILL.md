@@ -21,6 +21,9 @@ description: Use when implementing Cocos4 SDK or existing Creator game code with
 4. Reuse existing target, dimensionality and controls. Ask only for a missing choice
    that blocks implementation. An engine version or an allowed target is not proof
    of profile inclusion, editor compatibility, vendor publishing or device support.
+   Current SDK exporters support HTML5, BILIBILI, WECHAT and BYTEDANCE only when
+   their profiles are delivered. Legacy eight-profile SDKs remain valid; the
+   expected new 16-profile kit is not implied by source support.
 
 ## Public API And Delivery
 
@@ -33,12 +36,17 @@ description: Use when implementing Cocos4 SDK or existing Creator game code with
 - Start from a delivered code-created `Scene`/`Node` template. Reuse its bootstrap
   and real assets. Changing code does not rebuild the engine or add physics/WASM
   features absent from the delivered profile.
+- WECHAT/BYTEDANCE starters own `platforms/wechat/{game.json,project.config.json}`
+  or `platforms/bytedance/{game.json,project.config.json}`. Creation blanks `appid`;
+  set the real `wx`/`tt` ID in `project.config.json`. Build copies both files verbatim
+  to the export root. BILIBILI retains root `game.json`. Mini-game exports are
+  unsplit `game.js` source packages, not HTML5 previews or vendor/device acceptance.
 - Native apps, JSB, APK/IPA and native simulators are unsupported. Resource fields
   such as `nativeAsset`/`nativeUrl`, resource `native/` folders, mobile OS checks and
   WASM/ASM.js remain legitimate web/mini-game concepts.
 - Keep vendor SDK calls behind a small game-owned service with a browser/test
   implementation and explicit capability/errors. Do not assume DOM APIs, `wx`,
-  `bl` or runtime globals work in every container. WeChat Mini Game is not a Mini
+  `tt`, `bl` or runtime globals work in every container. WeChat Mini Game is not a Mini
   Program; runtime quick games are not native OS apps.
 
 ## Implementation Loop

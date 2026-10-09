@@ -70,7 +70,7 @@ async function main() {
     };
     await absent();
 
-    const paths = ['package.json', 'cc.config.json', 'scripts/validate-bilibili.cjs', 'LICENSE',
+    const paths = ['package.json', 'cc.config.json', 'scripts/validate-bilibili.cjs', 'scripts/validate-minigame.cjs', 'LICENSE',
         'README.md', 'AGENTS.md', 'docs/bilibili_minigame/README.md', 'docs/plans/cocos4-mcp-devkit.md'].sort();
     const sources = new Map();
     for (const relative of paths) {
@@ -102,7 +102,7 @@ async function main() {
     const ids = (values, max) => Array.isArray(values) && values.length <= max && values.every(validId)
         && new Set(values.map(value => value.toLowerCase())).size === values.length;
     if (typeof pkg.version !== 'string' || !pkg.version || pkg.version.length > 128 || pkg.license !== 'MIT') throw new Error('Invalid source package version/license.');
-    if (!ids(config.platforms, 128) || !config.platforms.length || !config.platforms.includes('BILIBILI')
+    if (!ids(config.platforms, 128) || !['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE'].every(target => config.platforms.includes(target))
         || !config.features || Array.isArray(config.features) || typeof config.features !== 'object'
         || !ids(Object.keys(config.features), 256) || !Object.keys(config.features).length) throw new Error('Invalid source catalog.');
     const features = Object.entries(config.features).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([id, feature]) => {
@@ -112,7 +112,8 @@ async function main() {
         return { id, modules: feature.modules, dependentModules: feature.dependentModules ?? [],
             dependentAssets: feature.dependentAssets ?? [], prebuiltAvailable: false };
     });
-    const payload = new Map([['LICENSE', sources.get('LICENSE')], ['app/validate-bilibili.cjs', sources.get('scripts/validate-bilibili.cjs')]]);
+    const payload = new Map([['LICENSE', sources.get('LICENSE')], ['app/validate-bilibili.cjs', sources.get('scripts/validate-bilibili.cjs')],
+        ['app/validate-minigame.cjs', sources.get('scripts/validate-minigame.cjs')]]);
     const docs = [];
     for (const [sourcePath, name, title] of [
         ['README.md', 'readme', 'Engine README'], ['AGENTS.md', 'boundaries', 'Engine maintenance boundaries'],
@@ -135,8 +136,8 @@ async function main() {
         .map(([file, bytes]) => ({ path: file, bytes: bytes.length, sha256: hash(bytes) }));
     const manifest = {
         schemaVersion: 1, kind: 'readonly-development', engineVersion: pkg.version,
-        description: 'Readonly source catalog, selected source guides and Bilibili package preflight only. No game development, engine profiles, templates, API index, runnable examples, build, preview or export capability.',
-        capabilities: { catalog: true, docs: true, packageValidation: ['BILIBILI'], gameDevelopment: false, gameBuild: false, preview: false, export: false },
+        description: 'Readonly source catalog, selected source guides and BILIBILI/WECHAT/BYTEDANCE source-package preflight only. No game development, engine profiles, templates, API index, runnable examples, build, preview or export capability.',
+        capabilities: { catalog: true, docs: true, packageValidation: ['BILIBILI', 'WECHAT', 'BYTEDANCE'], gameDevelopment: false, gameBuild: false, preview: false, export: false },
         source: { sha256: hash(canonical(sourceFiles)), files: sourceFiles,
             attribution: 'SHA-256 records selected source bytes, not a full checkout revision or authenticity. Verify separately distributed provenance. Guides retain source-tree links and maintainer instructions; linked files are not necessarily bundled.' },
         license: { path: 'LICENSE', spdx: 'MIT' }, files,

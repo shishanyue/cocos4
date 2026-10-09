@@ -395,16 +395,17 @@ async function inspectProjectData(workspace: string, project: string): Promise<I
 
 // The SDK loader establishes manifest trust. This independently pins and hashes
 // the packaged validator before any of its bytes are used as executable code.
-export async function readSdkValidator(sdkRoot: string, expectedHash: string): Promise<Buffer> {
+export async function readSdkValidator(sdkRoot: string, expectedHash: string, validatorName = 'validate-bilibili.cjs'): Promise<Buffer> {
     if (!/^[a-f0-9]{64}$/.test(expectedHash)) throw new AppError('SDK_INCOMPLETE', 'The packaged validator has no verified SHA-256 manifest entry.');
+    if (!/^validate-(?:bilibili|minigame)\.cjs$/.test(validatorName)) throw new AppError('SDK_INCOMPLETE', 'The packaged validator name is not supported.');
     const pins = await pinAbsolute(sdkRoot);
     try {
         pins.push(await openChild(pins[pins.length - 1], 'app', true));
-        const file = await openChild(pins[pins.length - 1], 'validate-bilibili.cjs', false);
+        const file = await openChild(pins[pins.length - 1], validatorName, false);
         try {
             const bytes = await readRegular(file, MiB, performance.now() + 5000);
             if (createHash('sha256').update(bytes).digest('hex') !== expectedHash) {
-                throw new AppError('SDK_INCOMPLETE', 'The packaged Bilibili validator failed its manifest hash check.');
+                throw new AppError('SDK_INCOMPLETE', 'The packaged validator failed its manifest hash check.');
             }
             await checkPins(pins);
             return bytes;
@@ -413,7 +414,8 @@ export async function readSdkValidator(sdkRoot: string, expectedHash: string): P
 }
 
 export async function withPackageSnapshot<T>(workspace: string, directory: string, staging: string,
-    validatorBytes: Buffer, validate: (snapshot: string, validator: string) => T | Promise<T>): Promise<T> {
+    validatorBytes: Buffer, validate: (snapshot: string, validator: string) => T | Promise<T>, validatorName = 'validate-bilibili.cjs'): Promise<T> {
+    if (!/^validate-(?:bilibili|minigame)\.cjs$/.test(validatorName)) throw new AppError('INVALID_ARGUMENTS', 'Unknown packaged validator.');
     const deadline = performance.now() + snapshotLimits.milliseconds;
     const sourcePins = await pinProject(workspace, directory);
     const statePins: Pin[] = [];
@@ -451,7 +453,7 @@ export async function withPackageSnapshot<T>(workspace: string, directory: strin
         }
         const job = await createDirectory(state, `validation-${randomUUID()}`);
         statePins.push(job);
-        await writePrivate(job, 'validate-bilibili.cjs', validatorBytes);
+        await writePrivate(job, validatorName, validatorBytes);
         const output = await createDirectory(job, 'snapshot');
         statePins.push(output);
         const before = newScan();
@@ -463,7 +465,7 @@ export async function withPackageSnapshot<T>(workspace: string, directory: strin
         const snapshotBefore = newScan();
         await scanTree(output, snapshotLimits, deadline, snapshotBefore);
         compareRecords(before.contents, snapshotBefore.contents);
-        const result = await validate(output.absolute, path.join(job.absolute, 'validate-bilibili.cjs'));
+        const result = await validate(output.absolute, path.join(job.absolute, validatorName));
         const snapshotAfter = newScan();
         await scanTree(output, snapshotLimits, deadline, snapshotAfter);
         compareRecords(snapshotBefore.records, snapshotAfter.records);

@@ -7,8 +7,9 @@ The table maps that contract to implementation and inspectable evidence. A sourc
 test, fixture, startup receipt, or historical pass is not a portable release pass.
 Unknown, skipped, interrupted, and unverified requirements remain open.
 
-The current focused checkpoint is the [Packaged 2048 Check](#packaged-2048-check).
-The [September 24-25 checkpoint](#september-24-25-checkpoint) and
+The current focused checkpoint is the [WeChat And ByteDance Delivery](#wechat-and-bytedance-delivery).
+The earlier [Packaged 2048 Check](#packaged-2048-check),
+[September 24-25 checkpoint](#september-24-25-checkpoint) and
 [September 26 source/harness fixes](#september-26-focused-verification) remain
 historical; no current full Node 18/24 pass is established.
 The current user instruction is no further full matrix runs, only necessary
@@ -20,14 +21,15 @@ All `build/` evidence paths below are relative to `tools/devkit/`.
 | Plan / Requirement | Artifact Or Verification Entry | Current Evidence / Remaining Work |
 | --- | --- | --- |
 | 1, 3.1, P1: No engine checkout, Creator, system Node/npm, or first-use download | `packaging/launcher.c`, `packaging/launch.mjs`, `scripts/prepare-release.mjs`, `scripts/verify-portable-host.mjs` | Historical candidate v5-a passed eight builds and four actual browser scenarios in an offline, non-admin namespace without source/home/system executable mounts; browser and driver mounts are explicit test prerequisites. SDK-only `./cocos4 doctor` needs no workspace/HOME/state; explicit workspace retains jobs. Fresh VM, model and other hosts remain open. |
-| 3.1, 3.4: Fixed runtime/dependency closure, reproducible payload, manifest, archive checksum and provenance | `scripts/prepare-game-sdk.mjs`, `src/sdk.ts`, `src/release.ts`, outer `release.json`, SPDX inventory | v5-a identity/size/checksum below is retained. Historical e/f have identical payload and archive hashes, not a repeated v5 build. New artifacts bind verified release/profile provenance; legacy imports are not relabeled. Clean end-to-end source provenance and authentication remain open. |
+| 3.1, 3.4: Fixed runtime/dependency closure, reproducible payload, manifest, archive checksum and provenance | `scripts/prepare-game-sdk.mjs`, `src/sdk.ts`, `src/release.ts`, outer `release.json`, SPDX inventory | New four-target candidate identity/size/checksum below; v5-a is retained separately. Historical e/f have identical payload and archive hashes, not a repeated current build. New artifacts bind verified release/profile provenance; legacy imports are not relabeled. Clean end-to-end source provenance and authentication remain open. |
 | 3.1, 11.1: Linux x64, Windows x64, macOS arm64 host verification | Real per-host portable matrix | Linux candidate and namespace evidence only; no full VM or Windows/macOS acceptance. Do not advertise the other hosts. |
 | 3.2, 11.1: Locked dependencies and strict independent TypeScript | `package-lock.json`, `tsconfig.json`, `npm run build` | Strict tool compilation and pinned Node 18.20.8 / 24.21.0 tests exist; final merged matrix is open. |
-| 3.3: Independently built HTML5/BILIBILI, 2D/3D, debug/release | `scripts/build-runtime.cjs`, `scripts/prepare-game-sdk.mjs`, `test/release-profile.test.mjs` | Current eight-profile SDK: [September checkpoint](#september-24-25-checkpoint). Historical SDK `build/game-sdk-release-workstream-20260919-lexical`, ID `sha256-68bbd6aa9b7e56f9d22c61a35541d8f5113c8d7920cac9033a5382f40a720a28`, contains eight profiles. Four public release cases passed on both pinned runtimes for that earlier evidence; final merged matrix remains open. |
+| 3.3: Independently built HTML5/BILIBILI/WECHAT/BYTEDANCE, 2D/3D, debug/release | `scripts/build-runtime.cjs`, `scripts/prepare-game-sdk.mjs`, `test/release-profile.test.mjs` | Current 16-profile SDK: [WeChat And ByteDance Delivery](#wechat-and-bytedance-delivery); eight new target runtimes plus retained HTML5/BILIBILI inputs. Earlier eight-profile SDK: [September checkpoint](#september-24-25-checkpoint). Historical SDK `build/game-sdk-release-workstream-20260919-lexical`, ID `sha256-68bbd6aa9b7e56f9d22c61a35541d8f5113c8d7920cac9033a5382f40a720a28`, contains eight profiles. Four public release cases passed on both pinned runtimes for that earlier evidence; final merged matrix remains open. |
 | 3.3, 6.3: Capability levels derived from allowlist and delivered profiles | `src/sdk.ts`, `src/app.ts`, catalog tests | Implemented; final merged protocol and payload matrix required. No white-list entry alone promises an exporter. |
 | 4.1: Independent module loader, real init, builtins, strict Effects and decorated game behavior | `runtime/`, `effects/`, runtime/loader/compiler tests | Real 2D/3D runtime and browser evidence exists; packaging must preserve the verified closures and demonstrate it without source access. |
 | 4.2, 6.3: Standard editable TS/JS projects and supported resources, no implicit scripts/plugins | `src/game.ts`, `runtime/compile-game.cjs`, `test/game.test.mjs` | Creation, strict checking and builds implemented. Unknown resources, profile linkage and failed-build preservation have regressions; full current matrix open. |
 | 4.2, 6.3: BILIBILI game bootstrap, adapter, module/resource closure and canonical preflight | `src/bilibili.ts`, `runtime/verify-bilibili.cjs`, `scripts/validate-bilibili.cjs`, BILIBILI tests | Shadowed-exporter defect repaired using lexical bindings. Real public 2D/3D release builds now passed on Node 18/24. Local host simulation is not vendor rendering. |
+| 4.2, 6.3, P5: WECHAT/BYTEDANCE source exporters and project-owned metadata | Target-specific `runtime/` preparers/verifiers, `src/bilibili.ts`, `scripts/validate-minigame.cjs` | Eight genuine target runtime builds/local reports and packaged 2048 `2d-basic/release` exports passed at the current checkpoint. Config bytes and copied inventories verified; local host/cc mocks and static checks are not engine execution, vendor compilation or device rendering. |
 | 5, P4: Temporary installed OpenCode connection, no global configuration mutation | `src/ai.ts`, `src/ai-config.ts`, `src/ai-files.ts`, `runtime/mcp-launch.c`, `test/ai-run-focused.mjs` | Historical OpenCode 1.18.21 non-root Linux checks: `build/ai-p4-BLF0Lw/` (Node 18), `build/ai-p4-RLoMPw/` (Node 24), 37 focused tests and 93 real file-tool checks each. Current static-no-libc MCP helper removes runtime `/usr/bin/env`; separate provider auth environment is unchanged. Portable AI requires `--executable`, rejects `--sdk-root`. Real model attempt below failed; no gameplay demonstration. |
 | 6.1-6.2: Official SDK stdio, strict schemas, resources, error routing, bounded matching text/structured responses | `src/server.ts`, `src/app.ts`, `probes/mcp-client.ts`, protocol tests | Implemented; revalidate current merged source with official client. No experimental Tasks or arbitrary file resource exposure. |
 | 6.3: All fourteen named MCP tools and CLI parity | `src/app.ts`, `src/cli.ts`, `src/operations.ts` | Ten default / thirteen develop / fifteen with preview, including additional preview_stop; logic is an authorized check option, not a new arbitrary execution tool. |
@@ -46,7 +48,7 @@ All `build/` evidence paths below are relative to `tools/devkit/`.
 | 11.2: Real 2D/3D browser pixels, desktop/mobile input/layout, images/JSON/audio, failure and ten restarts | `test/browser-game.mjs`, `test/release-development.test.mjs`, namespace browser driver | Source release matrices passed both HTML5 cases and both BILIBILI builds. Package v5-a separately passed four edited HTML5 browser cases (2D/3D, debug/release) under namespace isolation, with release/profile identity assertions. Chromium/SwiftShader is not device or hardware-GPU proof. |
 | 11.3: Source engine regression commands | Commands below; `build/engine-verification-20260919T032859Z-source-gates/` | All eleven commands exited 0 on that unchanged source snapshot, host Node 26.7.0. Re-run when relevant engine inputs change. |
 | 11.4: Honest local/vendor/device/release support statements | CLI reports, README/MCP docs, release gates | Vendor compile/upload/device acceptance remains unverified and is not inferred from local builds. No release publication is authorized. |
-| 12: Current progress and user documentation | `README.md`, `MCP.md`, plan progress section | Current [Packaged 2048 Check](#packaged-2048-check), with earlier checkpoints retained as historical. Retain full open scope. |
+| 12: Current progress and user documentation | `README.md`, `MCP.md`, plan progress section | Current [WeChat And ByteDance Delivery](#wechat-and-bytedance-delivery), with earlier checkpoints retained as historical. Retain full open scope. |
 
 ## Engine Gate Commands
 
@@ -88,9 +90,103 @@ failure (510 tests, 492 passed / 18 failed) remains separate and preserved.
 
 ## Current Evidence
 
+### WeChat And ByteDance Delivery
+
+September 30 runtime builds and October 1 SDK/candidate/2048 assembly are complete
+at the local source-export level. This documentation update reads existing evidence;
+it does not rerun tests/builds or modify generated artifacts. Initial devkit/2048
+source work was committed as `8adf2bac99` before this implementation. The new
+exporter work is currently uncommitted; the candidate records that base revision
+with `source.dirty: true`, not a commit containing the exporter changes.
+
+- `build/minigame-exporters-20260930/summary.json`: `success: true`, eight genuinely
+  built WECHAT/BYTEDANCE runtimes, each with its own `2d-basic`/`3d-basic`,
+  `debug`/`release` descriptor, receipt and hashed local report. Node 24.21.0;
+  engine/game/loader type checks, engine builds, builtin integrity, module closure,
+  canonical preflight and bootstrap/lifecycle/failure checks passed.
+- Runtime outputs are under `build/minigame-exporters-20260930/<TARGET>/<profile>-<variant>/`;
+  reports are in adjacent `<profile>-<variant>-local/local-report.json` paths.
+  These use the actual target flags, `wx`/`tt` adapters and respective loaders,
+  not renamed BILIBILI bundles. Local verification uses explicit host/`cc` mocks
+  and static engine inspection, not engine execution or rendering. The original
+  reports retain browser/vendor/device/portableSDK levels as false, including
+  source-size warnings that are not vendor-compiled package sizes.
+- `build/minigame-delivery/sdk-result.json`: `success: true`, 16 delivered profiles
+  across HTML5, BILIBILI, WECHAT and BYTEDANCE, each 2D/3D and debug/release.
+  `sdk-inputs.json` records reuse of the September HTML5/BILIBILI runtimes plus the
+  eight new runtimes. SDK assembly does not upgrade headless local-host mocks to
+  real-device proof or relabel the older runtime reports.
+
+`build/minigame-delivery/portable-candidate.build.json`, the candidate's
+`release.json` and `portable-candidate.tar.gz.sha256` record:
+
+| Field | Retained Value |
+| --- | --- |
+| SDK | `build/minigame-delivery/sdk` |
+| SDK ID | `sha256-6b8bc73d6195c460e0ad6b4f8d3c1815e497bc78719f0b3ca12d10fb988db55a` |
+| Kit | `build/minigame-delivery/portable-candidate` |
+| Release ID | `sha256-935bd43e3dd7346afb106cfc274d8e78a6075b8dead7873994545cc9852d432d` |
+| Payload | 6,480 files; 353,639,177 bytes |
+| Archive | `build/minigame-delivery/portable-candidate.tar.gz`; 86,428,350 bytes |
+| Archive SHA-256 | `34412b3316b6b456a319ec13ab9a64613f801296283ac030b4ba4f601660a918` |
+| Status | Linux x64 local candidate, bundled Node 24.21.0; `distributionApproved: false`, `host.verified: false`, dirty source |
+
+`examples/2048/build/run-wechat-bytedance-01/evidence/result.json` records
+`success: true`: packaged MCP strict game/logic type checks with library checks
+enabled, **8 logic tests passed**, zero failed/skipped/TODOs, and both
+WECHAT/BYTEDANCE `2d-basic/release` builds succeeded. `exports.json` records matching
+release/SDK/profile provenance and both `copiedInventoryVerified: true` and
+`platformConfigBytesVerified: true` for each export:
+
+| Export | Path | Inventoried Files / Bytes |
+| --- | --- | --- |
+| WECHAT (`game.js`) | `examples/2048/build/run-wechat-bytedance-01/exports/wechat/` | 35 / 1,824,514 |
+| BYTEDANCE (`game.js`) | `examples/2048/build/run-wechat-bytedance-01/exports/bytedance/` | 38 / 1,826,935 |
+
+Project-owned `platforms/wechat/{game.json,project.config.json}` and
+`platforms/bytedance/{game.json,project.config.json}` are copied verbatim to the
+selected export root, not replaced with SDK validation metadata. This run uses
+test IDs `wx0000000000000000` and `tt0000000000000000`; no real account was tested.
+ALIPAY/OPPO still return `PROFILE_NOT_AVAILABLE`. HTML5 was not selected for export,
+so `browser.performed: false`: no preview/browser run or new rendering evidence.
+See the [2048 rerun command](examples/2048/README.md#wechat-and-bytedance-rerun)
+for the new kit and a fresh, absent output directory. The older HTML5/BILIBILI
+kit and `run-02` quick play remain valid for their own recorded identities.
+
+Focused source results reported in the handoff are listed by known scope, not
+reconstructed full invocations or a summed matrix total. These were not rerun here:
+
+| Scope | Reported Result |
+| --- | --- |
+| Canonical preflight, `scripts/tests/minigame-package.test.cjs` (repository root) | 27 passed; previous-agent report |
+| WeChat bootstrap, `test/wechat-runtime.test.mjs` | 26 passed; previous-agent report |
+| ByteDance bootstrap, `test/bytedance-runtime.test.mjs` | 33 passed; previous-agent report |
+| Production validation, `test/minigame-production.test.mjs` | 26 passed; parent report |
+| SDK contracts, `test/minigame-sdk.test.mjs` | 11 passed after the real-report metric fix; parent report |
+| Release-profile checks | 3 passed; selected scope only |
+| Workspace worker regressions, `test/workspace.test.mjs` | 2 passed: real-worker doctor/preflight and typed argument/artifact/SDK-integrity errors; not the whole file |
+
+`examples/2048/build/run-wechat-bytedance-01/evidence/entrypoints/result.json`
+records four additional successful checks in one packaged MCP session: the real
+WeChat and ByteDance starters create platform configs with blank app IDs and the
+requested project names, and `cocos4_package_validate` accepts unchanged copies
+of both exported packages with their target-specific preflight levels. Preview
+and test-execution grants were disabled. The original 2048 source, exports,
+registered artifacts and prior job records were verified unchanged; the session
+closed normally. Commands, calls and before/after hashes are retained beside it.
+The parent also ran the new kit's `cocos4 doctor` with empty `PATH` and no `HOME`;
+it exited 0 with `scope: "sdk-only"`, matching the release/SDK identities above.
+That direct terminal result is not a new browser or vendor check.
+
+There is no new full matrix, real-model, vendor build,
+upload, media/device or hardware-rendering acceptance. The adapter package
+`@cocos/engine-platforms@1.0.6` retains its `UNLICENSED` metadata/README; retaining
+those and engine notices grants no redistribution rights. Clean-source,
+authenticated-release, licensing, fresh-VM and multi-host gates remain open.
+
 ### Packaged 2048 Check
 
-September 26 focused deliverable, using the fresh Linux x64 candidate
+Historical September 26 focused deliverable, using the then-fresh Linux x64 candidate
 `examples/2048/build/portable-candidate` with bundled Node 24.21.0.
 The [assembly audit](examples/2048/build/assembly.audit.json) records unchanged
 SDK inputs and an exact source/delivered/manifest match for `verify-portable.mjs`.
@@ -102,8 +198,10 @@ SDK inputs and an exact source/delivered/manifest match for `verify-portable.mjs
 | Archive | `examples/2048/build/portable-candidate.tar.gz`; 76,204,967 bytes |
 | Archive SHA-256 | `9da6e5d9d82a68a6b7cc6e8db8a0f40c32dce1b1abc4d3703d5ae40c11d1b450` |
 
-This fresh candidate supersedes the earlier "not rebuilt" status. The engine/SDK
-was not rebuilt; no older matrix, startup or namespace passes transfer to it.
+That candidate superseded the earlier "not rebuilt" status at this checkpoint.
+The engine/SDK was not rebuilt; no older matrix, startup or namespace passes
+transfer to it. This remains the old HTML5/BILIBILI-only pack, not the new
+four-target candidate above.
 
 - [SDK-only doctor](examples/2048/build/doctor.result.json): exit 0, `success: true`,
   offline with empty PATH and no workspace/HOME/state, as recorded in its
@@ -128,7 +226,7 @@ remains failed: the `GraphicsComponent` optional-assembler alias issue
 (`getAssembler` on null). The sample switched to public `Texture2D` + `Sprite`,
 not an engine/SDK fix.
 
-Only this focused deliverable is complete. No full matrix, new model request,
+At that checkpoint, only this focused deliverable was complete. No full matrix, new model request,
 vendor or device test was performed for this check; browser win/game-over checks
 are out of scope. The dirty-source candidate is `distributionApproved: false`;
 licensing, formal release/authentication, clean-VM/multi-host, real-model and
@@ -299,7 +397,7 @@ that a different client was used. The connectivity gate failed, so the gameplay
 prompt was not submitted; no model-created game, job or artifact exists.
 No retry, provider substitution or simulated response was used. This concrete
 failure does not establish that all models are unavailable. Real-model gameplay
-acceptance, including the [current candidate](#packaged-2048-check), remains open.
+acceptance, including the [current candidate](#wechat-and-bytedance-delivery), remains open.
 
 The later `build/ai-connectivity-research-20260924-e66eX2hg/REPORT.md` records
 model discovery only: zero model requests/tools and no established selected
@@ -349,16 +447,16 @@ tests or proof of the current full matrices.
   six-test prerequisite checks do not prove the complete provisioning pipeline.
 - Clean end-to-end source/profile/dependency provenance, authenticated release
   signatures or build attestations, and redistribution/license clearance remain
-  open. The [current candidate](#packaged-2048-check) is dirty-source, locally assembled and unapproved.
+  open. The [current candidate](#wechat-and-bytedance-delivery) is dirty-source, locally assembled and unapproved.
 - Fresh-VM/no-cache acceptance and actual supported-host Linux/Windows/macOS
   verification remain open; namespaces and cross-version Node tests do not close
   those gates. Other-host process supervision is not implemented/accepted.
 - A real-model create/edit/error/fix/profile/build/preview/export gameplay loop
   remains unexecuted. The observed 403 blocks that attempt, not all future models.
 - Vendor compilation, upload, devices and hardware-GPU validation remain
-  unverified. Local BILIBILI source preflight and software browser rendering do
-  not establish those results. Physical disk-full/power-loss durability and the
-  full cross-host failure matrix also remain open as listed above.
+  unverified. Local BILIBILI/WECHAT/BYTEDANCE source preflight, host mocks and software
+  browser rendering do not establish those results. Physical disk-full/power-loss
+  durability and the full cross-host failure matrix also remain open as listed above.
 
 The full plan and its P0-P6 exit requirements remain in force; this ledger does
 not shrink the contract or mark the complete kit finished.

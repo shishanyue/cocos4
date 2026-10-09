@@ -12,7 +12,7 @@ import { loadSdk } from '../build/src/sdk.js';
 import { buildHostTool } from './build-publisher.mjs';
 import { buildMcpLauncher } from './build-mcp-launch.mjs';
 import { publishSdk } from './prepare-sdk.mjs';
-import { archiveChecksums, canonical, hash, readRegular, safePath, verifyInventory } from './verify-portable.mjs';
+import { archiveChecksums, canonical, hash, readRegular, safePath, verifyInventory, verifyReleaseProfiles } from './verify-portable.mjs';
 
 const run = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url)).replace(/\/$/, '');
@@ -61,9 +61,8 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
     for (const name of [out, `${out}.tar.gz`, `${out}.tar.gz.sha256`, `${out}.build.json`]) await absent(name);
     const sdk = await loadSdk(sdkRoot);
     assert.equal(sdk.manifest.kind, 'portable-development');
+    verifyReleaseProfiles(sdk.manifest.catalog.profiles);
     const combinations = sdk.manifest.catalog.profiles.map(item => `${item.target}/${item.id}/${item.variant}`).sort();
-    assert.deepEqual(combinations, ['BILIBILI', 'HTML5'].flatMap(target => ['2d-basic', '3d-basic'].flatMap(profile =>
-        ['debug', 'release'].map(variant => `${target}/${profile}/${variant}`))).sort(), 'All eight real profiles are required');
     const lock = JSON.parse(await readRegular(root, 'packaging/node-lock.json'));
     assert.equal(lock.version, '24.21.0');
     assert.equal(lock.target, 'linux-x64');
@@ -225,6 +224,10 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
             notices: files.filter(file => file.path.startsWith(`sdk/${profile.directory}/`)
                 && /(?:license|copying|notice)/i.test(path.posix.basename(file.path))).map(file => file.path),
             provenance: { descriptor: `sdk/${profile.descriptor}`, descriptorSha256: sdk.manifest.files.find(file => file.path === profile.descriptor).sha256 } });
+        if (sdk.manifest.catalog.profiles.some(profile => ['WECHAT', 'BYTEDANCE'].includes(profile.target))) {
+            licenseGaps.push({ component: '@cocos/engine-platforms@1.0.6',
+                reason: 'The pinned WeChat/ByteDance adapters declare UNLICENSED. Original notices are retained; the engine MIT license does not authorize their redistribution.' });
+        }
         licenseGaps.push({ component: 'Cocos4 engine/runtime/loader/Effect/external closure',
             reason: 'Root MIT metadata does not resolve restrictive source notices, loader/compiler metadata differences, or missing external license provenance. Human redistribution review remains required.' });
         const hostLibraries = [];

@@ -3,13 +3,15 @@
 Development tools and feasibility tests for the [portable devkit plan](../../docs/plans/cocos4-mcp-devkit.md).
 The [development MCP/CLI](MCP.md) exposes 10 tools by default in read-only mode,
 13 with `--mode develop`, and 15 with `--mode develop --preview true`. Verified
-development packs enumerate their delivered HTML5/BILIBILI, 2D/3D and debug/release profiles, editable
-starters, a self-contained strict game compiler, and separately authorized
+development packs enumerate their delivered HTML5/BILIBILI/WECHAT/BYTEDANCE,
+2D/3D and debug/release profiles, editable starters, a self-contained strict game
+compiler, and separately authorized
 loopback serving of retained artifacts. Project scripts/plugins never execute
 implicitly; pure logic tests require separate `--execute-tests true` authorization
-and run trusted code, not a sandbox. BILIBILI source-package assembly and canonical preflight are
-available when its profiles are delivered; vendor compilation, upload and device
-acceptance are not. Indexed packs provide declaration-driven [API and example
+and run trusted code, not a sandbox. Mini-game source-package assembly and static
+closure/canonical preflight are available only for profiles delivered in the SDK;
+vendor compilation, upload and device acceptance are not. Indexed packs provide
+declaration-driven [API and example
 queries](API-DOCS.md), not invented API/feature mappings.
 This is **not** a complete portable release, Creator replacement, or completion
 of the full MCP/game goal.
@@ -20,8 +22,8 @@ offline namespace verification are implemented; candidate status is not formal
 redistribution approval or fresh-VM/multi-host acceptance. See [MCP instructions](MCP.md)
 for `prepare:release` / `verify:portable` and the required offline Node archive.
 The historical v5-a candidate remains at `build/portable-candidate-20260922-v5-a`.
-The [current Packaged 2048 Check](ACCEPTANCE.md#packaged-2048-check) records the
-fresh candidate and focused results; the
+The [Packaged 2048 Check](ACCEPTANCE.md#packaged-2048-check) records the
+earlier HTML5/BILIBILI candidate and focused results, not the new exporters; the
 [September 24-25 checkpoint](ACCEPTANCE.md#september-24-25-checkpoint) retains
 earlier identities, skill checks and interrupted verification.
 
@@ -102,8 +104,12 @@ declarations and the locked compiler closure. Source-mode use needs Node and the
 built helpers; `prepare-release.mjs` supplies these in its enclosing candidate.
 Manifests establish integrity, not release clearance.
 Keep maintained code in the project and retained SDKs/evidence in ignored
-`tools/devkit/build/`, not only in system temporary storage. The current eight-profile
+`tools/devkit/build/`, not only in system temporary storage. The retained eight-profile
 SDK is identified in the [acceptance checkpoint](ACCEPTANCE.md#packaged-2048-check).
+Legacy eight-profile HTML5/BILIBILI SDKs remain valid. The new four-target kit is
+expected to contain 16 profiles (each target's 2D/3D debug/release combinations);
+its final SDK, candidate and packaged demo have not yet been assembled. Query the
+actual catalog rather than assuming these source changes upgrade an installed SDK.
 Historical SDKs remain at `build/game-sdk-isolated` (debug) and
 `build/game-sdk-release-workstream-20260919-lexical` (eight profiles). A compatibility fixture
 is retained at `build/legacy-game-sdk` with provenance in `build/legacy-sdk-preparation`.
@@ -122,8 +128,19 @@ is retained at `build/legacy-game-sdk` with provenance in `build/legacy-sdk-prep
   arbitrary Creator assets.
 - BILIBILI starters add root `game.json` with an empty appId. Supply your appId and
   review version/platform settings before building; source config bytes are kept
-  unchanged, never replaced by the SDK validation fixture. The unsplit package
-  has entry `game.js`; HTML5 has `index.html`. BILIBILI cannot be browser-previewed.
+  unchanged, never replaced by the SDK validation fixture. This root layout remains
+  supported for shipped BILIBILI projects.
+- WECHAT/BYTEDANCE starters add `platforms/wechat/{game.json,project.config.json}`
+  or `platforms/bytedance/{game.json,project.config.json}`. Creation blanks `appid`;
+  set your real `wx`/`tt`-prefixed ID in that target's `project.config.json`. Build
+  copies both config files verbatim to the export root. These use genuine `wx`/`tt`
+  adapters, matching loaders and engine flags, not renamed BILIBILI bundles.
+  Subpackages, plugins, open-data contexts, workers and cloud export are unsupported.
+- Mini-game outputs are unsplit source packages with `game.js` entry and preserved
+  licenses/notices; only HTML5 (`index.html`) can be browser-previewed. Static
+  closure/source preflight does not establish vendor compilation, upload or device
+  behavior. See [MCP instructions](MCP.md#2048-target-selection) for the implemented
+  2048 `--targets WECHAT,BYTEDANCE` workflow, which runs no browser when HTML5 is omitted.
 - Checks/builds accept `timeoutMs` from 1000 to 3600000 (default 600000), bound into
   request-key identity and including queue/preparation time.
 - Separate `--preview true` enables `cocos4_preview_start` (`artifactId`, required
@@ -198,6 +215,14 @@ Tarball locations and integrity hashes, including all transitive packages, are
 recorded in `package-lock.json`. This is not a release SBOM or license clearance.
 
 ## Executed Evidence
+
+`build/minigame-exporters-20260930/summary.json` records eight successful new
+WECHAT/BYTEDANCE 2D/3D debug/release runtime builds and local reports. Local checks
+use explicit host/`cc` mocks and static engine inspection, not engine execution or
+rendering; browser, vendor, device and portable-SDK validation remain false.
+The parent reports 26 focused shared production-validator tests passed. This doc
+update runs no tests/builds and claims no final new SDK/candidate/demo result;
+final proof belongs in [ACCEPTANCE.md](ACCEPTANCE.md).
 
 The current [acceptance ledger](ACCEPTANCE.md) separates retained reports from
 parent-reported terminal-only tests. The historical v5-a candidate's Node 24 startup/archive
@@ -308,7 +333,7 @@ Two integration issues were reproduced:
 
 The delivered profiles explicitly include `legacy-pipeline`; the separate smoke
 CLI default still does not register a renderer. See `exports/legacy-pipeline.ts`
-and `cocos/root.ts:setRenderPipeline`. The runtime uses HTML5 BUILD,
+and `cocos/root.ts:setRenderPipeline`. The HTML5 runtime uses BUILD,
 `rendering.customPipeline: false`, no serialized launch scene and a disabled
 splash, then creates scenes through public APIs after `game.init()`.
 A resolved init or an AFTER_DRAW event alone is not pixel evidence.
@@ -352,7 +377,7 @@ inheriting browser success from the SDK template. Any new build-to-preview
 end-to-end acceptance must identify and test those new output bytes separately.
 
 General Creator asset import and vendor compilation/upload remain outside the
-first local beta. BILIBILI source assembly and Linux supervision have separate
+first local beta. BILIBILI/WECHAT/BYTEDANCE source assembly and Linux supervision have separate
 evidence; redistribution, fresh-machine and multi-host acceptance remain open.
 Neither the historical eight probe tests nor the development tool count completes
 those gates; consult the current requirement-to-evidence checklist.
@@ -367,6 +392,9 @@ Do not publish a bundle based solely on package `license` fields:
 - The compiler candidate has a MIT root license but ISC package metadata.
 - `@cocos/module-system` declares ISC; its tarball includes the embedded SystemJS
   MIT notice but no top-level ISC notice. Preserve and resolve attribution.
+- `@cocos/engine-platforms@1.0.6` declares `UNLICENSED` and ships no standalone
+  license file. The WECHAT/BYTEDANCE exports preserve adapter metadata/notices;
+  the engine MIT license does not resolve their redistribution authorization.
 - Effects/chunks carry original copyright notices. Fonts and selected external
   WASM require their own provenance/notice inventory. Do not infer clearance
   from an existing developer cache or silently include unneeded fonts.

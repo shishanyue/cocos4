@@ -13,7 +13,12 @@ import { readGameOutput, validateRelativePath } from './workspace.js';
 const runtimeRoots = new Set(['game.js', 'application.js', 'web-adapter.js', 'engine-adapter.js', 'fs-utils.js',
     'loader.js', 'settings.json', 'import-map.json', 'internal-prerequisites.js', 'builtin-report.json', 'ENGINE-LICENSE']);
 const mandatory = [...runtimeRoots, 'cocos-js/cc.js', 'assets/internal/config.json', 'assets/internal/index.js'];
-const runtimeFile = (name: string): boolean => runtimeRoots.has(name) || name.startsWith('cocos-js/') || name.startsWith('assets/internal/');
+const notices = {
+    BILIBILI: [],
+    WECHAT: ['WECHAT-ADAPTER-LICENSE'],
+    BYTEDANCE: ['licenses/bytedance/package.json', 'licenses/bytedance/README.md',
+        'licenses/bytedance/ENGINE-LICENSE', 'licenses/bytedance/NOTICE.txt'],
+} as const;
 const digest = (bytes: Buffer | string): string => createHash('sha256').update(bytes).digest('hex');
 const uuid = z.string().uuid();
 const strings = z.array(z.string().min(1).max(1024)).max(10000);
@@ -23,23 +28,33 @@ const preflightSchema = z.object({ totalBytes: z.number().int().nonnegative().ma
     packages: z.array(z.object({ name: z.string(), root: z.string(), bytes: z.number().int().nonnegative().max(MAX_ARTIFACT_BYTES) })).max(20000),
     warnings: z.array(z.string()).max(20000) });
 
-function fail(message: string, file?: string, code: ErrorCode = 'ARTIFACT_INVALID', location?: { line: number; column: number }): never {
-    throw new AppError(code, message, [], false, { summary: 'Bilibili source-package validation failed. No project code was executed.',
-        validationLevels: [], items: [{ name: file ?? 'BILIBILI package', status: 'failed', code, message,
-            ...(file ? { file } : {}), ...location }] });
-}
-
-/** Caller supplies manifest-verified, private SDK copies and freshly compiled project output. */
-export async function validateBilibiliPackage(options: {
+export type MiniGamePackageOptions = {
+    target: 'BILIBILI' | 'WECHAT' | 'BYTEDANCE';
     directory: string;
     toolchainDirectory: string;
     validatorFile: string;
     expectedRuntimeFiles: readonly { path: string; bytes: number; sha256: string }[];
     requiredCCExports: readonly string[];
     ccExports: readonly string[];
-}): Promise<{ items: Report['items']; validationLevels: string[] }> {
+};
+
+/** Caller supplies target-pin/manifest-verified, private SDK copies and fresh compiler output. */
+export async function validateMiniGamePackage(options: MiniGamePackageOptions): Promise<{ items: Report['items']; validationLevels: string[] }> {
+    const target = options?.target;
+    const label = target === 'BILIBILI' ? 'Bilibili' : target === 'WECHAT' ? 'WeChat' : target === 'BYTEDANCE' ? 'ByteDance' : 'Mini-game';
+    function fail(message: string, file?: string, code: ErrorCode = 'ARTIFACT_INVALID', location?: { line: number; column: number }): never {
+        throw new AppError(code, message, [], false, { summary: `${label} source-package validation failed. No project code was executed.`,
+            validationLevels: [], items: [{ name: file ?? `${label === 'Mini-game' ? 'Mini-game' : target} package`, status: 'failed', code, message,
+                ...(file ? { file } : {}), ...location }] });
+    }
     try {
         if (!options || typeof options !== 'object') fail('Invalid package validation options.', undefined, 'INVALID_ARGUMENTS');
+        if (target !== 'BILIBILI' && target !== 'WECHAT' && target !== 'BYTEDANCE') fail('An explicit supported mini-game target is required.', undefined, 'INVALID_ARGUMENTS');
+        const targetNotices: readonly string[] = notices[target];
+        const runtimeFile = (name: string): boolean => runtimeRoots.has(name) || targetNotices.includes(name)
+            || name.startsWith('cocos-js/') || name.startsWith('assets/internal/');
+        const mutable = ['game.json', 'game-compiler.json', ...(target === 'BILIBILI' ? [] : ['project.config.json'])];
+        const hostRequires = target === 'BILIBILI' ? ['__bilibiliRequire'] : target === 'WECHAT' ? ['__wechatRequire', '__wxRequire'] : ['__bytedanceRequire'];
         const { directory, toolchainDirectory, validatorFile } = options;
         for (const value of [directory, toolchainDirectory, validatorFile]) {
             if (typeof value !== 'string' || !path.isAbsolute(value) || path.resolve(value) !== value || value.length > 4096) {
@@ -48,7 +63,7 @@ export async function validateBilibiliPackage(options: {
         }
         const within = (root: string, file: string): boolean => file === root || file.startsWith(`${root}${path.sep}`);
         if (within(directory, toolchainDirectory) || within(toolchainDirectory, directory) || within(directory, validatorFile)
-            || path.basename(validatorFile) !== 'validate-bilibili.cjs') fail('SDK tools must be private and separate from game output.', undefined, 'SDK_INCOMPLETE');
+            || path.basename(validatorFile) !== (target === 'BILIBILI' ? 'validate-bilibili.cjs' : 'validate-minigame.cjs')) fail('SDK tools must be private and separate from game output.', undefined, 'SDK_INCOMPLETE');
         const records = z.array(fileRecord).min(1).max(10000).parse(options.expectedRuntimeFiles);
         const namesSchema = z.array(z.string().regex(/^[A-Za-z_$][\w$]*$/).max(256)).max(4096);
         const required = namesSchema.parse(options.requiredCCExports);
@@ -68,11 +83,11 @@ export async function validateBilibiliPackage(options: {
                 fail('A required SDK runtime file is missing or changed.', record.path);
             }
         }
-        for (const file of mandatory) if (!expected.has(file)) fail('The SDK runtime inventory omits a mandatory bootstrap file.', file, 'SDK_INCOMPLETE');
+        for (const file of [...mandatory, ...targetNotices]) if (!expected.has(file)) fail('The SDK runtime inventory omits a mandatory bootstrap file.', file, 'SDK_INCOMPLETE');
         folded.clear();
         for (const file of files.keys()) {
             if (folded.has(file.toLowerCase()) || file.split('/').some(part => part.startsWith('.') || ['node_modules', 'toolchain'].includes(part.toLowerCase()))
-                || !(expected.has(file) || ['game.json', 'game-compiler.json'].includes(file)
+                || !(expected.has(file) || mutable.includes(file)
                     || (file.startsWith('game/') && file.endsWith('.js')) || file.startsWith('assets/game/'))) {
                 fail('Unexpected, ambiguous or development-only file in the production package.');
             }
@@ -90,11 +105,12 @@ export async function validateBilibiliPackage(options: {
             catch (error) { if (error instanceof AppError) throw error; fail('Invalid UTF-8 or JSON data.', file); }
         };
         read('game.js'); read('game/main.js'); read('game.json'); read('game-compiler.json');
+        if (target !== 'BILIBILI') read('project.config.json');
 
         // Only these private SDK bytes execute. The pinned TS monolith and canonical validator
         // have builtin-only runtime dependencies: no Node ancestor/global/project resolution.
         let ts: typeof TypeScript;
-        let validate: (directory: string) => unknown;
+        let validate: (directory: string, target: MiniGamePackageOptions['target']) => unknown;
         try {
             const compilerFiles = await readGameOutput(path.join(toolchainDirectory, 'node_modules/typescript'));
             const parser = compilerFiles.get('lib/typescript.js');
@@ -115,13 +131,14 @@ export async function validateBilibiliPackage(options: {
                 return module.exports;
             };
             ts = load(parser, path.join(toolchainDirectory, 'node_modules/typescript/lib/typescript.js')) as typeof TypeScript;
-            const canonical = load(validator, validatorFile) as { validateBilibili?: unknown } | null;
-            if (ts.version !== '4.9.5' || typeof canonical?.validateBilibili !== 'function') fail('Invalid private SDK validation tools.', undefined, 'SDK_INCOMPLETE');
-            validate = canonical.validateBilibili as (directory: string) => unknown;
+            const canonical = load(validator, validatorFile) as { validateBilibili?: unknown; validateMiniGame?: unknown } | null;
+            const entry = target === 'BILIBILI' ? canonical?.validateBilibili : canonical?.validateMiniGame;
+            if (ts.version !== '4.9.5' || typeof entry !== 'function') fail('Invalid private SDK validation tools.', undefined, 'SDK_INCOMPLETE');
+            validate = entry as typeof validate;
         } catch { fail('The private SDK parser or canonical validator could not be loaded.', undefined, 'SDK_INCOMPLETE'); }
 
         const map = z.object({ imports: z.record(z.string().min(1).max(1024), z.string().min(1).max(1024)) }).strict().parse(json('import-map.json'));
-        if (map.imports.cc !== './cocos-js/cc.js') fail('The cc import map entry does not reference the Bilibili engine.', 'import-map.json');
+        if (map.imports.cc !== './cocos-js/cc.js') fail(`The cc import map entry does not reference the ${label} engine.`, 'import-map.json');
         const resolve = (specifier: string, parent: string, commonjs: boolean): string => {
             let target = specifier;
             if (!commonjs && Object.hasOwn(map.imports, target)) { target = map.imports[target]; parent = 'game.js'; }
@@ -141,6 +158,8 @@ export async function validateBilibiliPackage(options: {
         let scriptBytes = 0;
         let visited = 0;
         let dynamicRuntimeRequests = 0;
+        let bundledModules = 0;
+        let bundledEdges = 0;
         const deadline = performance.now() + 60000;
         for (const [file, bytes] of files) {
             if (!file.endsWith('.js')) continue;
@@ -187,6 +206,51 @@ export async function validateBilibiliPackage(options: {
                 if (ts.isElementAccessExpression(node)) return { object: reference(node.expression), property: literal(node.argumentExpression) };
                 return undefined;
             };
+            // These adapters are already target-pinned by the SDK caller. Browserify's
+            // factory-local require resolves through its table, not the package filesystem.
+            const bundled = new Map<TypeScript.Symbol, Map<string, string>>();
+            const moduleIds = new Set<string>();
+            const checker = target !== 'BILIBILI' && ['web-adapter.js', 'engine-adapter.js'].includes(file) ? program.getTypeChecker() : undefined;
+            const moduleId = (node: TypeScript.Node | undefined): string | undefined => node && ts.isNumericLiteral(node) ? node.text : literal(node);
+            if (checker) {
+                const statement = ast.statements[0];
+                const bundle = statement && ts.isExpressionStatement(statement) ? unwrap(statement.expression) : undefined;
+                if (!bundle || !ts.isCallExpression(bundle) || bundle.arguments.length !== 3) fail('Invalid pinned Browserify adapter.', file);
+                const [table, cache, entries] = bundle.arguments;
+                if (!ts.isObjectLiteralExpression(table) || !table.properties.length || !ts.isObjectLiteralExpression(cache) || cache.properties.length
+                    || !ts.isArrayLiteralExpression(entries) || !entries.elements.length) fail('Invalid pinned Browserify module table.', file);
+                for (const item of table.properties) {
+                    if (!ts.isPropertyAssignment(item)) fail('Invalid bundled module declaration.', file);
+                    const id = moduleId(item.name);
+                    const pair = unwrap(item.initializer);
+                    if (id === undefined || moduleIds.has(id) || !ts.isArrayLiteralExpression(pair) || pair.elements.length !== 2) fail('Invalid or duplicate bundled module.', file);
+                    moduleIds.add(id);
+                    const factory = unwrap(pair.elements[0]);
+                    const dependencies = unwrap(pair.elements[1]);
+                    if (!ts.isFunctionExpression(factory) || !ts.isObjectLiteralExpression(dependencies)) fail('Invalid bundled module factory.', file);
+                    const parameter = factory.parameters[0]?.name;
+                    const symbol = parameter && ts.isIdentifier(parameter) ? checker.getSymbolAtLocation(parameter) : undefined;
+                    if (!symbol) fail('Missing bundled require binding.', file);
+                    const mapping = new Map<string, string>();
+                    for (const dependency of dependencies.properties) {
+                        if (!ts.isPropertyAssignment(dependency)) fail('Invalid bundled dependency mapping.', file);
+                        const name = ts.isIdentifier(dependency.name) ? dependency.name.text : literal(dependency.name);
+                        const destination = moduleId(dependency.initializer);
+                        if (name === undefined || destination === undefined || mapping.has(name)) fail('Invalid or duplicate bundled dependency mapping.', file);
+                        mapping.set(name, destination);
+                    }
+                    bundled.set(symbol, mapping);
+                }
+                for (const dependencies of bundled.values()) for (const destination of dependencies.values()) {
+                    if (!moduleIds.has(destination)) fail('A bundled dependency is absent from the adapter module table.', file);
+                    ++bundledEdges;
+                }
+                for (const entry of entries.elements) {
+                    const id = moduleId(entry);
+                    if (id === undefined || !moduleIds.has(id)) fail('A Browserify entry is absent from the adapter module table.', file);
+                }
+                bundledModules += moduleIds.size;
+            }
             const request = (node: TypeScript.CallExpression, commonjs: boolean, parent: string): void => {
                 const value = literal(node.arguments[0]);
                 if (value === undefined) {
@@ -204,7 +268,12 @@ export async function validateBilibiliPackage(options: {
                     const callee = unwrap(node.expression);
                     const property = member(callee);
                     const system = property && ['System', 'globalThis.System', 'self.System', 'window.System', 'GameGlobal.System'].includes(property.object);
-                    if (system && property.property === 'register') {
+                    const symbol = checker && ts.isIdentifier(callee) ? checker.getSymbolAtLocation(callee) : undefined;
+                    const local = symbol && bundled.get(symbol);
+                    if (local) {
+                        const name = moduleId(node.arguments[0]);
+                        if (name !== undefined && !local.has(name)) fail('A Browserify require is not present in its bundled dependency mapping.', file);
+                    } else if (system && property.property === 'register') {
                         ++registrations;
                         const named = literal(node.arguments[0]);
                         const dependencies = node.arguments[named === undefined ? 0 : 1];
@@ -220,9 +289,13 @@ export async function validateBilibiliPackage(options: {
                         }
                         const context = declaration.parameters[1]?.name;
                         if (context && ts.isIdentifier(context)) contexts.add(context.text);
-                    } else if (ts.isIdentifier(callee) && callee.text === 'require') request(node, true, file);
-                    else if ((property?.object === 'globalThis' && property.property === '__bilibiliRequire')
-                        || (ts.isIdentifier(callee) && callee.text === '__bilibiliRequire')) request(node, true, 'game.js');
+                    } else if (ts.isIdentifier(callee) && callee.text === 'require') {
+                        if (checker) fail('A Browserify require escaped its pinned factory closure.', file);
+                        request(node, true, file);
+                    }
+                    else if ((property && ['globalThis', ...(target === 'BILIBILI' ? [] : ['GameGlobal', 'window', 'self'])].includes(property.object)
+                        && property.property !== undefined && hostRequires.includes(property.property))
+                        || (ts.isIdentifier(callee) && hostRequires.includes(callee.text))) request(node, true, 'game.js');
                     else if (property?.property === 'import' && (system || contexts.has(property.object))) {
                         if (node.arguments.length !== 1) fail('Explicit System import parent overrides are unsupported.', file);
                         request(node, false, system ? 'game.js' : file);
@@ -296,8 +369,12 @@ export async function validateBilibiliPackage(options: {
         for (const name of settings.scripting.scriptPackages) resolve(name, 'game.js', false);
 
         let preflight: z.infer<typeof preflightSchema>;
-        try { preflight = preflightSchema.parse(validate(directory)); }
-        catch { fail('Canonical Bilibili preflight rejected the package configuration, layout or resources. Check game.json and packaged files.'); }
+        try {
+            const result = validate(directory, target);
+            if (target !== 'BILIBILI') z.object({ target: z.literal(target) }).parse(result);
+            preflight = preflightSchema.parse(result);
+        }
+        catch { fail(`Canonical ${label} preflight rejected the package configuration, layout or resources. Check ${target === 'BILIBILI' ? 'game.json' : 'game.json, project.config.json'} and packaged files.`); }
         if (preflight.totalBytes !== totalBytes || preflight.packages.reduce((sum, item) => sum + item.bytes, 0) !== totalBytes) {
             fail('Canonical source-package sizes disagree with the pinned inventory.');
         }
@@ -307,12 +384,12 @@ export async function validateBilibiliPackage(options: {
         const resources = [...files.keys()].filter(file => file.startsWith('assets/') || (file.startsWith('cocos-js/') && !file.endsWith('.js')));
         const resourceBytes = resources.reduce((sum, name) => sum + files.get(name)!.length, 0);
         const items: Report['items'] = [
-            { name: 'Immutable BILIBILI runtime', status: 'passed', message: `${expected.size} manifest-bound SDK files match their byte sizes and SHA-256 hashes.` },
+            { name: `Immutable ${target} runtime`, status: 'passed', message: `${expected.size} manifest-bound SDK files match their byte sizes and SHA-256 hashes.` },
             { name: 'Static module closure', status: 'passed', bytes: scriptBytes,
-                message: `${modules.length} scripts parsed by SDK TypeScript 4.9.5; ${edges.size} static module edges; ${required.length} required cc exports. Inventory SHA-256: ${inventory(modules)}.` },
+                message: `${modules.length} scripts parsed by SDK TypeScript 4.9.5; ${edges.size} static module edges; ${required.length} required cc exports.${bundledModules ? ` ${bundledModules} bundled adapter modules; ${bundledEdges} internal dependency mappings.` : ''} Inventory SHA-256: ${inventory(modules)}.` },
             { name: 'Copied resource inventory', status: 'passed', bytes: resourceBytes,
                 message: `${resources.length} copied resources; ${ids.length} internal builtins closed over configuration/settings. Inventory SHA-256: ${inventory(resources)}.` },
-            { name: 'BILIBILI source preflight', status: 'passed', bytes: preflight.totalBytes,
+            { name: `${target} source preflight`, status: 'passed', bytes: preflight.totalBytes,
                 message: 'The private canonical validator accepted configuration, package ownership and source sizes. These are not vendor-compiled sizes.' },
             { name: 'Resource loading unverified', status: 'warning', code: 'RESOURCE_LOADING_UNVERIFIED',
                 message: 'Copied project assets are inventoried, not interpreted as fixture-specific data. Application resource URLs, including dynamically constructed paths, and resource-loading behavior are not statically proven.' },
@@ -323,9 +400,14 @@ export async function validateBilibiliPackage(options: {
         for (const item of preflight.packages.slice(0, 16)) items.push({ name: `Package: ${text(item.name)}`, status: 'info', bytes: item.bytes, message: 'Source bytes only; vendor package size is unverified.' });
         for (const warning of preflight.warnings.slice(0, 16)) items.push({ name: 'Source package warning', status: 'warning', message: text(warning) });
         if (preflight.packages.length > 16 || preflight.warnings.length > 16) items.push({ name: 'Preflight report bound', status: 'warning', code: 'LIMIT_EXCEEDED', message: 'All packages were checked; only the first 16 packages and warnings are listed.' });
-        return { items, validationLevels: ['staticModuleClosure', 'bilibiliSourcePreflight', 'copiedResourceInventory'] };
+        const preflightLevel = { BILIBILI: 'bilibiliSourcePreflight', WECHAT: 'wechatSourcePreflight', BYTEDANCE: 'bytedanceSourcePreflight' }[target];
+        return { items, validationLevels: ['staticModuleClosure', preflightLevel, 'copiedResourceInventory'] };
     } catch (error) {
         if (error instanceof AppError) throw error;
-        fail('Invalid or unsupported Bilibili package data. No project code was executed.');
+        fail(`Invalid or unsupported ${label} package data. No project code was executed.`);
     }
+}
+
+export async function validateBilibiliPackage(options: Omit<MiniGamePackageOptions, 'target'>): Promise<{ items: Report['items']; validationLevels: string[] }> {
+    return validateMiniGamePackage({ ...options, target: 'BILIBILI' });
 }

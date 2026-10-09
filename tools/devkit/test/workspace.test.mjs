@@ -557,7 +557,7 @@ test('worker returns typed argument, artifact, and SDK-integrity errors rather t
     const paths = await packageFixture(t);
     const sdkRoot = await sdkFixture(paths.root);
     const request = { workspace: paths.workspace, staging: paths.staging, sdkRoot, operation: 'package_validate' };
-    const invalid = await workerRequest(t, { ...request, input: { directory: 'out', target: 'WECHAT' } });
+    const invalid = await workerRequest(t, { ...request, input: { directory: 'out', target: 'OPPO' } });
     assert.equal(invalid.type, 'error');
     assert.equal(invalid.error.code, 'INVALID_ARGUMENTS');
     const traversal = await workerRequest(t, { ...request, input: { directory: '../out' } });

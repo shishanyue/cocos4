@@ -9,13 +9,16 @@ import type { Artifact, ErrorCode, ExecuteLogic, OperationRequest, Report, Worke
 import { canonical, hash, parseJson } from './sdk.js';
 import type { Sdk } from './sdk.js';
 import { publishGameOutput, readGameOutput, validateProjectDestination, validateRelativePath, withGameSnapshot } from './workspace.js';
-import { validateBilibiliPackage } from './bilibili.js';
+import { validateMiniGamePackage } from './bilibili.js';
 import { checkLogic } from './logic.js';
 
 const sharedRuntimeNames = ['loader.js', 'internal-prerequisites.js', 'import-map.json', 'settings.json', 'builtin-report.json', 'ENGINE-LICENSE'];
 const runtimeNames = {
     HTML5: new Set([...sharedRuntimeNames, 'index.html', 'boot.js']),
     BILIBILI: new Set([...sharedRuntimeNames, 'game.js', 'game.json', 'application.js', 'web-adapter.js', 'engine-adapter.js', 'fs-utils.js']),
+    WECHAT: new Set([...sharedRuntimeNames, 'game.js', 'game.json', 'project.config.json', 'application.js', 'web-adapter.js', 'engine-adapter.js', 'fs-utils.js', 'WECHAT-ADAPTER-LICENSE']),
+    BYTEDANCE: new Set([...sharedRuntimeNames, 'game.js', 'game.json', 'project.config.json', 'application.js', 'web-adapter.js', 'engine-adapter.js', 'fs-utils.js',
+        'licenses/bytedance/package.json', 'licenses/bytedance/README.md', 'licenses/bytedance/ENGINE-LICENSE', 'licenses/bytedance/NOTICE.txt']),
 };
 const runtimeFile = (name: string, target: Artifact['target']): boolean => runtimeNames[target].has(name)
     || name.startsWith(target === 'HTML5' ? 'engine/' : 'cocos-js/') || name.startsWith('assets/internal/');
@@ -70,9 +73,13 @@ async function compile(toolchain: string, options: Record<string, unknown>, proj
     const original = commonjs._resolveFilename;
     const require = createRequire(path.join(toolchain, 'package.json'));
     const builtins = new Set([...builtinModules, ...builtinModules.map(name => `node:${name}`)]);
+    const insideToolchain = (file: string): boolean => {
+        const relative = path.relative(toolchain, file);
+        return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+    };
     commonjs._resolveFilename = function (request, parent, ...args): string {
         const resolved = original.call(this, request, parent, ...args);
-        if (parent?.filename?.startsWith(`${toolchain}/`) && !builtins.has(resolved) && !resolved.startsWith(`${toolchain}/`)) {
+        if (parent?.filename && insideToolchain(parent.filename) && !builtins.has(resolved) && !insideToolchain(resolved)) {
             throw new AppError('SDK_INCOMPLETE', 'The SDK compiler attempted to resolve outside its private verified closure.');
         }
         return resolved;
@@ -213,7 +220,7 @@ async function compile(toolchain: string, options: Record<string, unknown>, proj
         throw new AppError(code, report.summary, ['Fix the reported source/configuration errors and retry.'], false, report);
     } finally {
         commonjs._resolveFilename = original;
-        for (const name of Object.keys(require.cache)) if (name.startsWith(`${toolchain}/`)) delete require.cache[name];
+        for (const name of Object.keys(require.cache)) if (insideToolchain(name)) delete require.cache[name];
     }
 }
 
@@ -284,7 +291,10 @@ export async function runGameOperation(request: WorkerRequest, sdk: Sdk, log: (t
         || (template ? file.path.startsWith(`${templatePrefix}/`) : file.path.startsWith('toolchain/'))
         || (operation.operation === 'game_build' && file.path.startsWith(`${prefix}/`) && runtimeFile(file.path.slice(prefix.length + 1), profile.target))
         || (profile.target === 'BILIBILI' && (operation.operation === 'project_create' ? file.path === `${prefix}/game.json`
-            : operation.operation === 'game_build' && file.path === 'app/validate-bilibili.cjs')));
+            : operation.operation === 'game_build' && file.path === 'app/validate-bilibili.cjs'))
+        || ((profile.target === 'WECHAT' || profile.target === 'BYTEDANCE') && (operation.operation === 'project_create'
+            ? [`${prefix}/game.json`, `${prefix}/project.config.json`].includes(file.path)
+            : operation.operation === 'game_build' && file.path === 'app/validate-minigame.cjs')));
     if (operation.operation === 'project_create') validateProjectDestination(operation.input.directory);
     if (operation.operation === 'game_build' && !z.string().uuid().safeParse(request.artifactId).success) {
         throw new AppError('INVALID_ARGUMENTS', 'Builds require the job manager artifact UUID.');
@@ -307,6 +317,15 @@ export async function runGameOperation(request: WorkerRequest, sdk: Sdk, log: (t
                     config.appId = '';
                     config.version = pkg.version;
                     templateFiles.set('game.json', Buffer.from(`${JSON.stringify(config, null, 2)}\n`));
+                } else if (profile.target === 'WECHAT' || profile.target === 'BYTEDANCE') {
+                    const configDirectory = `platforms/${profile.target.toLowerCase()}`;
+                    const gameConfig = parseJson(await fs.readFile(path.join(localProfile, 'game.json'), 'utf8')) as Record<string, unknown>;
+                    const projectConfig = parseJson(await fs.readFile(path.join(localProfile, 'project.config.json'), 'utf8')) as Record<string, unknown>;
+                    // Platform app IDs are user-owned mutable metadata, never SDK/runtime identity.
+                    projectConfig.appid = '';
+                    projectConfig.projectname = operation.input.projectName;
+                    templateFiles.set(`${configDirectory}/game.json`, Buffer.from(`${JSON.stringify(gameConfig, null, 2)}\n`));
+                    templateFiles.set(`${configDirectory}/project.config.json`, Buffer.from(`${JSON.stringify(projectConfig, null, 2)}\n`));
                 }
                 for (const [name, bytes] of templateFiles) await write(paths.output, name, bytes, true);
                 for (const [name, bytes] of await readGameOutput(path.join(localProfile, 'types'))) await write(paths.output, `types/${name}`, bytes, true);
@@ -316,7 +335,10 @@ export async function runGameOperation(request: WorkerRequest, sdk: Sdk, log: (t
                     validationLevels: ['sdk-template-integrity'], items: [{ name: operation.input.directory, status: 'passed',
                         message: 'Verified starter sources, standard assets and local SDK declarations; package name and cc type mapping configured.' },
                     ...(profile.target === 'BILIBILI' ? [{ name: 'game.json', status: 'warning', code: 'BILIBILI_CONFIG_REQUIRED',
-                        message: 'Set your appId and review version/platform settings in game.json before building. No vendor identity or device compatibility has been verified.' }] : []),
+                        message: 'Set your appId and review version/platform settings in game.json before building. No vendor identity or device compatibility has been verified.' }]
+                        : profile.target === 'WECHAT' || profile.target === 'BYTEDANCE' ? [{ name: `platforms/${profile.target.toLowerCase()}`, status: 'warning', code: 'MINIGAME_CONFIG_REQUIRED',
+                            message: `Set the ${profile.target.toLowerCase()} appid in platforms/${profile.target.toLowerCase()}/project.config.json before building. Vendor identity and device compatibility remain unverified.` }]
+                            : []),
                     ...[...createdFiles].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([file, bytes]) => ({ name: file, file,
                         code: 'PROJECT_FILE', status: 'passed', bytes: bytes.length, sha256: hash(bytes), message: 'Prepared starter file; publication is confirmed only by a succeeded job.' }))] });
             }
@@ -338,17 +360,34 @@ export async function runGameOperation(request: WorkerRequest, sdk: Sdk, log: (t
             };
             if (operation.operation === 'project_check' && !operation.input.checks.includes('types')) return logic();
             let gameConfig: Buffer | undefined;
-            if (!checkOnly && profile.target === 'BILIBILI') {
-                gameConfig = projectFiles.get('game.json');
-                if (!gameConfig) throw new AppError('UNSUPPORTED_PROJECT', 'BILIBILI builds require a project game.json; the SDK validation-only configuration is not a fallback.',
-                    ['Add game.json with your appId, version and platform settings, then build again.']);
+            let projectConfig: Buffer | undefined;
+            if (!checkOnly && profile.target !== 'HTML5') {
+                const configDirectory = profile.target === 'BILIBILI' ? '' : `platforms/${profile.target.toLowerCase()}`;
+                const gameConfigPath = configDirectory ? `${configDirectory}/game.json` : 'game.json';
+                gameConfig = projectFiles.get(gameConfigPath);
+                if (!gameConfig) throw new AppError('UNSUPPORTED_PROJECT', `${profile.target} builds require ${gameConfigPath}; the SDK validation-only configuration is not a fallback.`,
+                    [configDirectory ? `Add ${gameConfigPath} and set your appid in ${configDirectory}/project.config.json, then build again.`
+                        : 'Add game.json with your appId, version and platform settings, then build again.']);
                 let config: Record<string, unknown>;
                 try { config = z.record(z.unknown()).parse(parseJson(new TextDecoder('utf-8', { fatal: true }).decode(gameConfig))); }
                 catch { throw new AppError('ARTIFACT_INVALID', 'Project game.json must be an unambiguous UTF-8 JSON object.', [], false,
-                    diagnosticsReport([{ code: 'ARTIFACT_INVALID', severity: 'error', file: 'game.json',
-                        message: 'Expected an unambiguous UTF-8 JSON object.' }], 'Invalid BILIBILI project configuration.')); }
+                    diagnosticsReport([{ code: 'ARTIFACT_INVALID', severity: 'error', file: gameConfigPath,
+                        message: 'Expected an unambiguous UTF-8 JSON object.' }], `Invalid ${profile.target} project configuration.`)); }
                 if (Array.isArray(config.subpackages) && config.subpackages.length) {
-                    throw new AppError('UNSUPPORTED_PROJECT', 'These BILIBILI profiles produce unsplit source packages; subpackage assembly is not implemented.');
+                    throw new AppError('UNSUPPORTED_PROJECT', `These ${profile.target} profiles produce unsplit source packages; subpackage assembly is not implemented.`);
+                }
+                if (profile.target === 'WECHAT' || profile.target === 'BYTEDANCE') {
+                    projectConfig = projectFiles.get(`${configDirectory}/project.config.json`);
+                    if (!projectConfig) throw new AppError('UNSUPPORTED_PROJECT', `${profile.target} builds require ${configDirectory}/project.config.json; the SDK validation-only configuration is not a fallback.`);
+                    let project: Record<string, unknown>;
+                    try { project = z.record(z.unknown()).parse(parseJson(new TextDecoder('utf-8', { fatal: true }).decode(projectConfig))); }
+                    catch { throw new AppError('ARTIFACT_INVALID', 'Platform project.config.json must be an unambiguous UTF-8 JSON object.', [], false,
+                        diagnosticsReport([{ code: 'ARTIFACT_INVALID', severity: 'error', file: `${configDirectory}/project.config.json`,
+                            message: 'Expected an unambiguous UTF-8 JSON object.' }], `Invalid ${profile.target} project configuration.`)); }
+                    const appId = typeof project.appid === 'string' ? project.appid : '';
+                    if (!/^(?:wx|tt)[A-Za-z0-9]+$/.test(appId) || (profile.target === 'WECHAT' ? !appId.startsWith('wx') : !appId.startsWith('tt'))) {
+                        throw new AppError('ARTIFACT_INVALID', `${profile.target} project.config.json requires a nonempty ${profile.target === 'WECHAT' ? 'wx' : 'tt'}-prefixed appid.`);
+                    }
                 }
             }
             let compilerProject = paths.project!;
@@ -391,7 +430,7 @@ export async function runGameOperation(request: WorkerRequest, sdk: Sdk, log: (t
             const expectedRuntimeFiles = [];
             for (const file of selected) {
                 const name = file.path.slice(prefix.length + 1);
-                if (file.path.startsWith(`${prefix}/`) && runtimeFile(name, profile.target) && name !== 'game.json') {
+                if (file.path.startsWith(`${prefix}/`) && runtimeFile(name, profile.target) && name !== 'game.json' && name !== 'project.config.json') {
                     await write(paths.output, name, await fs.readFile(path.join(paths.sdk, file.path)));
                     expectedRuntimeFiles.push({ path: name, bytes: file.bytes, sha256: file.sha256 });
                 }
@@ -402,11 +441,12 @@ export async function runGameOperation(request: WorkerRequest, sdk: Sdk, log: (t
             for (const [name, bytes] of projectFiles) if (name.startsWith('assets/')) await write(paths.output, `assets/game/${name.slice(7)}`, bytes);
             await write(paths.output, 'game-compiler.json', `${JSON.stringify(metadata, null, 2)}\n`);
             report.validationLevels.push('gameBuild', 'artifactIntegrity');
-            if (profile.target === 'BILIBILI') {
+            if (profile.target !== 'HTML5') {
                 await write(paths.output, 'game.json', gameConfig!);
-                log('Checking the BILIBILI static module/resource closure and canonical source-package preflight without executing game code.');
-                const validation = await validateBilibiliPackage({ directory: paths.output,
-                    toolchainDirectory: path.join(paths.sdk, 'toolchain'), validatorFile: path.join(paths.sdk, 'app/validate-bilibili.cjs'),
+                if (projectConfig) await write(paths.output, 'project.config.json', projectConfig);
+                log(`Checking the ${profile.target} static module/resource closure and canonical source-package preflight without executing game code.`);
+                const validation = await validateMiniGamePackage({ target: profile.target, directory: paths.output,
+                    toolchainDirectory: path.join(paths.sdk, 'toolchain'), validatorFile: path.join(paths.sdk, 'app', profile.target === 'BILIBILI' ? 'validate-bilibili.cjs' : 'validate-minigame.cjs'),
                     expectedRuntimeFiles, requiredCCExports: metadata.requiredCCExports, ccExports: [...profile.ccExports] });
                 report.items.push(...validation.items);
                 report.validationLevels.push(...validation.validationLevels);

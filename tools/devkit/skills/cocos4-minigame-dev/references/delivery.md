@@ -61,6 +61,9 @@ the checker. Maintainers/authorized users run it as a separate verification step
 
 ## Acceptance
 
+Current source exporters support HTML5, BILIBILI, WECHAT and BYTEDANCE. Legacy
+eight-profile HTML5/BILIBILI SDKs remain valid; the new four-target kit is expected
+to contain 16 profiles, but its final SDK/candidate/demo acceptance is still pending.
 Check the exact target/profile/variant in the catalog before building. A debug-only
 pack cannot produce release by changing a string. A 2D profile cannot acquire absent
 3D/physics exports merely because full `cc.d.ts` contains their declarations.
@@ -73,10 +76,23 @@ restart, missing assets, audio after gesture, hide/show and repeated restarts wi
 duplicated listeners. Record browser/GPU and console errors. Previewing a server URL
 is not acceptance unless someone actually opens and exercises that artifact.
 
-For BILIBILI use genuine BILIBILI profiles and game-owned `game.json`. Local source
-preflight is not vendor compilation or compressed vendor size. A mock host check
-is not rendering/audio/device evidence. Vendor tools, account setup, signing,
-upload/review and real devices remain separate, explicitly authorized workflows.
+For BILIBILI use genuine BILIBILI profiles and the shipped root `game.json` layout
+with user-owned `appId`. WECHAT/BYTEDANCE starters instead create
+`platforms/wechat/{game.json,project.config.json}` or
+`platforms/bytedance/{game.json,project.config.json}`. Creation blanks `appid`;
+set your real `wx`/`tt`-prefixed ID in `project.config.json`. Build copies both files
+verbatim to the export root, not SDK validation-only config. These profiles use
+actual `wx`/`tt` adapters, matching loaders and engine flags, not renamed BILIBILI.
+
+Mini-game outputs are unsplit `game.js` source packages with licenses/notices,
+static closure and source preflight; they cannot be browser-previewed. Subpackages
+and plugins are unsupported; WECHAT/BYTEDANCE also reject open-data contexts,
+workers and cloud export. Adapter package `@cocos/engine-platforms@1.0.6` declares
+`UNLICENSED`; preserving metadata and the engine license does not grant redistribution.
+Local preflight is not vendor compilation or compressed vendor size. A mock host
+check is not engine execution or rendering/audio/device evidence. Vendor tools,
+account setup, signing, upload/review and real devices remain separate, explicitly
+authorized workflows. Only a separately built HTML5 artifact can use browser preview.
 
 An actual AI acceptance demonstration must record client/model versions and the
 trace for creating a playable game, changing gameplay, finding/fixing an introduced

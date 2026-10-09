@@ -1,6 +1,6 @@
 # Cocos4 MCP 与便携开发套件
 
-状态：开发 MCP、离线 SDK、v5 产物来源记录与 Linux 候选包已实现，完整发行验收仍在进行中；当前两版本全量矩阵尚未通过。
+状态：开发 MCP、离线 SDK、v5 产物来源记录与 Linux 候选包已实现；新增 WECHAT/BYTEDANCE 本地源码导出、四目标 16-profile SDK、新 Linux x64 候选包及 2048 双目标导出已完成。仅本地定向交付通过，不含浏览器/厂商/真机新验收；完整发行及当前两版本全量矩阵仍未通过。
 
 初稿仅形成计划；后续已新增独立工具包、锁定依赖、离线 SDK、授权逻辑测试、临时 OpenCode 接入和本地便携候选包。候选包未获准再分发，真实模型闭环与多宿主验收未完成。
 调研基线为分支 `v4.0.0`、引擎 `4.0.0-alpha.34`、提交 `2736376eb7`。
@@ -49,6 +49,7 @@
 | `scripts/build-h5-source.js` | HTML5、BUILD、SystemJS；清空 `bin/dev/cc`；不是预览服务器 | 参考引擎构建契约，另行实现套件的游戏预览服务 |
 | `scripts/build-declarations.js` | 清空并生成 `bin/.declarations`，包含真实 WebGPU 类型及声明消费者检查 | 将公共 API 声明的完整依赖闭包随包发布，不要求用户本地重新生成 |
 | `scripts/validate-bilibili.cjs` | 导出只读 `validateBilibili(directory)`，检查完整游戏目录 | 直接复用并在 worker 中执行；MCP 层额外限制授权路径和扫描预算 |
+| `scripts/validate-minigame.cjs` | 共享只读 `validateMiniGame(directory, target)`，检查 WECHAT/BYTEDANCE 源码包 | 随 SDK 交付，在私有快照上预检；不执行游戏、厂商工具或完整静态模块闭包分析 |
 | `prepare:engine` | 补丁校验、生成 PAL/adapter、调试信息和常量，会写生成目录和依赖 | 仅维护者显式操作，不由诊断或普通开发模式隐式触发 |
 | `setup:external` | 准备 `external/emscripten`；无本地 source 时联网获取制品 | 只在维护者发布准备阶段执行；用户发布包必须已包含所需运行资源 |
 | `templates/launcher/`、`templates/bilibili/` | 启动模板依赖 settings、模块加载器、import map 和游戏脚本 | 复用契约并补齐独立组装链路；模板本身不是完整游戏导出器 |
@@ -59,7 +60,7 @@
 输出为未压缩、有 source map 的 SystemJS 引擎模块，固定在
 `bin/minigame/<platform>/`。连续构建可能残留旧文件，不能直接作为干净的发布目录。
 
-初始盘点时没有独立游戏编译器或游戏预览服务器。当前已实现 SDK 内游戏编译、标准图片/JSON/音频资源组装、受限 HTML5 预览，以及真实 BILIBILI profile 的源码包组装和本地预检；完整 Creator 资源导入、厂商编译和真机验收仍未实现。
+初始盘点时没有独立游戏编译器或游戏预览服务器。当前已实现 SDK 内游戏编译、标准图片/JSON/音频资源组装、受限 HTML5 预览，以及真实 BILIBILI/WECHAT/BYTEDANCE profile 的源码包组装、静态闭包检查和本地预检；仅当前 SDK 已交付的 profile 可用。完整 Creator 资源导入、厂商编译和真机验收仍未实现。
 `cocos/game/game.ts` 初始化还涉及 settings、builtin assets、渲染管线、脚本包和启动场景；
 仅复制一个 `cc.js` 并调用 `game.run()` 不能证明游戏可用。
 现有 skills 的平台表也需由新能力清单校验，包括已经加入引擎的 BILIBILI。
@@ -146,13 +147,20 @@ P0 源码追踪发现现有 smoke 默认 features 不注册渲染管线，不能
 首个独立验证采用 legacy forward pipeline，避免额外的 custom-pipeline layout graph
 生产依赖；builtin Effect/材质仍需独立编译，不能用 headless fixture 代替。
 
-优先交付 HTML5 浏览器预览、BILIBILI 的独立组合；WECHAT、OPPO 必须继续通过源码侧
-引擎回归。其他平台的 portable profile/exporter 按验收逐个加入，不因白名单存在就宣称可导出。
+当前源码支持 HTML5、BILIBILI、WECHAT、BYTEDANCE 四个 exporter，必须按实际 SDK
+交付情况查询可用性。旧八 profile 的 HTML5/BILIBILI SDK 仍有效；新四目标套件已组装
+16 个独立 2D/3D debug/release profiles，并完成新候选包的 2048 WECHAT/BYTEDANCE
+`2d-basic/release` 本地导出。证据见 [新增目标交付](../../tools/devkit/ACCEPTANCE.md#wechat-and-bytedance-delivery)。
+ALIPAY/OPPO 仍无随包 exporter/profile；16-profile 清单不把本地 host/`cc` mock 升级为引擎执行或真机证明。
+WECHAT、OPPO 必须继续通过源码侧引擎回归。其他平台按验收逐个加入，不因白名单存在就宣称可导出。
 `debug` 与 `release` 分别记录压缩、source map、编译常量和文件摘要；发布生成器需要
 干净 staging 及 release 构建入口，不能把当前 smoke CLI 的输出误称为生产优化包。
 
 清单必须分别表达 `engineTargetAllowed`、`prebuiltAvailable`、`exportAvailable`、
-`validationLevels`。BILIBILI 与 WECHAT 必须使用各自常量和 PAL，不能重命名同一 bundle。
+`validationLevels`。各小游戏必须使用各自常量和 PAL，不能重命名同一 bundle。
+WECHAT/BYTEDANCE 已使用真实 `wx`/`tt` adapter、`wechatgame`/`bytedance-mini-game`
+loader 及目标引擎 flags，不是改名的 BILIBILI。小游戏输出是以 `game.js` 为入口、保留
+许可证/声明的未分包源码目录；只有 HTML5 可浏览器预览，源码预检不代表上传或真机通过。
 包含 WebGL2 模块不等于 B 站已启用 WebGL2；启用时仍需四个高性能配置及真实容器验证。
 缺少 profile 返回 `PROFILE_NOT_AVAILABLE`，列出可用组合或可选离线包，不自动下载源码。
 独立浏览器预览采用 HTML5 的 BUILD 模式，debug 变体也不启用 Creator 的 PREVIEW/EDITOR
@@ -207,6 +215,12 @@ receipt/inventory 记录 `provenance: { releaseId, profileSha256 }`；profile �
 这是可修改的示例布局，不是强制的新引擎项目格式；已有项目先检查，不能覆写其配置。
 构建目标/profile 从 CLI/MCP 的参数选择，生成 settings/import map 使用现有运行时格式。
 
+- WECHAT/BYTEDANCE 模板分别创建 `platforms/wechat/{game.json,project.config.json}`、
+  `platforms/bytedance/{game.json,project.config.json}`。`project_create` 清空 `appid`，
+  用户在 `project.config.json` 填真实 `wx`/`tt` ID；构建将两份配置原字节复制到导出根目录，
+  不用 SDK 验证 ID 回填。已交付 BILIBILI 项目继续使用根 `game.json` 的 `appId`。
+  非空 subpackages/plugins 不支持；WECHAT/BYTEDANCE 的 openDataContext、workers
+  和 cloud 导出也明确拒绝，不能将未分包源码目录描述为完整厂商发布支持。
 - 游戏代码通过公开 API 加载首版明确支持的图片、JSON、音频等文件；URL 与包内路径
   转换由统一构建逻辑处理。记录支持的文件扩展名、编码和错误路径，不接受未知格式后静默复制。
 - 首版不把 FBX、任意 Effect、Creator 原始 `.scene`/`.prefab`、纹理压缩和资源 UUID
@@ -248,7 +262,7 @@ portable `ai` 必须显式提供已安装客户端的 `--executable`；启动器
    临时配置接入本地 stdio MCP 和随包 skills；默认不修改用户全局配置或全局 skills。
 4. AI 查询能力及示例，创建新游戏，编辑普通游戏代码，执行检查和构建，开启本地预览，
    根据结构化诊断迭代。修改代码由 AI 客户端自己的文件工具完成，不扩展成 MCP 任意文件写入。
-5. 用户显式选择 BILIBILI 等已支持的导出目标后生成完整目录并预检。厂商工具及账号
+5. 用户显式选择已交付 profile 的 BILIBILI、WECHAT 或 BYTEDANCE 后生成源码目录并预检。厂商工具及账号
    未准备时，只报告目录和剩余步骤，不将其描述为已经发布或已通过真机验收。
 
 OpenCode 接入须依照当前 `https://opencode.ai/config.json` 校验：`mcp` 为对象，
@@ -325,7 +339,7 @@ UTF-8 字节数限制，不能截断 JSON。终态报告中的诊断和产物列
 | `cocos4_project_check` | project；target；profile；checks: types/logic 的非空去重数组；requestKey；timeoutMs? | JobReceipt；最终类型诊断、逻辑测试结果、使用的 profile | develop；logic 另需执行项目代码授权 |
 | `cocos4_game_build` | project；target；profile；variant: debug/release；requestKey；timeoutMs? | JobReceipt；最终 artifactId、大小/摘要、诊断和验证层次 | develop；编译游戏及组装产物，不编译引擎 |
 | `cocos4_preview_start` | artifactId；requestKey；ttlSeconds? | JobReceipt；ready 后给本机 URL、端口、过期时间 | develop + preview；只服务已完成 HTML5 产物 |
-| `cocos4_package_validate` | target（首版 BILIBILI）；directory | JobReceipt；最终文件检查、包大小与 warnings | 对包目录只读；不会修复或上传 |
+| `cocos4_package_validate` | target: BILIBILI/WECHAT/BYTEDANCE（默认 BILIBILI）；directory | JobReceipt；最终文件检查、源码大小与 warnings；需 SDK 声明对应校验能力 | 对包目录只读；不会修复、执行游戏或上传 |
 | `cocos4_jobs_list` | project?；cursor?；limit? | 当前用户/workspace 范围的 job 摘要 | 只读，不能列出其他工作区任务 |
 | `cocos4_job_get` | jobId；终态报告 cursor?、limit? | Job 状态、阶段、最终报告和 artifact 列表 | 只读 |
 | `cocos4_job_logs` | jobId；cursor?；maxBytes? | 分页日志、nextCursor、截断标记 | 只读；默认 8 KiB，最大 16 KiB |
@@ -345,7 +359,7 @@ UTF-8 字节数限制，不能截断 JSON。终态报告中的诊断和产物列
   "required": ["project", "target", "profile", "variant", "requestKey"],
   "properties": {
     "project": { "type": "string", "minLength": 1, "maxLength": 1024 },
-    "target": { "type": "string", "enum": ["HTML5", "BILIBILI"] },
+    "target": { "type": "string", "enum": ["HTML5", "BILIBILI", "WECHAT", "BYTEDANCE"] },
     "profile": { "type": "string", "enum": ["2d-basic", "3d-basic"] },
     "variant": { "type": "string", "enum": ["debug", "release"] },
     "requestKey": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -494,9 +508,9 @@ portable 流程不要求 Creator 3.8.8，也不出现必须 `npm ci`、`setup:ex
 `build:declaration` 的普通用户步骤；现有 Creator 项目的实际工作流仍需保留。
 默认使用带版本的离线 API/示例和 MCP 能力清单，不凭通用 Cocos 教程推断平台支持。
 
-现有 `check-examples.cjs` 依赖源码中的 `bin/.declarations`、TypeScript 和
-`scripts/test-declarations/tsconfig.json`，需要增加真实的发行包检查入口，而不是用
-空 `cc` 声明绕过。包内示例必须只依赖随包资源；需要预导入 bundle 的示例应补齐真实
+源码 skill 的 `check-examples.cjs` 仍依赖源码中的 `bin/.declarations`、TypeScript 和
+`scripts/test-declarations/tsconfig.json`；随包 skill 已有使用真实 SDK 声明和 profile
+导出的 `check-examples.mjs`，不以空 `cc` 声明绕过。包内示例必须只依赖随包资源；需要预导入 bundle 的示例应补齐真实
 输入或明确不属于开箱示例，不能把它当可直接运行的模板。
 
 技能验收应让 AI 实际完成“创建可玩游戏、修改玩法、引入类型错误并定位修复、切换
@@ -513,7 +527,7 @@ portable 流程不要求 Creator 3.8.8，也不出现必须 `npm ci`、`setup:ex
 | P2 游戏 CLI | 标准代码模板、检查、游戏编译、资源组装、产物校验、预览，共用应用层 | 用户仅修改游戏 TS/资源即可重新构建；负例拒绝未知资源/缺失 feature；旧成功产物不受失败影响 |
 | P3 MCP | stdio、schema、resources、jobs、锁、权限、日志和取消 | 官方 SDK client 黑盒测试；stdout 纯协议；只读拒绝写操作；并发/恶意输入/超时/断连/强杀通过 |
 | P4 AI 与 skills | 改造随包 skills/示例检查；OpenCode 临时连接启动器和其他客户端说明 | 新客户端会话发现工具与 skills；无需引擎目录或 Creator 完成 AI 开发闭环；不修改全局配置 |
-| P5 小游戏组装 | BILIBILI 完整代码游戏组装，复用模板/adapter/只读校验；保持 WECHAT/OPPO 引擎回归 | 浏览器成功游戏可生成完整 B 站目录；检查入口/模块/资源/配置；厂商编译和设备结果独立记录 |
+| P5 小游戏组装 | BILIBILI/WECHAT/BYTEDANCE 代码游戏源码包组装，复用各自模板/adapter/只读校验；保持 WECHAT/OPPO 引擎回归 | 已交付 profile 可生成未分包源码目录；检查入口/模块/资源/配置/许可证；厂商编译和设备结果独立记录 |
 | P6 发行验收 | 多宿主干净机测试、离线测试、签名/校验和、SBOM/许可证、升级回滚说明、文档 | 仅发布通过矩阵的宿主包；可重复制备；公开实际体积与限制；经用户另行授权后才发布 release |
 | 后续维护扩展 | 可选源码构建/回归/prepare tools，其他平台 exporter/profile 与高级资源链路 | 不改变 portable 前置条件；每个新增能力有独立安全及平台验收 |
 
@@ -588,7 +602,7 @@ git diff --check
 | MCP 可连接 | 指定客户端的实际握手、工具发现和调用 |
 | 套件无需源码 | 干净机仅使用发行包完成类型检查和构建，且无自动安装/下载 |
 | 可无 Creator 开发 | 同一环境中 2D/3D 可玩、修改代码后重建预览成功 |
-| 可组装 B 站游戏 | 完整游戏入口、引擎/adapter/脚本/资源闭包通过组装和本地预检 |
+| 可组装指定小游戏源码包 | 该目标已交付 profile，完整游戏入口、引擎/adapter/脚本/资源闭包及配置/许可证通过组装和本地预检 |
 | 厂商打包通过 | 对应厂商工具版本的真实编译结果及实际包体统计 |
 | 真机通过 | 指定设备/OS/容器 SDK 的输入、音频、前后台、资源、图形/WASM 与性能记录 |
 | 可以发布/已上传 | 用户授权下的厂商验收/上传结果，不能从前几层推导 |
@@ -627,7 +641,10 @@ git diff --check
 - [x] 修正 SPDX 归档摘要语义、补齐宿主声明及 schema 组件记录；修复 tar PAX 原路径泄漏，历史 e/f 两次实际完整归档具有相同摘要，不是 v5 重复制备证据。许可缺口仍明确阻止正式发行。
 - [x] 2026-09-25 的 variant-aware skill 检查及后续候选包组装已有保留证据，详见 [9 月 24-25 日历史记录](../../tools/devkit/ACCEPTANCE.md#september-24-25-checkpoint)；不代表完整候选包或模型验收。
 - [x] 修复验证输入传递、取消/结果发布边界和作业轮询时限；定向检查发现并修复 readiness JSON 发布竞态，只重跑失败文件。精确命令、通过与失败记录见 [9 月 26 日定向验证](../../tools/devkit/ACCEPTANCE.md#september-26-focused-verification)，当时没有重建 SDK 或候选包。
-- [x] 完成新候选包的 [Packaged 2048 Check](../../tools/devkit/ACCEPTANCE.md#packaged-2048-check) 定向交付；仅此项完成，不代表完整发行、全平台或全部 AI 目标完成。
+- [x] 完成 9 月 26 日 HTML5/BILIBILI 候选包的 [Packaged 2048 Check](../../tools/devkit/ACCEPTANCE.md#packaged-2048-check) 定向交付；保留旧包及 `run-02` 浏览器证据，不代表完整发行、全平台或全部 AI 目标完成。
+- [x] 新增 WECHAT/BYTEDANCE 源码 exporter；`tools/devkit/build/minigame-exporters-20260930/summary.json` 保留八个 2D/3D debug/release runtime 构建及 local-report 成功。local 检查使用 host/`cc` mock 与静态引擎检查，不执行引擎或渲染；browser/vendor/device/portableSDK 仍为 false。父任务报告共享 production validator 的 26 项 focused 测试通过，不作为最终候选包通过记录。
+- [x] 2026-10-01 组装四目标 16-profile SDK 和新 Linux x64 本地候选包；`tools/devkit/build/minigame-delivery/sdk-result.json` 为 `success: true`，构建 receipt 与归档校验和见下文。不改写旧 HTML5/BILIBILI runtime 或包的身份，不等于完整候选包验收。
+- [x] `tools/devkit/examples/2048/build/run-wechat-bytedance-01/evidence/result.json` 为 `success: true`；严格类型及启用库检查的逻辑编译通过，8 项逻辑测试通过、0 failed/skipped/TODO，WECHAT/BYTEDANCE `2d-basic/release` 构建通过。`exports.json` 中两者的配置原字节和复制清单验证均为 true；未选 HTML5，`browser.performed: false`。重跑需新包内 Node 及不存在的输出目录，见 [2048 命令](../../tools/devkit/examples/2048/README.md#wechat-and-bytedance-rerun)。
 - [ ] 完整合并矩阵、候选包验收及实际模型闭环仍未完成；最新 Node 18 矩阵已中断，不是正在运行，也没有当前两版本全量通过记录。遵照用户要求不再执行全量矩阵，只做必要的 focused 检查；定向通过不代表完整发行验收。
 - [ ] 完成新增 CI 前置条件的干净 checkout 与 hosted rehearsal；历史 `verification-inputs` 两版本各六项通过只证明编排契约，尚未运行完整排练。
 - [ ] P0 独立启动、资源链路与工具链可行性验证。
@@ -643,8 +660,33 @@ git diff --check
 但完整合并矩阵、实际模型闭环、全新 VM、多宿主和许可/来源认证仍有未完成项。
 厂商编译、上传和真机仍未验证，不以本地源码包预检冒充发布成功。
 开发操作的 RequestKey 已必填，检查/构建支持有界 timeoutMs；需以当前 MCP schema 为准。
-新候选包身份与 2048 定向结果统一见 [当前验收记录](../../tools/devkit/ACCEPTANCE.md#packaged-2048-check)；
-该次组装取代“候选包未重建”的当前状态，但未重建引擎/SDK，也不承接旧矩阵通过结果。
+本地新增目标交付记录如下，路径相对仓库根目录；完整身份和定向检查范围见
+[当前验收记录](../../tools/devkit/ACCEPTANCE.md#wechat-and-bytedance-delivery)：
+
+| 项目 | 实际记录 |
+| --- | --- |
+| SDK | `tools/devkit/build/minigame-delivery/sdk`；`sha256-6b8bc73d6195c460e0ad6b4f8d3c1815e497bc78719f0b3ca12d10fb988db55a` |
+| Kit | `tools/devkit/build/minigame-delivery/portable-candidate`；`sha256-935bd43e3dd7346afb106cfc274d8e78a6075b8dead7873994545cc9852d432d` |
+| 归档 | `tools/devkit/build/minigame-delivery/portable-candidate.tar.gz`；86,428,350 字节 |
+| SHA-256 | `34412b3316b6b456a319ec13ab9a64613f801296283ac030b4ba4f601660a918`；与同目录 `portable-candidate.tar.gz.sha256` 及 `portable-candidate.build.json` 一致 |
+| 2048 源码导出 | `tools/devkit/examples/2048/build/run-wechat-bytedance-01/exports/wechat/` 和 `exports/bytedance/`（同一 run 下） |
+
+新包仍为 `distributionApproved: false`，从选定 SDK 输入和 dirty 源码组装。初始 devkit/2048
+源码在本次 exporter 实现前已提交为 `8adf2bac99`；新增 exporter 工作当前未提交，不能将
+候选包记录的基线 revision 当作已包含新增工作的提交。项目 `platforms/wechat/` 或
+`platforms/bytedance/` 下的 `game.json`、`project.config.json` 原字节复制到对应导出根目录，
+不是 SDK 验证配置替代用户 metadata。本次 ID 为 `wx0000000000000000`、
+`tt0000000000000000`，均仅用于本地测试，无真实账号、厂商编译/上传或设备渲染证明。
+定向源码结果按已知范围分别记录，不汇总成全矩阵：前序 agent 报告 canonical 27、WeChat
+bootstrap 26、ByteDance bootstrap 33 通过；父任务报告 production validation 26、真实报告
+metric 修复后 SDK contracts 11 通过，另有 3 项 release-profile 检查及 2 项 workspace worker
+回归通过。具体文件/选择范围见验收清单，不将其冒充新包完整验收。
+父任务另行进行的 starter/`cocos4_package_validate` 检查不在此记为通过；2048 证据仅含
+构建内置预检。本次文档更新不运行测试/构建/提交、不修改生成制品。
+
+此前 HTML5/BILIBILI 候选包身份与 2048 定向结果见 [验收记录](../../tools/devkit/ACCEPTANCE.md#packaged-2048-check)；
+该次组装当时取代“候选包未重建”，但未重建引擎/SDK，也不承接旧矩阵通过结果。
+该旧包仍仅交付 HTML5/BILIBILI；原 `run-02` quick play 继续使用它，不能替换成新包后沿用旧身份。
 2026-09-24/25 的 SDK/候选包、skill 检查及中断结果保留为
 [历史检查点](../../tools/devkit/ACCEPTANCE.md#september-24-25-checkpoint)；以下历史证据不转移到新候选包。
 此前保留的 v5-a 候选包为 `tools/devkit/build/portable-candidate-20260922-v5-a`，6,037 个 payload
@@ -670,6 +712,8 @@ descriptor chains 和 renameat2 非覆盖发布，运行时不依赖 Python；Py
 发布与任务元数据并非单一事务，崩溃可能留下已创建项目或未登记产物；保留它们供核对，不自动重放或删除。
 Linux 监督不能代替 Windows Job Object/macOS 的实际实现和验收，namespace 也不是全新 VM。
 根 MIT 许可与部分源码限制性声明、编译器/加载器的许可元数据差异需要在发行前澄清；
+新增 adapter 所属 `@cocos/engine-platforms@1.0.6` 声明 `UNLICENSED` 且无独立许可文件，
+保留 metadata/README 和引擎许可证不等于获得其再分发许可，此项仍未解决。
 不能通过删除原声明绕过。详细证据和下一步见 [P0 记录](../../tools/devkit/README.md)。
 
 ## 13. 参考

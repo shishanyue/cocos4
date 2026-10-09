@@ -165,7 +165,7 @@ if (args[0] !== '--run') {
         const workflow = JSON.parse(await fs.readFile(path.join(isolated, 'workflow/report.json')));
         assert.equal(workflow.success, true); assert.equal(workflow.payloadUnchanged, true); assert.equal(workflow.stderr, '');
         assert.equal(workflow.releaseId, manifest.releaseId);
-        assert.equal(workflow.jobs.filter(page => page.job.operation === 'game_build').length, 8);
+        assert.equal(workflow.jobs.filter(page => page.job.operation === 'game_build').length, manifest.sdk.profiles.length);
         assert.equal(workflow.previews.length, 4);
         if (command.browser) {
             assert.equal(workflow.browserRenderingTested, true);
