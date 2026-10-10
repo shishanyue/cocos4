@@ -10,8 +10,8 @@
   "scripts": {
     "check": "tsc --noEmit",
     "build": "tsc && npm run build:host",
-    "build:host": "node scripts/build-publisher.mjs && node scripts/build-supervisor.mjs && node scripts/build-mcp-launch.mjs",
-    "test": "npm run build && node --test build/probes/mcp-client.js test/*.test.mjs",
+    "build:host": "node scripts/build-host.mjs",
+    "test": "npm run build && node scripts/test.mjs",
     "prepare:sdk": "node scripts/prepare-sdk.mjs",
     "prepare:release": "npm run build && node scripts/prepare-release.mjs",
     "verify:portable": "node scripts/verify-portable-host.mjs",

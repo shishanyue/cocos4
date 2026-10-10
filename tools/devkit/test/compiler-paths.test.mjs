@@ -6,6 +6,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
+import { compileGame } from '../runtime/compile-game.cjs';
 
 // Exercise the actual guard setup/cleanup without exporting compiler internals,
 // requiring a prepared SDK, or rebuilding shared host output. Win32 tests inject
@@ -148,3 +149,31 @@ for (const kind of ['worker', 'maintainer']) {
         });
     }
 }
+
+test('actual compiler reads Unicode/space paths and Win32 canonical casing without weakening strict checks', async t => {
+    const root = await mkdtemp(path.join(tmpdir(), 'cocos4 Compiler 游戏 '));
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const project = path.join(root, 'Project');
+    const types = path.join(root, 'Types');
+    await mkdir(path.join(project, 'src'), { recursive: true });
+    await mkdir(types);
+    // This isolated declaration fixture models one API contract. Actual SDK
+    // declaration/profile coverage remains in game-sdk and game integration.
+    await writeFile(path.join(types, 'cc.d.ts'), 'export interface Counter { value: number; }');
+    await writeFile(path.join(project, 'src/counter.ts'), 'export const value: number = 7;');
+    const source = "import type { Counter } from 'cc'; import { value } from './counter.js'; export async function start(): Promise<void> { const counter: Counter = { value }; await Promise.resolve(counter); }";
+    await writeFile(path.join(project, 'src/main.ts'), source);
+    const options = { projectDirectory: process.platform === 'win32' ? project.toUpperCase() : project,
+        typesDirectory: process.platform === 'win32' ? types.toUpperCase() : types,
+        availableCCExports: [], outDirectory: path.join(root, 'compiled') };
+    const checked = await compileGame({ ...options, checkOnly: true });
+    assert.deepEqual(checked.diagnostics, []);
+    assert.equal(checked.typeChecking.strict, true);
+    assert.equal(checked.typeChecking.skipLibCheck, false);
+    const emitted = await compileGame(options);
+    assert.deepEqual(emitted.outputFiles, ['counter.js', 'main.js']);
+    assert.match(await readFile(path.join(options.outDirectory, 'main.js'), 'utf8'), /^System\.register\(/);
+    await writeFile(path.join(project, 'src/main.ts'), source.replace('= { value }', '= { value: "invalid" }'));
+    await assert.rejects(compileGame({ ...options, checkOnly: true }), error => error.code === 'TYPECHECK_FAILED'
+        && error.diagnostics.some(item => item.code === 2322 && item.file === 'src/main.ts'));
+});

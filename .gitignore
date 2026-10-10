@@ -11,6 +11,9 @@
 
 lib
 build
+# Local Devkit compilation output and historical verification log.
+/tools/devkit/build-preview/
+/build-platforms-validation.log
 aspnet_client
 node_modules
 npm-debug.log

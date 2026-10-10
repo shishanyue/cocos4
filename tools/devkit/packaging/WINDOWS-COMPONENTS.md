@@ -1,4 +1,11 @@
-# Windows Host Components: BLOCKED
+# Windows Supervisor Component Qualification
+
+This document describes the earlier, deliberately limited component ZIP. The
+operational Windows development candidate is assembled separately by
+`scripts/prepare-release.mjs --target win32-x64`; see [getting started](README.md)
+and the [acceptance ledger](../ACCEPTANCE.md). Its implementation includes a
+launcher, MCP/CLI, SDK, file/ACL helpers and publication. None of that upgrades an
+already-created component ZIP or changes the manifest described below.
 
 This is a **component qualification package**, NOT an operational Windows devkit,
 release, SDK, game workflow, or redistribution approval. `components.json` uses

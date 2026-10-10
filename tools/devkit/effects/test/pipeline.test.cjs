@@ -6,6 +6,7 @@ const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { after, before, test } = require('node:test');
 const { promisify } = require('node:util');
+const { runInNewContext } = require('node:vm');
 const { prepareSource, verifySource, prepareCompiler, verifyCompiler } = require('../prepare-source.cjs');
 const { applyCompilerPatch } = require('../compiler-patch.cjs');
 const { collectBuiltinInputs } = require('../builtin-inputs.cjs');
@@ -47,7 +48,7 @@ async function verifyArtifact(output) {
     assert.equal(report.validation.runtimeBundleLoading, false);
     assert.equal(report.validation.webGL2Driver, false);
     assert.deepEqual(report.compiler, { ...lock, patch: patchLock });
-    assert.match(report.preprocessor.version, /^Glslang Version: 11:16\.4\.0\n/);
+    assert.match(report.preprocessor.version, /^Glslang Version: 11:16\.4\.0\r?\n/);
     assert.match(report.preprocessor.sha256, /^[a-f0-9]{64}$/);
     const input = collectBuiltinInputs(engine, report.profile);
     for (const asset of input.assets) {
@@ -253,6 +254,30 @@ test('audited patch is deterministic, repeatable, and rejects modified sources o
     await assert.rejects(prepareCompiler(source, destination), /Patched compiler input changed/);
     assert.deepEqual(await fs.readFile(path.join(destination, 'shdc-lib.js')), tampered);
     assert.deepEqual(await verifySource(source), original);
+});
+
+test('the preprocessor version gate accepts LF and CRLF but rejects unreviewed banners', async () => {
+    const original = await verifySource(path.join(__dirname, '../build/compiler'));
+    const patched = applyCompilerPatch(original.get('shdc-lib.js').toString('utf8'));
+    const start = patched.indexOf('const preprocessForValidation = (() => {');
+    const end = patched.indexOf('const miscChecks = (() => {', start);
+    assert.ok(start > 0 && end > start);
+    const initialize = banner => runInNewContext(patched.slice(start, end), {
+        process: { env: {} },
+        require: name => {
+            if (name === 'node:path') return require(name);
+            assert.equal(name, 'node:child_process');
+            return { spawnSync: (_executable, args) => {
+                assert.equal(JSON.stringify(args), '["--version"]');
+                return { status: 0, stderr: '', stdout: banner };
+            } };
+        },
+    });
+    for (const newline of ['\n', '\r\n']) {
+        assert.doesNotThrow(() => initialize(`Glslang Version: 11:16.4.0${newline}ESSL Version: reviewed`));
+        assert.throws(() => initialize(`Glslang Version: 11:16.4.1${newline}`), /Unreviewed GLSL preprocessor version/);
+        assert.throws(() => initialize(`Glslang Version: 11:16.4.0 modified${newline}`), /Unreviewed GLSL preprocessor version/);
+    }
 });
 
 test('patch revision, script digest and output digest guards fail before creating a compiler', async (t) => {

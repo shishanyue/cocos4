@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+import { privateFixtureTree } from './windows-private.mjs';
 
 export const root = fileURLToPath(new URL('../../', import.meta.url));
 export const cli = path.join(root, 'build/src/cli.js');
@@ -23,6 +24,7 @@ export async function fixture(t, label = 'logic') {
     const directory = await fs.mkdtemp(path.join(process.env.LOGIC_EVIDENCE_ROOT ?? path.join(root, 'build'), `${label}-`));
     const env = { directory, workspace: path.join(directory, 'workspace'), stateRoot: path.join(directory, 'state'), cleanup: [] };
     await fs.mkdir(env.workspace, { mode: 0o700 });
+    await privateFixtureTree(directory);
     env.stateDirectory = path.join(env.stateRoot, hash(env.workspace));
     t.after(async () => { for (const close of env.cleanup.reverse()) await close(); });
     return env;

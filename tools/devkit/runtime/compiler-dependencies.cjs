@@ -1,30 +1,35 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createRequire } = require('node:module');
-const { sha256 } = require('./files.cjs');
+const { canonicalDirectory, readRegular, sha256 } = require('./files.cjs');
 
 const compilerRoots = ['typescript', '@babel/core', '@cocos/babel-preset-cc', '@babel/plugin-transform-modules-systemjs'];
 
 // Record the installed, lock-checked transitive/peer closure, including nested npm resolutions.
 // This is packaging input for the SDK owner, not a claim that the compiler is already portable.
 async function compilerDependencies(engine) {
-    const lockBytes = await fs.readFile(path.join(engine, 'package-lock.json'));
+    engine = await canonicalDirectory(engine);
+    const lockBytes = await readRegular(engine, 'package-lock.json');
     const lock = JSON.parse(lockBytes);
     const packages = new Map();
     async function visit(name, from) {
+        assert.ok(/^(?:@[\w.-]+\/)?[\w.-]+$/.test(name) && name !== '.' && name !== '..', `Invalid compiler dependency: ${name}`);
         const resolver = createRequire(from);
         let manifest;
-        for (const directory of resolver.resolve.paths(name)) {
+        let bytes;
+        for (const directory of resolver.resolve.paths(name) ?? []) {
             const candidate = path.join(directory, name, 'package.json');
-            try { await fs.access(candidate); manifest = candidate; break; }
+            const relative = path.relative(engine, candidate).replaceAll('\\', '/');
+            // A missing private dependency may not be rescued by a package in
+            // the host's ancestor/global node_modules on any operating system.
+            if (!relative.startsWith('node_modules/')) continue;
+            try { bytes = await readRegular(engine, relative); manifest = candidate; break; }
             catch (error) { if (error.code !== 'ENOENT') throw error; }
         }
         assert.ok(manifest, `Missing compiler dependency: ${name}`);
         const relative = path.relative(engine, path.dirname(manifest)).replaceAll('\\', '/');
         assert.ok(relative.startsWith('node_modules/'), `Compiler dependency outside engine: ${manifest}`);
         if (packages.has(relative)) return relative;
-        const bytes = await fs.readFile(manifest);
         const pkg = JSON.parse(bytes);
         const pinned = lock.packages[relative];
         assert.equal(pkg.name, name);

@@ -1,6 +1,8 @@
-// Offline Linux maintainer assembly ONLY. This never executes Windows binaries.
+// Historical component assembly is Linux-only. extractWindowsNode is the offline
+// Windows/Linux input preparation shared by the operational portable assembler.
+// Neither path executes Windows binaries.
 // Inputs and the canonical output parent must be trusted and quiescent; this is
-// not a pinned workspace reader, Windows extractor, or application publisher.
+// not a pinned workspace reader, general ZIP extractor, or application publisher.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -8,7 +10,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { publishSdk } from './prepare-sdk.mjs';
 import { archiveWindows, verifyWindowsArchive, readStable, WINDOWS_ARCHIVE_LIMITS } from './windows-archive.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -63,6 +64,59 @@ export function requireWindowsNodePin(pin) {
     assert.equal(pin.sha256, nodeSha256, 'Review a new Windows Node pin before changing it');
     assert.deepEqual(pin.files, ['node.exe', 'LICENSE', 'README.md']);
     return pin;
+}
+
+// These maintainer paths must be trusted and quiescent. This rejects existing
+// aliases/reparse links; it is not a general hostile-workspace handle policy.
+async function canonicalDirectory(directory) {
+    absolute(directory, 'directory');
+    for (let current = directory;; current = path.dirname(current)) {
+        const stat = await fs.lstat(current, { bigint: true });
+        assert(stat.isDirectory() && !stat.isSymbolicLink(), 'Expected a real directory without symlinks or reparse links');
+        assert.equal(await fs.realpath(current), current, 'Directory aliases are not allowed');
+        if (path.dirname(current) === current) break;
+    }
+    return fs.lstat(directory, { bigint: true });
+}
+
+/** Prepare only the three reviewed Node members into an existing empty directory.
+ * No network, npm installation, Node execution, or external archive utility is
+ * used. Windows stable reads additionally check reparse attributes. A mismatching
+ * input fails before any output member is created.
+ */
+export async function extractWindowsNode(options) {
+    assert(options && Object.keys(options).length === 2
+        && Object.keys(options).every(key => ['nodeArchive', 'output'].includes(key)),
+    'Only nodeArchive and output are accepted');
+    const { nodeArchive, output } = options;
+    assert(['linux', 'win32'].includes(process.platform), 'Windows Node preparation requires Windows or Linux');
+    absolute(nodeArchive, 'Node archive');
+    absolute(output, 'output directory');
+    await canonicalDirectory(path.dirname(nodeArchive));
+    const outputStat = await canonicalDirectory(output);
+    assert.deepEqual(await fs.readdir(output), [], 'NODE_OUTPUT_CONFLICT: output directory must be empty');
+    const pin = requireWindowsNodePin(JSON.parse(await readStable(path.join(root, 'packaging/node-win32-lock.json'), 64 * 1024)));
+    const archive = await readStable(nodeArchive, maximum);
+    assert.equal(hash(archive), pin.sha256, 'NODE_ARCHIVE_HASH_MISMATCH: no extraction performed');
+    const { readPinnedNodeArchive } = await import('./windows-archive.mjs');
+    const members = await readPinnedNodeArchive(archive, pin);
+    assert.deepEqual([...members.keys()].sort(), [...pin.files].sort(), 'Exact reviewed Node member inventory');
+    assert.equal(members.get('node.exe')?.length, nodeBytes, 'Reviewed Node member size');
+    const files = [];
+    for (const member of pin.files) {
+        const current = await canonicalDirectory(output);
+        assert(current.dev === outputStat.dev && current.ino === outputStat.ino, 'Node output directory changed');
+        const bytes = members.get(member);
+        assert(Buffer.isBuffer(bytes) && bytes.length <= (member === 'node.exe' ? maximum : 1024 ** 2), 'Node member size bound');
+        await fs.writeFile(path.join(output, member), bytes, { flag: 'wx', mode: 0o444 });
+        const written = await readStable(path.join(output, member), maximum);
+        assert(written.equals(bytes), `Node member changed after extraction: ${member}`);
+        files.push({ path: member, bytes: bytes.length, sha256: hash(bytes) });
+    }
+    const finalStat = await canonicalDirectory(output);
+    assert(finalStat.dev === outputStat.dev && finalStat.ino === outputStat.ino, 'Node output directory changed');
+    assert.deepEqual((await fs.readdir(output)).sort(), [...pin.files].sort(), 'Unexpected Node output entry');
+    return { version: pin.version, archiveSha256: pin.sha256, files };
 }
 
 // LLVM's bounded text report is retained verbatim. Import names are observations,
@@ -153,7 +207,7 @@ export function requireWindowsComponentsManifest(manifest) {
 }
 
 export async function verifyWindowsComponents(directory, expectedId = undefined) {
-    assert.equal(process.platform, 'linux', 'Maintainer verification requires Linux');
+    assert(['linux', 'win32'].includes(process.platform), 'Component verification requires Windows or Linux');
     absolute(directory);
     assert.equal(await fs.realpath(directory), directory, 'Component directory alias');
     const bytes = await readStable(path.join(directory, 'components.json'), 4 * 1024 ** 2);
@@ -213,6 +267,7 @@ export async function prepareWindowsComponents(options) {
     const pin = requireWindowsNodePin(JSON.parse(contents.get('tools/devkit/packaging/node-win32-lock.json')));
     const suppliedArchive = await readStable(nodeArchive, maximum);
     assert.equal(hash(suppliedArchive), pin.sha256, 'NODE_ARCHIVE_HASH_MISMATCH: no extraction or compilation performed');
+    const { publishSdk } = await import('./prepare-sdk.mjs');
     const revision = (await run('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: engine, env, timeout: 10000, maxBuffer: 4096 })).stdout.trim();
     const status = (await run('/usr/bin/git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
         { cwd: engine, env, timeout: 10000, maxBuffer: 4 * 1024 ** 2, encoding: 'buffer' })).stdout;

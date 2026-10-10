@@ -27,19 +27,21 @@ const legacyFiles = {
 
 function absolute(value) {
     assert(typeof value === 'string' && path.isAbsolute(value) && path.resolve(value) === value
-        && !/[\0\r\n:]/.test(value), `Expected a canonical absolute Linux path: ${value}`);
+        && !/[\0\r\n]/.test(value) && (process.platform === 'win32'
+            ? /^[A-Za-z]:\\/.test(value) && !value.slice(2).includes(':') : !value.includes(':')),
+    `Expected a canonical absolute host path: ${value}`);
     return value;
 }
 
 export function requireNodeLock(lock) {
     assert.equal(lock.schemaVersion, 1);
     assert.equal(lock.version, pins.effectsNode, 'Review the portable Node version with both CI lanes');
-    assert.equal(lock.target, 'linux-x64');
+    assert(['linux-x64', 'win-x64'].includes(lock.target), 'Unsupported pinned Node host');
     assert.equal(lock.archiveRoot, `node-v${lock.version}-${lock.target}`);
-    assert.equal(lock.url, `https://nodejs.org/dist/v${lock.version}/${lock.archiveRoot}.tar.xz`);
+    assert.equal(lock.url, `https://nodejs.org/dist/v${lock.version}/${lock.archiveRoot}.${lock.target === 'win-x64' ? 'zip' : 'tar.xz'}`);
     assert.equal(lock.checksumsUrl, `https://nodejs.org/dist/v${lock.version}/SHASUMS256.txt`);
     assert.match(lock.sha256, /^[a-f0-9]{64}$/);
-    assert.deepEqual(lock.files, ['bin/node', 'LICENSE', 'README.md']);
+    assert.deepEqual(lock.files, [lock.target === 'win-x64' ? 'node.exe' : 'bin/node', 'LICENSE', 'README.md']);
     return lock;
 }
 
@@ -60,11 +62,12 @@ export function verificationLayout(engine) {
     // INSIDE this run's unique clone, not copies/aliases of saved local evidence.
     const debugHtml = path.join(runtime, 'acceptance-Js6TDR');
     const release = path.join(runtime, 'verification-release');
-    const runtimes = ['debug', 'release'].flatMap(variant => ['HTML5', 'BILIBILI'].flatMap(target =>
+    const runtimes = ['debug', 'release'].flatMap(variant => ['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE'].flatMap(target =>
         ['2d-basic', '3d-basic'].map(profile => {
             const directory = variant === 'release' ? path.join(release, target, profile)
                 : target === 'HTML5' ? path.join(debugHtml, profile)
-                    : path.join(runtime, `bilibili-final-${profile.slice(0, 2)}-20260918`);
+                    : target === 'BILIBILI' ? path.join(runtime, `bilibili-final-${profile.slice(0, 2)}-20260918`)
+                        : path.join(runtime, 'verification-debug', target, profile);
             const kind = target === 'HTML5' ? 'browser' : 'local';
             return { target, profile, variant, directory, report: `${directory}-${kind}/${kind}-report.json` };
         })));
@@ -92,10 +95,10 @@ export function verificationEnvironment(layout, builtins, chrome) {
         BILIBILI_SDK_2D_RUNTIME: bilibili[0].directory, BILIBILI_SDK_3D_RUNTIME: bilibili[1].directory,
         RUNTIME_COMPILER_FIXTURES: debugHtml, RUNTIME_TOOLCHAIN: path.join(debugSdk, 'toolchain'),
         RUNTIME_BUILTINS_2D: builtins['2d-basic'], RUNTIME_BUILTINS_3D: builtins['3d-basic'],
-        RUNTIME_CHROME: chrome, GAME_CHROME_EXECUTABLE: chrome,
+        RUNTIME_CHROME: chrome, GAME_CHROME_EXECUTABLE: chrome, COCOS4_PREVIEW_BROWSER: chrome,
         RELEASE_RUNTIME_ROOT: release, RELEASE_LOCAL_REPORT_ROOT: path.join(release, 'BILIBILI'),
         RELEASE_GAME_SDK_ROOT: sdk,
-        PORTABLE_STARTUP_RELEASE: candidate, PORTABLE_STARTUP_NODE: path.join(candidate, 'runtime/node'),
+        PORTABLE_STARTUP_RELEASE: candidate, PORTABLE_STARTUP_NODE: path.join(candidate, process.platform === 'win32' ? 'runtime/node.exe' : 'runtime/node'),
         AI_TEST_EVIDENCE_ROOT: path.join(layout.build, 'ai-evidence'),
     };
 }
@@ -150,7 +153,9 @@ export async function publishVerificationResult(out, input, isInterrupted) {
 
 export async function requireFreshOutput(source, out) {
     absolute(source); absolute(out);
-    assert(out !== source && !out.startsWith(`${source}/`) && !source.startsWith(`${out}/`),
+    const nested = (parent, child) => { const relative = path.relative(parent, child);
+        return !relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative)); };
+    assert(!nested(source, out) && !nested(out, source),
         'Verification output must be outside the source checkout');
     assert.equal(await fs.realpath(source), source, 'Source checkout must be canonical');
     assert.equal(await fs.realpath(path.dirname(out)), path.dirname(out), 'Output parent must exist and be canonical');
@@ -372,12 +377,12 @@ async function main() {
             const key = `${input.target}-${input.profile}-${input.variant}`;
             await run(`runtime-${key}`, node, [path.join(devkit, 'scripts/build-runtime.cjs'), input.profile,
                 builtins[input.profile], input.directory, input.target, input.variant], engine, {}, 1800000);
-            await run(`verify-${key}`, node, [path.join(devkit, `runtime/verify-${input.target === 'HTML5' ? 'browser' : 'bilibili'}.cjs`),
+            await run(`verify-${key}`, node, [path.join(devkit, `runtime/verify-${input.target === 'HTML5' ? 'browser' : input.target.toLowerCase()}.cjs`),
                 input.directory, ...(input.target === 'HTML5' ? [chrome] : []), path.dirname(input.report)], engine);
         }
         await run('readonly-sdk', node, [path.join(devkit, 'scripts/prepare-sdk.mjs'), '--out', layout.base], devkit);
-        for (const [name, selected, destination] of [['debug-sdk', runtimes.filter(item => item.variant === 'debug'), layout.debugSdk],
-            ['eight-profile-sdk', runtimes, layout.sdk]]) {
+        for (const [name, selected, destination] of [['debug-sdk', runtimes.filter(item => item.variant === 'debug'
+            && ['HTML5', 'BILIBILI'].includes(item.target)), layout.debugSdk], ['sixteen-profile-sdk', runtimes, layout.sdk]]) {
             await run(name, node, [path.join(devkit, 'scripts/prepare-game-sdk.mjs'), '--base', layout.base,
                 ...selected.flatMap(item => ['--runtime', item.directory]), '--out', destination], devkit);
         }
@@ -413,7 +418,7 @@ async function main() {
         const { loadSdk } = await import(pathToFileURL(path.join(build, 'src/sdk.js')));
         const identities = [];
         const engineHashes = new Set();
-        for (const [name, directory, count] of [['debug', layout.debugSdk, 4], ['combined', layout.sdk, 8], ['legacy', layout.legacySdk, 2]]) {
+        for (const [name, directory, count] of [['debug', layout.debugSdk, 4], ['combined', layout.sdk, 16], ['legacy', layout.legacySdk, 2]]) {
             const sdk = await loadSdk(directory);
             assert.equal(sdk.manifest.catalog.profiles.length, count);
             if (name === 'legacy') assert.equal(sdk.manifest.apiIndex, undefined, 'Not a genuine pre-index producer');
@@ -424,7 +429,7 @@ async function main() {
             }
             identities.push({ name, directory, sdkId: sdk.sdkId, manifestSha256: hash(await fs.readFile(path.join(directory, 'manifest.json'))) });
         }
-        assert.equal(engineHashes.size, 8, 'All eight engine bundles must be independently built, not relabeled');
+        assert.equal(engineHashes.size, 16, 'All sixteen engine bundles must be independently built, not relabeled');
         assert.equal((await execute('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: engine, env })).stdout, '',
             'SOURCE_DIRTY: provisioned clone must still be clean before candidate assembly');
         // No network or writable source outside this run. Compiler helpers clear

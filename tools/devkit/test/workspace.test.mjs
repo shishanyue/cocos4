@@ -10,21 +10,45 @@ import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { performance } from 'node:perf_hooks';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { inspectProject, inspectionSchema, validateRelativePath, withPackageSnapshot, readSdkValidator } from '../build/src/workspace.js';
+import { enforceWindowsPrivate, verifyWindowsTrust } from '../build/src/windows-fs.js';
 
 const require = createRequire(import.meta.url);
 const MiB = 1024 * 1024;
 const validatorBytes = await fs.readFile(new URL('../../../scripts/validate-bilibili.cjs', import.meta.url));
 const digest = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const code = (expected) => (error) => { assert.equal(error.code, expected, error.stack); return true; };
+const windows = process.platform === 'win32';
+const execute = promisify(execFile);
+const deniedRename = (error) => ['EPERM', 'EACCES', 'EBUSY'].includes(error.code);
+
+async function publicPermissions(filename, mode) {
+    if (windows) {
+        await execute(path.join(process.env.SystemRoot, 'System32', 'icacls.exe'),
+            [filename, '/grant', '*S-1-5-32-545:(OI)(CI)(M)'], { windowsHide: true });
+    } else await fs.chmod(filename, mode);
+}
+
+async function privatePermissions(filename) {
+    if (windows) await enforceWindowsPrivate(filename);
+    else await fs.chmod(filename, 0o700);
+}
+
+async function directoryLink(target, filename) {
+    await fs.symlink(windows ? path.resolve(path.dirname(filename), target) : target, filename, windows ? 'junction' : 'dir');
+}
 
 async function fixture(t) {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cocos4-workspace-'));
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cocos4-workspace-')));
+    if (windows) await enforceWindowsPrivate(root);
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const workspace = path.join(root, 'workspace');
     const staging = path.join(root, 'state');
     await fs.mkdir(workspace);
     await fs.mkdir(staging, { mode: 0o700 });
+    if (windows) await enforceWindowsPrivate(staging);
     return { root, workspace, staging };
 }
 
@@ -55,10 +79,10 @@ async function duringDirectoryOpen(directory, phase, change, action) {
     let selected = false;
     let changed = false;
     promises.open = async (filename, flags, ...args) => {
-        if (selected || !(flags & constants.O_DIRECTORY) || !filename.endsWith(`/${path.basename(directory)}`)) {
+        if (selected || (windows ? filename !== directory : !(flags & constants.O_DIRECTORY) || !filename.endsWith(`/${path.basename(directory)}`))) {
             return original(filename, flags, ...args);
         }
-        assert.match(filename, /^\/proc\/self\/fd\/\d+\//);
+        if (!windows) assert.match(filename, /^\/proc\/self\/fd\/\d+\//);
         assert.equal(await fs.realpath(filename), directory);
         selected = true;
         if (phase === 'before-open') { await change(); changed = true; }
@@ -106,12 +130,18 @@ test('directory opens still reject inode replacement and a renamed pinned ancest
         await t.test(phase, async (t) => {
             const paths = await packageFixture(t);
             const change = async () => {
+                if (windows) {
+                    await assert.rejects(fs.rename(paths.workspace, path.join(paths.root, 'moved')), deniedRename);
+                    return;
+                }
                 await fs.rename(paths.workspace, path.join(paths.root, 'moved'));
                 if (phase === 'before-open') await fs.mkdir(paths.workspace);
                 else await fs.symlink('moved', paths.workspace);
             };
-            await duringDirectoryOpen(paths.workspace, phase, change, () =>
-                assert.rejects(inspectProject(paths.workspace, 'out'), code('INPUT_CHANGED')));
+            await duringDirectoryOpen(paths.workspace, phase, change, async () => {
+                if (windows) assert.equal((await inspectProject(paths.workspace, 'out')).complete, true);
+                else await assert.rejects(inspectProject(paths.workspace, 'out'), code('INPUT_CHANGED'));
+            });
         });
     }
 });
@@ -145,7 +175,7 @@ test('inspection parses data only, reports external configuration, and makes no 
     await fs.writeFile(path.join(workspace, 'texture.ktx2'), 'compressed');
     await fs.writeFile(path.join(workspace, '.env'), 'DO_NOT_RETURN_THIS_SECRET');
     await fs.mkdir(path.join(workspace, '.git'));
-    await fs.symlink('/outside/nonexistent', path.join(workspace, '.git', 'ignored'));
+    await fs.writeFile(path.join(workspace, '.git', 'ignored'), 'private data must not be inspected');
     const before = await fs.stat(path.join(workspace, 'package.json'));
     const result = await inspectProject(workspace, '.');
     assert.deepEqual(inspectionSchema.parse(result), result);
@@ -181,7 +211,8 @@ test('inspection is partial and bounded at 1000 entries, 8 MiB, 1 MiB per JSON a
     const count = await inspectProject(workspace, '.');
     assert.equal(count.complete, false);
     assert.ok(count.files <= 1000);
-    assert.ok(count.diagnostics.some((item) => item.code === 'LIMIT_EXCEEDED'));
+    assert.ok(count.diagnostics.some((item) => item.code === 'LIMIT_EXCEEDED'
+        || (windows && item.code === 'TIMEOUT')), 'Windows may hit the wall deadline before its verified per-file leases reach the entry cap');
     for (const [folder, name, size] of [['bytes', 'large.bin', 8 * MiB + 1], ['json', 'package.json', MiB + 1]]) {
         await fs.mkdir(path.join(workspace, folder));
         const handle = await fs.open(path.join(workspace, folder, name), 'w');
@@ -202,21 +233,25 @@ test('symlinks are rejected at the root, ancestors, project directories and file
     const { root, workspace } = await fixture(t);
     await fs.mkdir(path.join(workspace, 'real'));
     await fs.writeFile(path.join(workspace, 'real', 'file.js'), 'data');
-    await fs.symlink(workspace, path.join(root, 'alias'));
+    await directoryLink(workspace, path.join(root, 'alias'));
     await assert.rejects(inspectProject(path.join(root, 'alias'), '.'), code('PATH_OUTSIDE_WORKSPACE'));
     await assert.rejects(inspectProject(path.join(root, 'alias', 'real'), '.'), code('PATH_OUTSIDE_WORKSPACE'));
-    await fs.symlink('real', path.join(workspace, 'link'));
+    await directoryLink('real', path.join(workspace, 'link'));
     await assert.rejects(inspectProject(workspace, 'link'), code('PATH_OUTSIDE_WORKSPACE'));
-    await fs.symlink('/etc/passwd', path.join(workspace, 'real', 'outside'));
+    await fs.symlink(path.join(root, 'absent-external-file'), path.join(workspace, 'real', 'outside'), 'file');
     await assert.rejects(inspectProject(workspace, 'real'), code('PATH_OUTSIDE_WORKSPACE'));
 });
 
-test('hardlinks and special files are rejected without opening a blocking stream', async (t) => {
+test('hardlinks are rejected without reading external file bytes', async (t) => {
     const { root, workspace } = await fixture(t);
     await fs.writeFile(path.join(root, 'outside'), 'secret');
     await fs.link(path.join(root, 'outside'), path.join(workspace, 'linked'));
     await assert.rejects(inspectProject(workspace, '.'), code('PERMISSION_DENIED'));
     await fs.unlink(path.join(workspace, 'linked'));
+});
+
+test('POSIX socket files are rejected without opening a blocking stream', { skip: windows }, async (t) => {
+    const { workspace } = await fixture(t);
     const server = net.createServer();
     await new Promise((resolve, reject) => {
         server.once('error', reject);
@@ -233,9 +268,10 @@ test('snapshot validation reuses the canonical rules on a copy and never execute
     const before = await fs.stat(path.join(paths.out, 'game.js'));
     const result = await validate(paths, async (snapshot, script) => {
         assert.notEqual(snapshot, paths.out);
-        assert.ok(snapshot.startsWith(`${paths.staging}/validation-`));
+        assert.ok(path.relative(paths.staging, snapshot).startsWith(`validation-`));
         assert.equal(digest(await fs.readFile(script)), digest(validatorBytes));
-        assert.equal((await fs.stat(script)).mode & 0o777, 0o400);
+        if (windows) await verifyWindowsTrust(script, true);
+        else assert.equal((await fs.stat(script)).mode & 0o777, 0o400);
         assert.notEqual((await fs.stat(path.join(snapshot, 'game.js'))).ino, before.ino);
         return require(script).validateBilibili(snapshot);
     });
@@ -267,7 +303,11 @@ test('inspection and validation work with a read-only workspace and read-only in
         assert.equal((await inspectProject(paths.workspace, 'out')).complete, true);
         assert.equal((await validate(paths)).appId, 'fixture');
         assert.deepEqual(await fs.readdir(paths.out), files);
-        for (const name of files) assert.equal((await fs.stat(path.join(paths.out, name))).mode & 0o777, 0o444);
+        for (const name of files) {
+            const mode = (await fs.stat(path.join(paths.out, name))).mode;
+            if (windows) assert.equal(mode & 0o222, 0);
+            else assert.equal(mode & 0o777, 0o444);
+        }
     } finally {
         await fs.chmod(paths.workspace, 0o755);
         await fs.chmod(paths.out, 0o755);
@@ -308,18 +348,36 @@ test('snapshot bounds reject oversized JSON, total bytes, depth and entry count 
     await fs.mkdir(path.join(paths.out, ...Array(33).fill('d')), { recursive: true });
     await assert.rejects(validate(paths), code('LIMIT_EXCEEDED'));
     await fs.rm(path.join(paths.out, 'd'), { recursive: true });
-    await Promise.all(Array.from({ length: 10000 }, (_, index) => fs.writeFile(path.join(paths.out, `f${index}`), '')));
+    for (let start = 0; start < 10000; start += 64) {
+        await Promise.all(Array.from({ length: Math.min(64, 10000 - start) }, (_, offset) => fs.writeFile(path.join(paths.out, `f${start + offset}`), '')));
+    }
     await assert.rejects(validate(paths), code('LIMIT_EXCEEDED'));
+});
+
+test('Windows snapshots validate immutable inputs through long private paths', { skip: !windows }, async t => {
+    const paths = await packageFixture(t);
+    const parent = path.join(paths.root, 'long private ' + 'x'.repeat(180));
+    await fs.mkdir(parent); await enforceWindowsPrivate(parent);
+    const staging = path.join(parent, 'staging');
+    const before = await fs.readFile(path.join(paths.out, 'game.json'));
+    let called = false;
+    await withPackageSnapshot(paths.workspace, 'out', staging, validatorBytes, async snapshot => {
+        called = true;
+        assert(path.join(snapshot, 'game.json').length > 260, 'The snapshot must cross MAX_PATH');
+        assert.deepEqual(await fs.readFile(path.join(snapshot, 'game.json')), before);
+    });
+    assert.equal(called, true);
+    assert.deepEqual(await fs.readFile(path.join(paths.out, 'game.json')), before);
 });
 
 test('snapshots require private owned staging outside the workspace and never follow staging symlinks', async (t) => {
     const paths = await packageFixture(t);
     await fs.mkdir(path.join(paths.workspace, 'state'), { mode: 0o700 });
     await assert.rejects(validate({ ...paths, staging: path.join(paths.workspace, 'state') }), code('PERMISSION_DENIED'));
-    await fs.chmod(paths.staging, 0o755);
+    await publicPermissions(paths.staging, 0o755);
     await assert.rejects(validate(paths), code('PERMISSION_DENIED'));
-    await fs.chmod(paths.staging, 0o700);
-    await fs.symlink(paths.staging, path.join(paths.root, 'state-link'));
+    await privatePermissions(paths.staging);
+    await directoryLink(paths.staging, path.join(paths.root, 'state-link'));
     await assert.rejects(validate({ ...paths, staging: path.join(paths.root, 'state-link') }), code('PATH_OUTSIDE_WORKSPACE'));
     assert.deepEqual(await fs.readdir(path.join(paths.workspace, 'state')), []);
 });
@@ -342,13 +400,19 @@ test('input changes, including same-length writes with restored mtime, prevent s
 
 test('replacing a project ancestor or mutating the private snapshot prevents success', async (t) => {
     const paths = await packageFixture(t);
-    await assert.rejects(validate(paths, async () => {
-        await fs.rename(paths.out, path.join(paths.workspace, 'moved'));
-        await fs.mkdir(paths.out);
-        return 'must not succeed';
-    }), code('INPUT_CHANGED'));
-    await fs.rmdir(paths.out);
-    await fs.rename(path.join(paths.workspace, 'moved'), paths.out);
+    if (windows) {
+        await validate(paths, async () => {
+            await assert.rejects(fs.rename(paths.out, path.join(paths.workspace, 'moved')), deniedRename);
+        });
+    } else {
+        await assert.rejects(validate(paths, async () => {
+            await fs.rename(paths.out, path.join(paths.workspace, 'moved'));
+            await fs.mkdir(paths.out);
+            return 'must not succeed';
+        }), code('INPUT_CHANGED'));
+        await fs.rmdir(paths.out);
+        await fs.rename(path.join(paths.workspace, 'moved'), paths.out);
+    }
     await assert.rejects(validate(paths, async (snapshot) => {
         await fs.chmod(path.join(snapshot, 'game.js'), 0o600);
         await fs.writeFile(path.join(snapshot, 'game.js'), 'changed');
@@ -378,18 +442,25 @@ test('file replacement between lstat and open cannot redirect a pinned read', as
     const original = promises.open;
     let swapped = false;
     promises.open = async (filename, flags, ...args) => {
-        if (filename.endsWith('/file.js')) {
+        if (filename.endsWith(`${path.sep}file.js`) || filename.endsWith('/file.js')) {
+            swapped = true;
+            if (windows) {
+                await assert.rejects(fs.unlink(input), deniedRename);
+                return original(filename, flags, ...args);
+            }
             assert.match(filename, /^\/proc\/self\/fd\/\d+\/file\.js$/);
             assert.ok(flags & constants.O_NOFOLLOW);
             assert.ok(flags & constants.O_NONBLOCK);
-            swapped = true;
             await fs.unlink(input);
             await fs.symlink(path.join(root, 'outside'), input);
         }
         return original(filename, flags, ...args);
     };
     syncBuiltinESMExports();
-    try { await assert.rejects(inspectProject(workspace, '.'), code('PATH_OUTSIDE_WORKSPACE')); }
+    try {
+        if (windows) assert.equal((await inspectProject(workspace, '.')).complete, true);
+        else await assert.rejects(inspectProject(workspace, '.'), code('PATH_OUTSIDE_WORKSPACE'));
+    }
     finally { promises.open = original; syncBuiltinESMExports(); }
     assert.equal(swapped, true);
 });
@@ -419,8 +490,12 @@ test('a renamed ancestor is detected before the pinned file handle is read', asy
     let swapped = false;
     let read = false;
     promises.open = async (filename, flags, ...args) => {
-        if (filename.endsWith('/file.js')) {
+        if (filename.endsWith(`${path.sep}file.js`) || filename.endsWith('/file.js')) {
             swapped = true;
+            if (windows) {
+                await assert.rejects(fs.rename(project, path.join(workspace, 'moved')), deniedRename);
+                return original(filename, flags, ...args);
+            }
             await fs.rename(project, path.join(workspace, 'moved'));
             await fs.mkdir(project);
             await fs.writeFile(path.join(project, 'file.js'), 'UNAUTHORIZED');
@@ -433,7 +508,10 @@ test('a renamed ancestor is detected before the pinned file handle is read', asy
         return handle;
     };
     syncBuiltinESMExports();
-    try { await assert.rejects(inspectProject(workspace, 'project'), code('INPUT_CHANGED')); }
+    try {
+        if (windows) assert.equal((await inspectProject(workspace, 'project')).complete, true);
+        else await assert.rejects(inspectProject(workspace, 'project'), code('INPUT_CHANGED'));
+    }
     finally { promises.open = original; syncBuiltinESMExports(); }
     assert.equal(swapped, true);
     assert.equal(read, false);
@@ -442,7 +520,7 @@ test('a renamed ancestor is detected before the pinned file handle is read', asy
 test('staging cannot be created beneath a world-writable non-sticky ancestor', async (t) => {
     const paths = await packageFixture(t);
     await fs.mkdir(path.join(paths.root, 'unsafe'));
-    await fs.chmod(path.join(paths.root, 'unsafe'), 0o777);
+    await publicPermissions(path.join(paths.root, 'unsafe'), 0o777);
     await assert.rejects(validate({ ...paths, staging: path.join(paths.root, 'unsafe', 'job') }), code('PERMISSION_DENIED'));
     assert.deepEqual(await fs.readdir(path.join(paths.root, 'unsafe')), []);
 });

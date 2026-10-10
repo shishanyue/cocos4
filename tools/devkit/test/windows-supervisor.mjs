@@ -39,13 +39,20 @@ function observation(value) {
     assert.equal(value.platform, 'win32');
     const fields = {
         ready: ['supervisor', 'owner', 'runner'], started: [], runnerExit: ['exitCode'], stopping: ['reason'],
-        treeClosed: ['activeProcesses'], treeNotClosed: ['activeProcesses'], error: ['operation', 'errorCode'], identity: ['process'],
+        treeClosed: ['activeProcesses'], treeNotClosed: ['activeProcesses'], error: ['operation', 'errorCode'], identity: ['process', 'alive'],
+        tree: ['exists', 'activeProcesses'],
     }[value.type];
     assert(fields, `Unknown observation ${value.type}`);
     assert.deepEqual(Object.keys(value).sort(), ['version', 'platform', 'type', ...fields].sort());
     for (const name of ['supervisor', 'owner', 'runner', 'process']) if (value[name]) identity(value[name]);
+    if (value.type === 'identity') assert.equal(typeof value.alive, 'boolean');
     for (const name of ['exitCode', 'errorCode']) if (name in value) assert(Number.isInteger(value[name]) && value[name] >= 0 && value[name] <= 0xffffffff);
     if (value.type === 'treeClosed') assert.equal(value.activeProcesses, 0);
+    if (value.type === 'tree') {
+        assert.equal(typeof value.exists, 'boolean');
+        assert(Number.isInteger(value.activeProcesses) && value.activeProcesses >= 0);
+        if (!value.exists) assert.equal(value.activeProcesses, 0);
+    }
     if (value.type === 'treeNotClosed') assert(value.activeProcesses === null || Number.isInteger(value.activeProcesses) && value.activeProcesses >= 0);
     if (value.type === 'stopping') assert(['stop', 'stdinEof', 'ownerExit', 'runnerExit', 'controlError', 'console',
         'observationError', 'readyTimeout', 'infrastructure'].includes(value.reason));
@@ -89,6 +96,8 @@ test('Windows x64 Job Object supervisor component acceptance', {
     const children = new Set(), transcripts = [];
     t.after(async () => {
         for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill();
+        await Promise.all([...children].map(child => child.exitCode !== null || child.signalCode !== null ? undefined
+            : new Promise(resolve => { child.once('close', resolve); setTimeout(resolve, 3000).unref(); })));
         await fs.writeFile(path.join(directory, 'transcripts.json'), `${JSON.stringify(transcripts, null, 2)}\n`, { flag: 'wx' });
         if (!retained) await fs.rm(directory, { recursive: true, force: true });
     });
@@ -127,11 +136,23 @@ test('Windows x64 Job Object supervisor component acceptance', {
         assert(state.stdout.endsWith('\n') && state.stdout.split('\n').length === 2);
         const event = observation(JSON.parse(state.stdout));
         assert.equal(event.type, 'identity');
+        assert.equal(event.alive, true, 'The requested live process must remain alive');
         return event.process;
     }
     const owner = await processIdentity(process.pid);
+    async function treeState(value) {
+        const state = launch(helper, ['--tree', String(value.pid), value.creationTime]);
+        state.child.stdin.end(); await complete(state);
+        assert.equal(state.code, 0, state.stdout + state.stderr);
+        const event = observation(JSON.parse(state.stdout));
+        assert.equal(event.type, 'tree');
+        return event;
+    }
     async function run(caseDirectory, args, executable = fixture, extra = {}) {
-        const state = launch(helper, ['--owner', String(owner.pid), owner.creationTime, '--cwd', caseDirectory, '--', executable, ...args], extra);
+        const { ipc = false, ...options } = extra;
+        const state = launch(helper, ['--owner', String(owner.pid), owner.creationTime, '--cwd', caseDirectory,
+            ...(ipc ? ['--ipc'] : []), '--', executable, ...args],
+        { ...(ipc ? { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] } : {}), ...options });
         state.events = [];
         let pending = '', total = 0;
         state.child.stdout.on('data', bytes => {
@@ -225,7 +246,14 @@ test('Windows x64 Job Object supervisor component acceptance', {
             assert.equal(manifest.component, component);
             assert.equal(manifest.platform, 'win32'); assert.equal(manifest.arch, 'x64');
             assert.equal(manifest.sha256, hash(bytes)); assert.equal(manifest.bytes, bytes.length);
-            assert.equal(manifest.compiler.version, '0.16.0');
+            if (manifest.compiler.kind === 'msvc') {
+                assert.match(manifest.compiler.version, /^19\.[0-9]+\.[0-9]+$/);
+                assert.equal(manifest.pe.hardening.controlFlowGuard, true);
+                assert(manifest.pe.hardening.loadConfigBytes > 0);
+            } else {
+                assert(manifest.compiler.kind === undefined || manifest.compiler.kind === 'zig');
+                assert.equal(manifest.compiler.version, '0.16.0');
+            }
             assert.match(manifest.compiler.sha256, /^[a-f0-9]{64}$/);
             assert.equal(manifest.pe.machine, 'AMD64');
             const coff = bytes.readUInt32LE(0x3c) + 4;
@@ -285,6 +313,42 @@ test('Windows x64 Job Object supervisor component acceptance', {
         assert.deepEqual(Object.keys(data.environment).map(s => s.toUpperCase()).sort(), ['PATH', 'SYSTEMROOT', 'WINDIR']);
         assert.match(state.stderr, /node-fixture-stderr/); assert.match(state.stderr, /"activeProcesses":999/);
     });
+    await t.test('explicit Node IPC transfers only fd 3 and supports a bidirectional exchange', async () => {
+        const dir = await caseDirectory('node-ipc'), script = path.join(dir, 'ipc-runner.mjs');
+        await fs.writeFile(script, `import assert from 'node:assert/strict';
+assert.equal(typeof process.send, 'function');
+assert.deepEqual(Object.keys(process.env).map(key => key.toUpperCase()).sort(), ['PATH', 'SYSTEMROOT', 'WINDIR']);
+process.on('message', message => {
+    assert.deepEqual(message, { type: 'ping', text: 'IPC \\u6d4b\\u8bd5' });
+    process.send({ type: 'pong', pid: process.pid, text: message.text }, () => process.disconnect());
+});
+process.send({ type: 'hello', pid: process.pid });
+`, { flag: 'wx' });
+        const state = await run(dir, [script], process.execPath, { ipc: true, env: poison });
+        const value = await ready(state), messages = [];
+        state.child.on('message', message => {
+            messages.push(message);
+            if (message?.type === 'hello') state.child.send({ type: 'ping', text: 'IPC \u6d4b\u8bd5' });
+        });
+        state.child.stdin.write('G');
+        await closed(state, 0, 'runnerExit');
+        assert.deepEqual(messages, [{ type: 'hello', pid: value.runner.pid }, { type: 'pong', pid: value.runner.pid, text: 'IPC \u6d4b\u8bd5' }]);
+    });
+    await t.test('requesting IPC without an inherited fd 3 fails before runner creation', async () => {
+        const dir = await caseDirectory('missing-ipc');
+        for (const stdio of [
+            ['pipe', 'pipe', 'pipe'],
+            ['pipe', 'pipe', 'pipe', 'ignore'],
+            ['pipe', 'pipe', 'pipe', 'ignore', 'pipe'],
+        ]) {
+            const state = launch(helper, ['--owner', String(owner.pid), owner.creationTime, '--cwd', dir, '--ipc', '--', fixture, 'sleep'], { stdio });
+            state.child.stdin.end(); await complete(state);
+            assert.equal(state.code, 125, `Unopened fd 3 with ${JSON.stringify(stdio)}: ${state.stdout} ${state.stderr}`);
+            const event = observation(JSON.parse(state.stdout));
+            assert.equal(event.type, 'error'); assert.equal(event.operation, 'ipcDescriptor');
+            assert.equal(event.errorCode, 6);
+        }
+    });
     await t.test('DWORD exit statuses remain unsigned, including STILL_ACTIVE as a real exit value', async () => {
         for (const code of [0, 259, 0x80000000, 0xffffffff]) {
             const dir = await caseDirectory(`exit-${code}`), state = await run(dir, ['exit', String(code)]);
@@ -326,12 +390,35 @@ test('Windows x64 Job Object supervisor component acceptance', {
     }
     await t.test('forced helper termination closes its sole Job handle and kills descendants', async () => {
         const dir = await caseDirectory('helper-death'), { state, watchers, value } = await tree(dir);
+        const running = await treeState(value.supervisor);
+        assert.equal(running.exists, true);
+        assert(running.activeProcesses >= 3, 'Job accounting includes every fixture generation and any OS console hosts');
         const helperWaited = await watch(value.supervisor, dir, 'helper');
         await native(['kill', String(value.supervisor.pid), value.supervisor.creationTime]);
         await helperWaited(0xdeadbeef);
         await Promise.all(watchers.map(waited => waited()));
         await complete(state);
         assert(!state.events.some(e => e.type === 'treeClosed'), 'Forced helper death cannot certify closure itself');
+        const recovered = await treeState(value.supervisor);
+        assert.equal(recovered.activeProcesses, 0, 'Independent Job accounting proves all descendants exited');
+    });
+    await t.test('identity reports a terminated process while an independent handle still pins its PID', async () => {
+        const dir = await caseDirectory('terminated-identity');
+        const subject = launch(fixture, ['sleep']);
+        subject.child.stdin.end();
+        const value = await processIdentity(subject.child.pid);
+        const started = path.join(dir, 'watching.json'), ended = path.join(dir, 'exited.json');
+        const watcher = launch(fixture, ['watchHold', String(value.pid), value.creationTime, started, ended]);
+        watcher.child.stdin.end();
+        assert.deepEqual(await jsonFile(started), value);
+        await native(['kill', String(value.pid), value.creationTime]);
+        await jsonFile(ended);
+        const state = launch(helper, ['--identity', String(value.pid)]);
+        state.child.stdin.end(); await complete(state);
+        assert.equal(state.code, 0);
+        const event = observation(JSON.parse(state.stdout));
+        assert.deepEqual(event.process, value); assert.equal(event.alive, false);
+        await complete(watcher); await complete(subject);
     });
     await t.test('owner death kills the tree even while a separate keeper holds stdin open', async () => {
         const dir = await caseDirectory('owner-death');

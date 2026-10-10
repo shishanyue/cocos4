@@ -14,6 +14,22 @@ export const canonical = value => Array.isArray(value) ? `[${value.map(canonical
 export const safePath = value => typeof value === 'string' && value.length > 0 && value.length <= 1024
     && value.split('/').every(part => /^[A-Za-z0-9_@.+=,-]+$/.test(part) && !['.', '..'].includes(part) && !part.endsWith('.'));
 
+export function portablePaths(platform) {
+    assert(['linux', 'win32'].includes(platform), 'Unsupported portable host');
+    const extension = platform === 'win32' ? '.exe' : '';
+    return { launcher: `cocos4${extension}`, node: `runtime/node${extension}`,
+        binaries: [`cocos4${extension}`, `runtime/node${extension}`,
+            ...['publish', 'supervise', 'mcp-launch', ...(platform === 'win32' ? ['fs'] : [])]
+                .map(name => `app/host/cocos4-${name}${extension}`)] };
+}
+
+function verifyPermissions(stat, expected, windows, directory = false) {
+    if (!windows) assert.equal(stat.mode & 0o7777, expected, 'Unexpected release permissions');
+    // Standard Windows ZIP extractors may discard the DOS readonly attribute.
+    // It is not an integrity boundary. The application uses trusted Windows ACLs
+    // and immutable leases; this verifier binds every delivered byte by hash.
+}
+
 export function verifyReleaseProfiles(profiles) {
     assert(Array.isArray(profiles) && profiles.length <= 16 && profiles.every(profile => profile && typeof profile === 'object'),
         'Expected a bounded release profile inventory');
@@ -63,6 +79,9 @@ export async function verifyInventory(root) {
     assert.equal(manifest.layout.sdk, 'sdk');
     assert.equal(manifest.runtime.node.version, '24.21.0');
     assert.equal(manifest.runtime.node.bundled, true);
+    const { launcher } = portablePaths(manifest.host.platform);
+    const windows = manifest.host.platform === 'win32';
+    assert(!windows || manifest.host.arch === 'x64', 'Unsupported Windows release architecture');
     assert.equal(manifest.channel, 'candidate', 'Official release approval is not implemented');
     assert.equal(manifest.distributionApproved, false);
     assert(Array.isArray(manifest.files) && manifest.files.length > 20 && manifest.files.length < 50000);
@@ -74,7 +93,10 @@ export async function verifyInventory(root) {
     let total = 0;
     for (const file of manifest.files) {
         assert(safePath(file.path) && file.path !== 'release.json');
-        assert(/^(?:app\/|runtime\/|sdk\/|skills\/|docs\/|licenses\/|provenance\/|LICENSE$|THIRD_PARTY_NOTICES$|SBOM\.spdx\.json$|cocos4$)/.test(file.path));
+        assert(/^(?:app\/|runtime\/|sdk\/|skills\/|docs\/|licenses\/|provenance\/|AGENTS\.md$|LICENSE$|THIRD_PARTY_NOTICES$|SBOM\.spdx\.json$)/.test(file.path)
+            || file.path === launcher);
+        if (windows) assert(file.path.split('/').every(part => !/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part)),
+            'Reserved Windows inventory component');
         assert(Number.isSafeInteger(file.bytes) && file.bytes >= 0 && /^[a-f0-9]{64}$/.test(file.sha256));
         assert(['0444', '0555'].includes(file.mode) && file.origin && typeof file.origin.kind === 'string');
         total += file.bytes;
@@ -84,8 +106,9 @@ export async function verifyInventory(root) {
     const walk = async relative => {
         const directory = path.join(root, relative);
         const before = await fs.lstat(directory);
-        assert(before.isDirectory() && await fs.realpath(directory) === directory && (before.mode & 0o7777) === 0o555,
-            `Release directory is not read-only: ${relative}`);
+        assert(before.isDirectory() && !before.isSymbolicLink() && await fs.realpath(directory) === directory,
+            `Unsafe release directory: ${relative}`);
+        verifyPermissions(before, 0o555, windows, true);
         for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
             const name = relative ? `${relative}/${entry.name}` : entry.name;
             if (entry.isDirectory() && directories.delete(name)) await walk(name);
@@ -97,7 +120,7 @@ export async function verifyInventory(root) {
                 const bytes = await readRegular(root, name);
                 assert.equal(bytes.length, file.bytes, name);
                 assert.equal(hash(bytes), file.sha256, `Hash mismatch: ${name}`);
-                assert.equal((await fs.lstat(path.join(root, name))).mode & 0o7777, parseInt(file.mode, 8), name);
+                verifyPermissions(await fs.lstat(path.join(root, name)), parseInt(file.mode, 8), windows);
                 expected.delete(name);
             }
         }
@@ -108,7 +131,7 @@ export async function verifyInventory(root) {
     await walk('');
     assert.equal(expected.size, 0, 'Missing files');
     assert.equal(directories.size, 1, 'Missing directories');
-    assert.equal((await fs.lstat(path.join(root, 'release.json'))).mode & 0o7777, 0o444);
+    verifyPermissions(await fs.lstat(path.join(root, 'release.json')), 0o444, windows);
     assert.equal(hash(await readRegular(root, 'sdk/manifest.json')), manifest.sdk.manifestSha256);
     const sdk = JSON.parse(await readRegular(root, 'sdk/manifest.json'));
     assert.equal(sdk.sdkId, manifest.sdk.sdkId);
@@ -160,6 +183,8 @@ export function checkHostRequirements(manifest, host) {
     assert.equal(host.platform, manifest.host.platform, 'Host operating system does not match this release');
     assert.equal(host.arch, manifest.host.arch, 'Host architecture does not match this release');
     assert.equal(host.node, `v${manifest.runtime.node.version}`, 'Use the pinned bundled Node runtime');
+    if (host.platform === 'win32') return checkWindowsRequirements(manifest, host);
+    assert.equal(host.platform, 'linux', 'Unsupported portable host');
     assert(typeof host.glibc === 'string' && /^\d+(?:\.\d+){1,2}$/.test(host.glibc), 'This release requires a detectable GNU libc runtime');
     const binaries = ['cocos4', 'runtime/node', 'app/host/cocos4-publish', 'app/host/cocos4-supervise', 'app/host/cocos4-mcp-launch'];
     assert(Array.isArray(manifest.host.libraries) && manifest.host.libraries.length === binaries.length, 'Incomplete host ABI inventory');
@@ -198,11 +223,43 @@ export function checkHostRequirements(manifest, host) {
     return { platform: host.platform, arch: host.arch, node: host.node, glibc: host.glibc, minimumGlibc };
 }
 
+function checkWindowsRequirements(manifest, host) {
+    assert.equal(manifest.host.minimumRelease, '10.0.22000', 'Review the supported Windows 11 floor explicitly');
+    assert(typeof host.windowsVersion === 'string' && /^\d+\.\d+\.\d+$/.test(host.windowsVersion), 'Windows version is not detectable');
+    const actual = host.windowsVersion.split('.').map(Number), minimum = manifest.host.minimumRelease.split('.').map(Number);
+    const difference = actual.map((value, index) => value - minimum[index]).find(value => value !== 0) ?? 0;
+    assert(difference >= 0, `Windows ${host.windowsVersion} is below the Windows 11 requirement ${manifest.host.minimumRelease}`);
+    const { binaries } = portablePaths('win32');
+    assert(Array.isArray(manifest.host.libraries) && manifest.host.libraries.length === binaries.length, 'Incomplete Windows PE inventory');
+    const libraries = new Map(manifest.host.libraries.map(item => [item.file, item]));
+    assert.equal(libraries.size, binaries.length, 'Duplicate Windows PE records');
+    const systemLibraries = new Set(['ADVAPI32.DLL', 'BCRYPT.DLL', 'CRYPT32.DLL', 'DBGHELP.DLL', 'DNSAPI.DLL',
+        'GDI32.DLL', 'IPHLPAPI.DLL', 'KERNEL32.DLL', 'MSVCRT.DLL', 'NETAPI32.DLL', 'NTDLL.DLL', 'OLE32.DLL',
+        'OLEAUT32.DLL', 'POWRPROF.DLL', 'PSAPI.DLL', 'RPCRT4.DLL', 'SECUR32.DLL', 'SHELL32.DLL', 'SHLWAPI.DLL',
+        'USER32.DLL', 'USERENV.DLL', 'VERSION.DLL', 'WINMM.DLL', 'WINTRUST.DLL', 'WS2_32.DLL']);
+    for (const file of binaries) {
+        const item = libraries.get(file);
+        assert(item && item.machine === 'AMD64' && item.format === 'PE32+', `Missing/unsupported PE identity: ${file}`);
+        assert(Array.isArray(item.sharedLibraries) && item.sharedLibraries.length > 0
+            && new Set(item.sharedLibraries.map(name => name.toUpperCase())).size === item.sharedLibraries.length,
+        `Missing/duplicate PE imports: ${file}`);
+        assert(item.sharedLibraries.every(name => typeof name === 'string' && (systemLibraries.has(name.toUpperCase())
+            || /^(?:api|ext)-ms-win-[a-z0-9-]+\.dll$/i.test(name))), `Unreviewed Windows DLL dependency: ${file}`);
+        const hardening = item.hardening;
+        assert(hardening?.dynamicBase === true && hardening.highEntropyVA === true && hardening.nxCompatible === true
+            && hardening.relocationsPresent === true && Array.isArray(hardening.writableExecutableSections)
+            && hardening.writableExecutableSections.length === 0, `Missing PE hardening: ${file}`);
+    }
+    return { platform: host.platform, arch: host.arch, node: host.node, windowsVersion: host.windowsVersion,
+        minimumWindowsVersion: manifest.host.minimumRelease };
+}
+
 export async function verifyHost(root, manifest) {
-    assert.equal(process.platform, 'linux', 'This host verifier supports the Linux kit only');
-    assert.equal(await fs.realpath('/proc/self/exe'), path.join(root, 'runtime/node'), 'Use the executing release\'s bundled Node, not a system or copied interpreter');
+    const { node } = portablePaths(process.platform);
+    assert.equal(await fs.realpath(process.platform === 'linux' ? '/proc/self/exe' : process.execPath), path.join(root, node),
+        'Use the executing release\'s bundled Node, not a system or copied interpreter');
     return checkHostRequirements(manifest, { platform: process.platform, arch: process.arch, node: process.version,
-        glibc: process.report.getReport().header.glibcVersionRuntime });
+        glibc: process.report.getReport().header.glibcVersionRuntime, windowsVersion: kernelRelease() });
 }
 
 export async function waitForJob(call, receipt, report, preview = false) {
@@ -229,7 +286,7 @@ export async function waitForJob(call, receipt, report, preview = false) {
 
 export async function verifyWorkflow(root, evidence, verifyBrowser) {
     const manifest = await verifyInventory(root);
-    assert.equal(process.version, 'v24.21.0');
+    const host = await verifyHost(root, manifest);
     await fs.mkdir(evidence, { mode: 0o700 });
     const workspace = path.join(evidence, 'workspace');
     const home = path.join(evidence, 'home');
@@ -239,16 +296,20 @@ export async function verifyWorkflow(root, evidence, verifyBrowser) {
     const { StdioClientTransport } = await dependency('client/stdio.js');
     const { CallToolResultSchema } = await dependency('types.js');
     const { AjvJsonSchemaValidator } = await dependency('validation/ajv-provider.js');
+    const { artifactInventorySchema } = await import(pathToFileURL(path.join(root, 'app/src/contracts.js')));
     const ajv = new AjvJsonSchemaValidator();
     const client = new Client({ name: 'cocos4-portable-acceptance', version: '1.0.0' }, { jsonSchemaValidator: ajv });
-    const transport = new StdioClientTransport({ command: path.join(root, 'cocos4'),
-        args: ['mcp', '--mode', 'develop', '--preview', 'true'], cwd: workspace,
-        env: { HOME: home, XDG_STATE_HOME: path.join(evidence, 'private'), PATH: '', LANG: 'C.UTF-8',
+    const stateRoot = path.join(evidence, 'private/cocos4');
+    const transport = new StdioClientTransport({ command: path.join(root, portablePaths(host.platform).launcher),
+        args: ['mcp', '--mode', 'develop', '--preview', 'true', '--state-root', stateRoot], cwd: workspace,
+        env: { HOME: home, USERPROFILE: home, LOCALAPPDATA: path.join(evidence, 'private'),
+            APPDATA: path.join(home, 'AppData/Roaming'), XDG_STATE_HOME: path.join(evidence, 'private'), PATH: '', LANG: 'C.UTF-8',
             NODE_OPTIONS: '--require=/deliberately-absent-preload.cjs', NODE_PATH: '/deliberately-absent-modules' }, stderr: 'pipe' });
     const report = { schemaVersion: 1, releaseId: manifest.releaseId, sdkId: manifest.sdk.sdkId,
-        node: process.version, kernel: kernelRelease(), success: false, emptyPath: true, sdkReadOnly: true,
+        node: process.version, host, kernel: kernelRelease(), success: false, emptyPath: true,
+        sdkReadOnly: host.platform === 'linux', payloadFilesReadOnly: host.platform === 'linux', readOnlyMount: false,
         sourceCheckoutRequired: false, fullVM: false, browserRenderingTested: false, vendorOrDeviceTested: false,
-        networkInterfaces: networkInterfaces(), jobs: [], previews: [], browsers: [], stderr: '' };
+        networkInterfaces: networkInterfaces(), jobs: [], exports: [], previews: [], browsers: [], stderr: '' };
     transport.stderr.on('data', bytes => { report.stderr += bytes; });
     let completed = false;
     try {
@@ -308,6 +369,39 @@ export async function verifyWorkflow(root, evidence, verifyBrowser) {
             assert.equal(artifact.variant, profile.variant);
             assert.deepEqual(artifact.provenance, { releaseId: manifest.releaseId,
                 profileSha256: manifest.files.find(file => file.path === `sdk/${profile.descriptor}`).sha256 });
+            const artifactDirectory = path.join(stateRoot, hash(workspace), `artifact-${artifact.artifactId}`);
+            const inventoryBytes = await readRegular(artifactDirectory, 'artifact-inventory.json');
+            assert.equal(hash(inventoryBytes), artifact.sha256);
+            const inventory = artifactInventorySchema.parse(JSON.parse(inventoryBytes));
+            assert.equal(inventory.files.length, artifact.files);
+            assert.equal(inventory.files.reduce((sum, file) => sum + file.bytes, 0), artifact.bytes);
+            for (const file of inventory.files) {
+                const bytes = await readRegular(artifactDirectory, file.path);
+                assert.equal(bytes.length, file.bytes, file.path);
+                assert.equal(hash(bytes), file.sha256, file.path);
+            }
+            assert((await readRegular(artifactDirectory, 'game/main.js')).toString('utf8').includes(project),
+                'The export must contain edited project code');
+            const configurations = [];
+            if (profile.target !== 'HTML5') {
+                const directory = profile.target === 'BILIBILI' ? '' : `platforms/${profile.target.toLowerCase()}`;
+                for (const name of ['game.json', ...(directory ? ['project.config.json'] : [])]) {
+                    const bytes = await readRegular(artifactDirectory, name);
+                    assert.deepEqual(bytes, await fs.readFile(path.join(workspace, project, directory, name)),
+                        `Exported ${profile.target} ${name} must preserve project configuration`);
+                    configurations.push({ path: name, sha256: hash(bytes) });
+                }
+                const preflight = { BILIBILI: 'bilibiliSourcePreflight', WECHAT: 'wechatSourcePreflight', BYTEDANCE: 'bytedanceSourcePreflight' }[profile.target];
+                for (const level of ['staticModuleClosure', preflight, 'copiedResourceInventory']) {
+                    assert(built.report.validationLevels.includes(level), `Missing ${profile.target} ${level}`);
+                }
+            }
+            const inventories = path.join(evidence, 'export-inventories');
+            await fs.mkdir(inventories, { recursive: true, mode: 0o700 });
+            await fs.writeFile(path.join(inventories, `${project}.json`), inventoryBytes, { flag: 'wx', mode: 0o600 });
+            report.exports.push({ profile: `${profile.target}/${profile.id}/${profile.variant}`, artifactId: artifact.artifactId,
+                inventorySha256: artifact.sha256, files: artifact.files, bytes: artifact.bytes, configurations,
+                validationLevels: built.report.validationLevels });
             const input = { artifactId: artifact.artifactId, ttlSeconds: 300, requestKey: `preview-${project}` };
             if (profile.target !== 'HTML5') await call('preview_start', input, 'UNSUPPORTED_PROJECT');
             else {
@@ -320,7 +414,7 @@ export async function verifyWorkflow(root, evidence, verifyBrowser) {
                 assert.equal(source.status, 200);
                 assert((await source.text()).includes(project));
                 if (verifyBrowser) report.browsers.push(await verifyBrowser({ preview: ready.job.preview, artifact,
-                    artifactDirectory: path.join(evidence, 'private/cocos4', hash(workspace), `artifact-${artifact.artifactId}`) }));
+                    artifactDirectory }));
                 await call('preview_stop', { jobId: ready.job.jobId });
                 await assert.rejects(fetch(url, { signal: AbortSignal.timeout(5000) }));
                 report.previews.push({ profile: `${profile.target}/${profile.id}/${profile.variant}`, stopped: true, httpOnly: !verifyBrowser });

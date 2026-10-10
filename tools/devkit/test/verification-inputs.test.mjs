@@ -12,36 +12,40 @@ import { pins, publishVerificationResult, requireCompleteTap, requireFreshOutput
     verificationEnvironment, verificationLayout, verificationReceipt } from '../scripts/prepare-verification.mjs';
 import { auditTap, testEnvironment } from '../scripts/verify-tests.mjs';
 
-test('both pinned lanes provision eight distinct runtime/report paths and mandatory integration inputs', () => {
+test('both pinned lanes provision sixteen distinct runtime/report paths and mandatory integration inputs', () => {
     assert.deepEqual(pins.nodes, ['18.20.8', '24.21.0']);
     assert.equal(pins.effectsNode, '24.21.0');
-    const layout = verificationLayout('/isolated/run/engine');
-    assert.equal(layout.runtimes.length, 8);
-    assert.equal(new Set(layout.runtimes.map(item => item.directory)).size, 8);
-    for (const variant of ['debug', 'release']) for (const target of ['HTML5', 'BILIBILI']) {
+    const runRoot = path.resolve('/isolated/run');
+    const layout = verificationLayout(path.join(runRoot, 'engine'));
+    assert.equal(layout.runtimes.length, 16);
+    assert.equal(new Set(layout.runtimes.map(item => item.directory)).size, 16);
+    for (const variant of ['debug', 'release']) for (const target of ['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE']) {
         assert.deepEqual(layout.runtimes.filter(item => item.target === target && item.variant === variant).map(item => item.profile),
             ['2d-basic', '3d-basic']);
     }
-    const builtins = { '2d-basic': '/isolated/run/effects-2d', '3d-basic': '/isolated/run/effects-3d' };
-    const env = verificationEnvironment(layout, builtins, '/isolated/run/chrome');
+    const builtins = { '2d-basic': path.join(runRoot, 'effects-2d'), '3d-basic': path.join(runRoot, 'effects-3d') };
+    const chrome = path.join(runRoot, 'chrome');
+    const env = verificationEnvironment(layout, builtins, chrome);
     for (const name of ['GAME_SDK_INTEGRATION', 'RUNTIME_INTEGRATION', 'RELEASE_GAME_INTEGRATION']) assert.equal(env[name], '1');
     for (const name of ['LOGIC_TEST_SDK_ROOT', 'COMBINED_SDK_ROOT', 'BILIBILI_PACKAGE_SDK']) assert.equal(env[name], layout.debugSdk);
     assert.equal(env.AI_TEST_SDK_ROOT, layout.sdk);
     assert.equal(env.RELEASE_GAME_SDK_ROOT, layout.sdk);
-    assert.equal(layout.candidate, '/isolated/run/portable-candidate');
+    assert.equal(layout.candidate, path.join(runRoot, 'portable-candidate'));
     assert.equal(env.PORTABLE_STARTUP_RELEASE, layout.candidate);
-    assert.equal(env.PORTABLE_STARTUP_NODE, path.join(layout.candidate, 'runtime/node'));
+    assert.equal(env.PORTABLE_STARTUP_NODE, path.join(layout.candidate, process.platform === 'win32' ? 'runtime/node.exe' : 'runtime/node'));
     assert.equal(env.AI_TEST_EVIDENCE_ROOT, path.join(layout.build, 'ai-evidence'));
     assert(!layout.candidate.startsWith(`${layout.engine}/`));
     assert(!layout.runtimes.some(item => item.directory === layout.candidate));
     assert.equal(env.API_DOCS_LEGACY_SDK_ROOT, layout.legacySdk);
     assert.equal(env.GAME_CHROME_EXECUTABLE, env.RUNTIME_CHROME);
+    assert.equal(env.COCOS4_PREVIEW_BROWSER, chrome);
     const repro = { GAME_SDK_RUNTIME_ROOT: layout.debugHtml, RUNTIME_BUILTINS_2D: builtins['2d-basic'],
         BILIBILI_SDK_BASE_ROOT: layout.base, LEGACY_HTML5_SDK_ROOT: layout.legacySdk, COMBINED_SDK_ROOT: layout.debugSdk };
     const forwarded = testEnvironment({ ...env, NODE_OPTIONS: '--require=unreviewed' }, true);
     assert.equal(forwarded.NODE_OPTIONS, undefined);
     assert.equal(forwarded.AI_TEST_SDK_ROOT, layout.sdk);
     assert.equal(forwarded.AI_TEST_EVIDENCE_ROOT, env.AI_TEST_EVIDENCE_ROOT);
+    assert.equal(forwarded.COCOS4_PREVIEW_BROWSER, chrome);
     assert.deepEqual(testEnvironment({ AI_TEST_EVIDENCE_ROOT: env.AI_TEST_EVIDENCE_ROOT }), { AI_TEST_EVIDENCE_ROOT: env.AI_TEST_EVIDENCE_ROOT });
     const withoutAiEvidence = { ...env }; delete withoutAiEvidence.AI_TEST_EVIDENCE_ROOT;
     assert.doesNotThrow(() => testEnvironment(withoutAiEvidence, true), 'Evidence output remains optional, unlike SDK inputs');
@@ -55,8 +59,8 @@ test('both pinned lanes provision eight distinct runtime/report paths and mandat
     assert.equal(env.BILIBILI_RUNTIME_DIRECTORIES.split(path.delimiter).length, 2);
     for (const item of layout.runtimes) assert.equal(item.report,
         `${item.directory}-${item.target === 'HTML5' ? 'browser/browser' : 'local/local'}-report.json`);
-    assert.throws(() => verificationEnvironment(layout, {}, '/isolated/run/chrome'), /Both real builtin/);
-    assert.throws(() => verificationEnvironment({ ...layout, candidate: undefined }, builtins, '/isolated/run/chrome'), /canonical absolute/);
+    assert.throws(() => verificationEnvironment(layout, {}, chrome), /Both real builtin/);
+    assert.throws(() => verificationEnvironment({ ...layout, candidate: undefined }, builtins, chrome), /canonical absolute/);
     assert.throws(() => verificationLayout('/checkout/../checkout'), /canonical absolute/);
     assert.throws(() => verificationLayout('/checkout\nINJECTED=1'), /canonical absolute/);
 });
@@ -87,6 +91,11 @@ test('portable Node input is the reviewed official archive, not a setup-node or 
         { sha256: 'unverified' }, { sha256: lock.sha256.toUpperCase() }, { sha256: undefined },
         { files: ['bin/node'] }, { files: [...lock.files, 'bin/npm'] },
     ]) assert.throws(() => requireNodeLock({ ...lock, ...change }));
+    const windows = JSON.parse(await fs.readFile(new URL('../packaging/node-win32-lock.json', import.meta.url)));
+    assert.equal(requireNodeLock(windows), windows);
+    assert.equal(windows.url, 'https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip');
+    for (const change of [{ target: 'win-arm64' }, { files: ['bin/node', 'LICENSE', 'README.md'] },
+        { url: windows.url.replace('.zip', '.tar.xz') }]) assert.throws(() => requireNodeLock({ ...windows, ...change }));
 });
 
 test('missing, damaged or aliased Node archives fail before extraction without changing the input', async t => {
@@ -307,7 +316,7 @@ test('preparation refuses existing, overlapping and symlinked destinations witho
     await assert.rejects(fs.lstat(path.join(root, 'new-run')), { code: 'ENOENT' });
     await assert.rejects(requireFreshOutput(source, existing), /OUTPUT_CONFLICT/);
     for (const out of [source, path.join(source, 'build'), root]) await assert.rejects(requireFreshOutput(source, out), /outside the source/);
-    await fs.symlink(existing, path.join(root, 'alias'));
+    await fs.symlink(existing, path.join(root, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
     await assert.rejects(requireFreshOutput(source, path.join(root, 'alias/new-run')), /canonical/);
     assert.equal(await fs.readFile(path.join(existing, 'sentinel'), 'utf8'), 'untouched');
 });

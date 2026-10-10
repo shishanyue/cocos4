@@ -1,6 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ErrorCode, McpError, type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import { createWriteStream } from 'node:fs';
 import { z } from 'zod';
 import type { Application } from './app.js';
 
@@ -20,22 +21,34 @@ class BoundedStdioTransport extends StdioServerTransport {
 
 export async function serve(app: Application): Promise<void> {
     const server = new Server({ name: 'cocos4-devkit', version: '0.1.0' }, { capabilities: { tools: {}, resources: {} } });
-    const transport = new BoundedStdioTransport(process.stdin, process.stdout, { maxBufferSize: 65536 });
+    // Windows synchronous stdout writes must not block EOF and owned-job cleanup.
+    const output = process.platform === 'win32' ? createWriteStream('', { fd: 1, autoClose: false }) : process.stdout;
+    const transport = new BoundedStdioTransport(process.stdin, output, { maxBufferSize: 65536 });
     let finish!: () => void;
     const finished = new Promise<void>(resolve => { finish = resolve; });
     let closing: Promise<void> | undefined;
+    let outputFailed = false;
+    const blockedOutput = (): boolean => process.platform === 'win32' && (outputFailed || output.writableLength > 0);
+    const abortBlockedOutput = (): void => { if (blockedOutput()) process.kill(process.pid, 'SIGKILL'); };
     const shutdown = (): Promise<void> => {
         if (closing) return closing;
         closing = Promise.resolve().then(async () => {
-            const timer = setTimeout(() => process.exit(1), 10_000);
+            const timer = setTimeout(() => { abortBlockedOutput(); process.exit(1); }, 10_000);
             timer.unref();
-            try { await app.close(); await server.close(); }
+            let cleaned = false;
+            try { await app.close(); await server.close(); cleaned = true; }
             catch { process.stderr.write('cocos4: shutdown failed; private state was not marked successful.\n'); process.exitCode = 1; }
-            finally { clearTimeout(timer); finish(); }
+            finally {
+                // Windows process.exit waits for blocked filesystem writers. Once
+                // jobs and transport are closed, abandon incomplete output with code 1.
+                if (cleaned) { clearTimeout(timer); abortBlockedOutput(); finish(); }
+                else if (!blockedOutput()) { clearTimeout(timer); finish(); }
+            }
         });
         return closing;
     };
     const stop = (): void => { void shutdown(); };
+    const failOutput = (): void => { outputFailed = true; process.exitCode = 1; stop(); };
     const protocolParams = <S extends z.ZodTypeAny>(schema: S, value: unknown): z.output<S> => {
         const result = schema.safeParse(value);
         if (!result.success) throw new McpError(ErrorCode.InvalidParams, 'Invalid MCP request parameters.');
@@ -85,7 +98,7 @@ export async function serve(app: Application): Promise<void> {
     server.onerror = () => { process.stderr.write('cocos4: MCP transport/protocol error.\n'); stop(); };
     process.stdin.once('end', stop);
     process.stdin.once('error', stop);
-    process.stdout.once('error', stop);
+    output.once('error', failOutput);
     process.once('SIGINT', stop);
     process.once('SIGTERM', stop);
     try {
@@ -101,7 +114,7 @@ export async function serve(app: Application): Promise<void> {
         await shutdown();
         process.stdin.off('end', stop);
         process.stdin.off('error', stop);
-        process.stdout.off('error', stop);
+        output.off('error', failOutput);
         process.off('SIGINT', stop);
         process.off('SIGTERM', stop);
     }

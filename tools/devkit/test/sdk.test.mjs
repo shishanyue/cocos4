@@ -142,6 +142,15 @@ test('preparer uses only its own JSON5 dependency with a dependency-free engine 
     const tool = path.join(isolated, 'tool');
     await mkdir(path.join(tool, 'scripts'), { recursive: true });
     await cp(preparer, path.join(tool, 'scripts/prepare-sdk.mjs'));
+    if (process.platform === 'win32') {
+        // The qualified maintainer publisher is explicit; preparation cannot
+        // depend on a compiler, Python or any executable discovered via PATH.
+        for (const relative of ['scripts/build-publisher.mjs', 'scripts/build-supervisor-win32.mjs', 'runtime/publish-win32.c',
+            'build/host/cocos4-publish.exe', 'build/host/cocos4-publish.exe.build.json']) {
+            await mkdir(path.dirname(path.join(tool, relative)), { recursive: true });
+            await cp(path.join(devkit, relative), path.join(tool, relative));
+        }
+    }
     await mkdir(path.join(tool, 'node_modules'));
     assert.equal(require('json5/package.json').version, '2.2.3');
     await cp(path.dirname(require.resolve('json5/package.json')), path.join(tool, 'node_modules/json5'), { recursive: true });
@@ -160,7 +169,7 @@ test('preparation refuses empty, populated, file and symlink destinations withou
     for (const kind of ['empty', 'populated', 'file', 'symlink']) {
         const destination = path.join(temporary, `existing-${kind}`);
         if (kind === 'file') await writeFile(destination, 'keep');
-        else if (kind === 'symlink') await symlink(prepared, destination);
+        else if (kind === 'symlink') await symlink(prepared, destination, 'junction');
         else {
             await mkdir(destination);
             if (kind === 'populated') await writeFile(path.join(destination, 'sentinel'), 'keep');
@@ -187,20 +196,57 @@ test('atomic publisher itself rejects a newly created empty destination without 
     const destination = path.join(path.dirname(staging), 'destination with spaces-\u4e2d\u6587');
     // Simulate creation after the preparer's preflight, directly at publication.
     await mkdir(destination);
-    const before = await lstat(destination);
+    const before = await lstat(destination, { bigint: true });
     await assert.rejects(publishSdk(staging, destination), /OUTPUT_CONFLICT/);
-    assert.equal((await lstat(destination)).ino, before.ino);
-    assert.equal((await lstat(destination)).ctimeMs, before.ctimeMs);
+    assert.equal((await lstat(destination, { bigint: true })).ino, before.ino);
+    assert.equal((await lstat(destination, { bigint: true })).ctimeNs, before.ctimeNs);
     assert.deepEqual(await readdir(destination), []);
     assert.equal((await loadSdk(staging)).sdkId, sdk.sdkId);
     await rm(destination, { recursive: true });
-    const sourceInode = (await lstat(staging)).ino;
+    const sourceInode = (await lstat(staging, { bigint: true })).ino;
     await publishSdk(staging, destination);
-    assert.equal((await lstat(destination)).ino, sourceInode);
+    assert.equal((await lstat(destination, { bigint: true })).ino, sourceInode);
     await assert.rejects(lstat(staging), code('ENOENT'));
     assert.equal((await loadSdk(destination)).sdkId, sdk.sdkId);
     await assert.rejects(publishSdk(staging, path.join(path.dirname(staging), 'missing')), /ATOMIC_PUBLISH_FAILED/);
     await assert.rejects(lstat(path.join(path.dirname(staging), 'missing')), code('ENOENT'));
+});
+
+test('atomic publisher rejects existing files, populated directories and links at publication time', async () => {
+    for (const kind of ['file', 'populated', 'link']) {
+        const staging = await copy();
+        const destination = path.join(path.dirname(staging), 'occupied');
+        if (kind === 'file') await writeFile(destination, 'keep');
+        else if (kind === 'link') await symlink(prepared, destination, 'junction');
+        else { await mkdir(destination); await writeFile(path.join(destination, 'sentinel'), 'keep'); }
+        const before = await lstat(destination, { bigint: true });
+        await assert.rejects(publishSdk(staging, destination), /OUTPUT_CONFLICT|ATOMIC_PUBLISH_FAILED/);
+        const after = await lstat(destination, { bigint: true });
+        assert.equal(after.ino, before.ino);
+        assert.equal(after.ctimeNs, before.ctimeNs);
+        if (kind === 'file') assert.equal(await readFile(destination, 'utf8'), 'keep');
+        else if (kind === 'link') assert(after.isSymbolicLink());
+        else assert.deepEqual(await readdir(destination), ['sentinel']);
+        assert.equal((await loadSdk(staging)).sdkId, sdk.sdkId);
+    }
+});
+
+test('Windows preparation refuses a stale qualified publisher without publishing the pack', async t => {
+    if (process.platform !== 'win32') return t.skip('Windows helper provenance contract.');
+    const isolated = await mkdtemp(path.join(temporary, 'publisher-provenance-'));
+    for (const relative of ['scripts/prepare-sdk.mjs', 'scripts/build-publisher.mjs', 'scripts/build-supervisor-win32.mjs', 'runtime/publish-win32.c',
+        'build/host/cocos4-publish.exe', 'build/host/cocos4-publish.exe.build.json']) {
+        await mkdir(path.dirname(path.join(isolated, relative)), { recursive: true });
+        await cp(path.join(devkit, relative), path.join(isolated, relative));
+    }
+    await cp(path.dirname(require.resolve('json5/package.json')), path.join(isolated, 'node_modules/json5'), { recursive: true });
+    const executable = path.join(isolated, 'build/host/cocos4-publish.exe');
+    await writeFile(executable, Buffer.concat([await readFile(executable), Buffer.from('changed')]));
+    const destination = path.join(isolated, 'sdk');
+    await assert.rejects(run(process.execPath, [path.join(isolated, 'scripts/prepare-sdk.mjs'), '--engine-root', path.resolve(engine), '--out', destination]),
+        /ATOMIC_PUBLISH_UNAVAILABLE/);
+    await assert.rejects(lstat(destination), code('ENOENT'));
+    assert(!(await readdir(isolated)).some(name => name.startsWith('.cocos4-sdk-staging-')));
 });
 
 test('catalog pagination is complete and cursors bind every condition and instance', async () => {
@@ -460,16 +506,16 @@ test('reject stale sdkId, hash/size corruption, missing and unlisted files', asy
 
 test('reject symlink roots, ancestors, directories, files and special files without blocking', async () => {
     const rootLink = path.join(temporary, 'root-link');
-    await symlink(prepared, rootLink);
+    await symlink(prepared, rootLink, 'junction');
     await assert.rejects(loadSdk(rootLink), code('SDK_INCOMPLETE'));
     await assert.rejects(loadSdk(path.join(rootLink, 'docs', '..')), code('SDK_INCOMPLETE'));
     const ancestorLink = path.join(temporary, 'ancestor-link');
-    await symlink(path.dirname(prepared), ancestorLink);
+    await symlink(path.dirname(prepared), ancestorLink, 'junction');
     await assert.rejects(loadSdk(path.join(ancestorLink, path.basename(prepared))), code('SDK_INCOMPLETE'));
     for (const relative of ['manifest.json', 'docs', 'app/validate-bilibili.cjs']) {
         const directory = await copy();
         await rm(path.join(directory, relative), { recursive: true });
-        await symlink(path.join(prepared, relative), path.join(directory, relative));
+        await symlink(path.join(prepared, relative), path.join(directory, relative), relative === 'docs' ? 'junction' : 'file');
         await assert.rejects(loadSdk(directory), code('SDK_INCOMPLETE'));
     }
     const hardlinked = await copy();

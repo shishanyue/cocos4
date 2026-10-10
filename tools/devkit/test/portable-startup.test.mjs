@@ -6,19 +6,23 @@ import path from 'node:path';
 import { after, before, test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
-import { buildHostTool } from '../scripts/build-publisher.mjs';
+import { buildHostTool, buildHostToolWin32 } from '../scripts/build-publisher.mjs';
 import { hash, verifyInventory } from '../scripts/verify-portable.mjs';
 
 const execute = promisify(execFile);
 const devkit = fileURLToPath(new URL('../', import.meta.url));
+const windows = process.platform === 'win32';
+const launcherName = windows ? 'cocos4.exe' : 'cocos4';
+const nodeName = windows ? 'node.exe' : 'node';
 const releaseRoot = process.env.PORTABLE_STARTUP_RELEASE;
-const node = process.env.PORTABLE_STARTUP_NODE ?? (releaseRoot ? path.join(releaseRoot, 'runtime/node')
+const node = process.env.PORTABLE_STARTUP_NODE ?? (releaseRoot ? path.join(releaseRoot, 'runtime', nodeName)
     : process.version === 'v24.21.0' ? process.execPath : undefined);
-const host = process.platform === 'linux' && process.arch === 'x64';
-const portableSkip = !host ? 'Portable launcher requires Linux x64'
+const host = ['linux', 'win32'].includes(process.platform) && process.arch === 'x64';
+const portableSkip = !host ? 'Portable launcher requires Linux or Windows x64'
     : !node ? 'Set PORTABLE_STARTUP_NODE to pinned Node 24.21.0 or PORTABLE_STARTUP_RELEASE to a current package' : false;
-const cleanEnv = { PATH: '', LANG: 'C.UTF-8' };
-let root, compiled, fixture;
+const cleanEnv = { PATH: '', LANG: 'C.UTF-8', ...(windows ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.SystemRoot,
+    USERPROFILE: '', LOCALAPPDATA: '', APPDATA: '' } : {}) };
+let root, compiled, fixture, temporaryParent;
 
 async function writableDirectories(directory) {
     await fs.chmod(directory, 0o700);
@@ -40,7 +44,7 @@ async function snapshot(directory, relative = '', entries = []) {
 
 async function command(directory, args, { cwd = directory, env = cleanEnv } = {}) {
     try {
-        return { code: 0, ...await execute(path.join(directory, 'cocos4'), args,
+        return { code: 0, ...await execute(path.join(directory, launcherName), args,
             { cwd, env, timeout: 120000, maxBuffer: 1024 * 1024 }) };
     } catch (error) {
         assert.equal(typeof error.code, 'number', error.message);
@@ -60,29 +64,41 @@ function startupFailure(result, message) {
 
 before(async () => {
     if (!host) return;
-    root = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'cocos4-portable-startup-'));
+    // Windows TEMP may explicitly grant other principals mutation rights. The
+    // real helper must remain in a trusted chain; this test owns only its root.
+    temporaryParent = await fs.realpath(windows ? process.env.USERPROFILE : tmpdir());
+    root = await fs.mkdtemp(path.join(temporaryParent, 'cocos4-portable-startup-'));
     compiled = path.join(root, 'compiled');
     // Never refresh shared build/src or import a possibly stale application build.
     await execute(process.execPath, [path.join(devkit, 'node_modules/typescript/bin/tsc'),
         '--project', path.join(devkit, 'tsconfig.json'), '--outDir', compiled],
     { cwd: devkit, timeout: 120000, maxBuffer: 1024 * 1024 });
     await fs.writeFile(path.join(compiled, 'package.json'), '{"type":"module"}', { flag: 'wx' });
-    await fs.symlink(path.join(devkit, 'node_modules'), path.join(compiled, 'node_modules'));
+    await fs.symlink(path.join(devkit, 'node_modules'), path.join(compiled, 'node_modules'), windows ? 'junction' : 'dir');
+    if (windows) {
+        const { buildFsWin32 } = await import('../scripts/build-fs-win32.mjs');
+        const metadata = await buildFsWin32({ output: path.join(compiled, 'host/cocos4-fs.exe'), compiler: process.env.COCOS4_WINDOWS_COMPILER });
+        await fs.writeFile(path.join(compiled, 'host/fs.json'), JSON.stringify({ version: 1, platform: 'win32', arch: 'x64',
+            file: 'cocos4-fs.exe', bytes: metadata.bytes, sha256: metadata.binarySha256, sourceSha256: metadata.sourceSha256 }));
+    }
     if (portableSkip) return;
     assert(path.isAbsolute(node));
     assert.equal((await execute(node, ['--version'], { env: cleanEnv })).stdout.trim(), 'v24.21.0');
     fixture = path.join(root, 'incomplete-package');
     for (const name of ['app', 'runtime']) await fs.mkdir(path.join(fixture, name), { recursive: true });
-    await fs.copyFile(node, path.join(fixture, 'runtime/node'));
+    await fs.copyFile(node, path.join(fixture, 'runtime', nodeName));
     await fs.copyFile(path.join(devkit, 'packaging/launch.mjs'), path.join(fixture, 'app/launch.mjs'));
     await fs.copyFile(path.join(devkit, 'scripts/verify-portable.mjs'), path.join(fixture, 'app/verify-portable.mjs'));
-    await buildHostTool(path.join(devkit, 'packaging/launcher.c'), path.join(fixture, 'cocos4'), true);
+    if (windows) await buildHostToolWin32(path.join(devkit, 'packaging/launcher-win32.c'), path.join(fixture, launcherName),
+        { compiler: process.env.COCOS4_WINDOWS_COMPILER });
+    else await buildHostTool(path.join(devkit, 'packaging/launcher.c'), path.join(fixture, launcherName), true);
     // This fixture intentionally has no release/SDK manifest. It is never a runnable release.
 });
 
 after(async () => {
     if (root) {
         await writableDirectories(root);
+        assert(path.isAbsolute(root) && path.dirname(root) === temporaryParent && path.basename(root).startsWith('cocos4-portable-startup-'));
         await fs.rm(root, { recursive: true, force: true });
     }
 });
@@ -142,9 +158,9 @@ test('packaged launcher help and strict arguments need no HOME; invalid grants/c
             ['relative workspace', ['doctor', '--workspace', '.'], /canonical absolute/],
             ['SDK workspace', ['doctor', '--workspace', fixture, '--state-root', state], /must be disjoint/],
             ['workspace state', ['tools', '--workspace', workspace, '--state-root', workspace], /must be disjoint/],
-            ['nested state', ['tools', '--workspace', workspace, '--state-root', `${workspace}/state`], /must be disjoint/],
-            ['release state', ['tools', '--workspace', workspace, '--state-root', `${fixture}/state`], /must be disjoint/],
-            ['missing state env', ['doctor', '--workspace', workspace], /HOME must be/],
+            ['nested state', ['tools', '--workspace', workspace, '--state-root', path.join(workspace, 'state')], /must be disjoint/],
+            ['release state', ['tools', '--workspace', workspace, '--state-root', path.join(fixture, 'state')], /must be disjoint/],
+            ['missing state env', ['doctor', '--workspace', workspace], windows ? /USERPROFILE must be/ : /HOME must be/],
             ['relative state', ['doctor', '--workspace', workspace, '--state-root', 'state'], /canonical absolute/],
             ['AI test grant', ['ai', '--execute-tests', 'true'], /Unknown, duplicate/],
             ['AI SDK override', ['ai', '--sdk-root', '/tmp/sdk'], /--sdk-root is managed/],
@@ -156,10 +172,11 @@ test('packaged launcher help and strict arguments need no HOME; invalid grants/c
         for (const args of [['mcp'], ['tools'], ['call', 'cocos4_doctor'], ['ai']]) {
             startupFailure(await command(fixture, [...args, '--state-root', state]), /must be disjoint/);
         }
-        for (const env of [{ HOME: 'relative' }, { HOME: '/tmp', XDG_STATE_HOME: 'relative' }]) {
+        for (const env of windows ? [{ USERPROFILE: 'relative' }, { USERPROFILE: root, LOCALAPPDATA: 'relative' }]
+            : [{ HOME: 'relative' }, { HOME: '/tmp', XDG_STATE_HOME: 'relative' }]) {
             startupFailure(await command(fixture, ['tools', '--workspace', workspace], { env: { ...cleanEnv, ...env } }), /canonical absolute/);
         }
-        await fs.symlink(workspace, path.join(root, 'workspace-link'));
+        await fs.symlink(workspace, path.join(root, 'workspace-link'), windows ? 'junction' : 'dir');
         startupFailure(await command(fixture, ['doctor', '--workspace', path.join(root, 'workspace-link'), '--state-root', state]), /aliases and symlinks/);
         await fs.writeFile(path.join(root, 'not-directory'), 'data');
         startupFailure(await command(fixture, ['doctor', '--workspace', path.join(root, 'not-directory'), '--state-root', state]), /Workspace must already exist/);
@@ -181,7 +198,7 @@ test('current real package: readonly relocation, SDK-only doctor, explicit-works
         assert(path.isAbsolute(releaseRoot));
         const original = await verifyInventory(releaseRoot);
         for (const [source, delivered] of [['packaging/launch.mjs', 'app/launch.mjs'],
-            ['scripts/verify-portable.mjs', 'app/verify-portable.mjs']]) {
+            ['scripts/verify-portable.mjs', 'app/verify-portable.mjs'], ['packaging/AGENTS.md', 'AGENTS.md']]) {
             assert.deepEqual(await fs.readFile(path.join(releaseRoot, delivered)), await fs.readFile(path.join(devkit, source)), `Stale package: ${delivered}`);
         }
         for (const name of await fs.readdir(path.join(compiled, 'src'))) {
@@ -210,7 +227,7 @@ test('current real package: readonly relocation, SDK-only doctor, explicit-works
             assert.equal(data.releaseId, original.releaseId);
             assert.equal(data.sdkId, original.sdk.sdkId);
             assert.deepEqual(reportSchema.parse(data.report), data.report);
-            assert.deepEqual(data.report.validationLevels, ['manifest-schema', 'payload-sha256', 'linux-pinned-reads', 'release-inventory', 'bundled-node', 'host-abi']);
+            assert.deepEqual(data.report.validationLevels, ['manifest-schema', 'payload-sha256', windows ? 'windows-pinned-reads' : 'linux-pinned-reads', 'release-inventory', 'bundled-node', 'host-abi']);
             assert(data.report.items.some(item => item.name === 'Host ABI' && item.status === 'passed'));
             assert(data.report.items.some(item => item.name === 'Release acceptance' && item.status === 'warning'));
             assert(data.report.items.some(item => item.name === 'Workspace and permissions' && /no workspace authorized/.test(item.message)));
@@ -232,7 +249,7 @@ test('current real package: readonly relocation, SDK-only doctor, explicit-works
         const page = JSON.parse(explicit.stdout).data;
         assert.equal(page.job.state, 'succeeded');
         assert.equal(page.job.releaseId, original.releaseId);
-        assert(page.report.validationLevels.includes('linux-pinned-reads'));
+        assert(page.report.validationLevels.includes(windows ? 'windows-pinned-reads' : 'linux-pinned-reads'));
         assert(page.report.items.some(item => item.name === 'Test execution' && /disabled/.test(item.message)));
         const stateBefore = await snapshot(state);
         await assert.rejects(execute(process.execPath, [path.join(relocated, 'app/src/cli.js'), 'doctor',
@@ -257,11 +274,11 @@ test('current real package: readonly relocation, SDK-only doctor, explicit-works
         assert.deepEqual(await snapshot(relocated), before);
 
         // Only damage our private copy, never the supplied release or its evidence.
-        const damaged = path.join(relocated, 'docs/getting-started.md');
+        const damaged = path.join(relocated, 'AGENTS.md');
         await fs.chmod(damaged, 0o600);
         await fs.appendFile(damaged, '\nDAMAGED TEST COPY\n');
         await fs.chmod(damaged, 0o444);
-        startupFailure(await command(relocated, ['doctor']), /docs\/getting-started.md/);
+        startupFailure(await command(relocated, ['doctor']), /AGENTS\.md/);
         assert.equal((await verifyInventory(releaseRoot)).releaseId, original.releaseId);
         t.diagnostic(`Verified current packaged commands for ${original.releaseId}; SDK ${original.sdk.sdkId}. No browser/model/vendor/device execution.`);
     });

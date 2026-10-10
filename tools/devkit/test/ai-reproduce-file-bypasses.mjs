@@ -3,14 +3,16 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const devkit = fileURLToPath(new URL('../', import.meta.url));
+assert.equal(process.platform, 'linux', 'The retained pre-fix application snapshot and its bypass evidence are Linux-specific.');
 const build = process.argv[2];
 assert.ok(build && path.isAbsolute(build));
 const evidence = await fs.mkdtemp(path.join(devkit, 'build/ai-bypass-before-'));
-const root = await fs.mkdtemp('/tmp/opencode/cocos4-ai-before-');
+const root = await fs.mkdtemp(path.join(tmpdir(), 'cocos4-ai-before-'));
 const workspace = path.join(root, 'workspace');
 const home = path.join(root, 'home');
 await fs.mkdir(workspace); await fs.mkdir(home);
@@ -38,7 +40,7 @@ try {
             const timer = setTimeout(() => child.kill('SIGKILL'), 120000);
             child.stdout.on('data', data => { stdout += data; });
             child.stderr.on('data', data => { stderr += data; });
-            child.once('error', reject);
+            child.once('error', error => { clearTimeout(timer); reject(error); });
             child.once('close', (code, signal) => { clearTimeout(timer); resolve({ name, args, code, signal, stdout, stderr }); });
         });
         await fs.writeFile(path.join(evidence, `${name}.json`), JSON.stringify(result, null, 2), { flag: 'wx' });

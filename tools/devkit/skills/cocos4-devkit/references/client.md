@@ -1,11 +1,12 @@
 # Client Boundaries
 
-The launcher starts a new, already installed OpenCode session. Only reviewed
-OpenCode `1.18.21` on non-root Linux x64 is currently accepted. It validates the
+The launcher starts a new, already installed OpenCode session using reviewed
+OpenCode `1.18.21`. Historical client acceptance covers non-root Linux x64;
+Windows client/model acceptance must be checked separately. It validates the
 generated configuration using a bundled snapshot of the official JSON Schema;
 runtime startup never fetches schemas or downloads a client.
 
-Use the kit's `cocos4` entrypoint with explicit absolute paths:
+Use the kit's `cocos4` (Linux) or `cocos4.exe` (Windows) entrypoint with explicit absolute paths:
 
 ```sh
 /absolute/path/to/kit/cocos4 ai --client opencode --executable /absolute/path/to/opencode \
@@ -17,7 +18,7 @@ The portable launcher selects its own SDK and rejects `--sdk-root`. The installe
 client must be selected with `--executable`; it is not discovered on PATH or
 downloaded. The workspace must exist. Release, workspace and private state must be disjoint.
 State must be user-owned and private; the launcher never fixes permissions on an
-existing directory. Root and unverified hosts fail closed. No arguments after
+existing directory. Linux root and unsupported hosts fail closed. No arguments after
 `--`, arbitrary client flags, shell commands, prompts, resume flags or automatic
 model requests are accepted. Select develop and preview explicitly when needed:
 
@@ -59,11 +60,13 @@ files, special files, traversal and protected secret/client-configuration names.
 This applies to reads, existing files and every new destination, not just a startup
 scan. SDK and skills are read-only. The workspace cannot overlap the bundled app,
 skills, SDK, state or client/runtime executable. Directory ancestors must be owned
-by the user or root and not writable by other users, except root-owned sticky
-temporary directories. Linux procfs and its descriptor paths are required.
+by trusted principals and not writable by other users. Linux permits root-owned
+sticky temporary directories and requires procfs descriptor paths. Windows uses
+local drive paths, rejects reparse points/UNC/alternate streams, and verifies ACLs
+with the bundled filesystem helper; private state belongs to the current user.
 
-Each operation opens directories component by component with `O_NOFOLLOW`, uses
-pinned descriptors for subsequent IO, checks root/inode/link-count identity and
+Each operation pins directories component by component (`O_NOFOLLOW` descriptors
+on Linux, protected handles on Windows), checks root/file/link-count identity and
 rechecks directory locations and file versions. Reads release no text after a
 detected replacement race. Writes publish new inodes without writing through an
 existing file, so a late symlink or hardlink cannot redirect a content write.
@@ -123,9 +126,10 @@ Updates, model-list fetches, LSP downloads, external plugins, sharing and snapsh
 are disabled. Repository discovery is disabled in this child so OpenCode does not
 write a project-ID cache into `.git` or expand permissions to a parent worktree.
 AI inference may still require the user's provider network connection; this is not a promise
-that online models work offline. The MCP command uses the shipped static
-`cocos4-mcp-launch` helper before the kit's absolute Node/CLI paths. The helper
-has no dynamic loader and constructs a fixed minimal environment, so provider
+that online models work offline. The MCP command uses the shipped
+`cocos4-mcp-launch` (Linux) or `cocos4-mcp-launch.exe` (Windows) before the kit's
+absolute Node/CLI paths. The Linux helper has no dynamic loader. Both construct
+a fixed minimal environment, so provider
 secrets and Node/loader injection variables are not inherited by MCP. AI requires
 the helper and its verified integrity report; there is no host `env` fallback,
 runtime compilation, arbitrary environment assignment or argument passthrough.
@@ -143,6 +147,8 @@ Other MCP clients should launch the kit's absolute entrypoint as an argument arr
 "--state-root", state, "--mode", "read-only"]`. This retains release inventory
 verification and the self-locating, environment-filtering launcher. Configure a
 minimal child environment before starting it.
+On Windows, use the absolute `cocos4.exe` path in that argument array and ordinary
+Windows drive paths for workspace and state; no `cmd.exe` wrapper is needed.
 Never launch through npm/npx or a shell. MCP stdout must remain protocol-only.
 Give the client the entire bundled `skills` directory separately; other clients
 are not promised to recognize OpenCode's `skills.paths` setting automatically.

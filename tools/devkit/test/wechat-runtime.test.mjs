@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { after, before, test } from 'node:test';
@@ -24,7 +25,7 @@ let output;
 let files;
 
 before(async () => {
-    temporary = await mkdtemp('/tmp/opencode/wechat-bootstrap-');
+    temporary = await realpath(await mkdtemp(join(tmpdir(), 'wechat bootstrap-')));
     output = join(temporary, 'bootstrap');
     await mkdir(output);
     await cp(join(runtime, 'fixture'), join(output, 'template'), { recursive: true });

@@ -2,18 +2,29 @@ import assert from 'node:assert/strict';
 import { before, test } from 'node:test';
 import * as fs from 'node:fs/promises';
 import promises from 'node:fs/promises';
-import { constants, writeFileSync } from 'node:fs';
+import { constants, renameSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import Module, { syncBuiltinESMExports } from 'node:module';
+import { privateFixtureTree } from './fixtures/windows-private.mjs';
 
 const build = new URL(process.env.GAME_TEST_BUILD_PREFIX ?? '../build/src/', import.meta.url);
 const { runGameOperation, commitGameOutput } = await import(new URL('game.js', build));
 const { withGameSnapshot, publishGameOutput } = await import(new URL('workspace.js', build));
 const { artifactInventorySchema, reportSchema } = await import(new URL('contracts.js', build));
 const { loadSdk, hash } = await import(new URL('sdk.js', build));
+const { enforceWindowsPrivate, verifyWindowsTrust } = process.platform === 'win32'
+    ? await import(new URL('windows-fs.js', build)) : {};
+const execute = promisify(execFile);
+const directoryLink = (target, link) => fs.symlink(target, link, process.platform === 'win32' ? 'junction' : 'dir');
+async function grantOtherUsersRead(file) {
+    const icacls = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32/icacls.exe');
+    await execute(icacls, [file, '/grant', '*S-1-5-32-545:(R)'], { windowsHide: true });
+}
 const sdkRoot = process.env.GAME_OPERATION_SDK_ROOT ?? fileURLToPath(new URL('../build/game-sdk', import.meta.url));
 const legacyRoot = path.resolve(process.env.LEGACY_HTML5_SDK_ROOT ?? fileURLToPath(new URL('../build/legacy-game-sdk', import.meta.url)));
 let sdk;
@@ -36,12 +47,14 @@ const absent = filename => assert.rejects(fs.lstat(filename), error => error.cod
 async function fixture(t, selectedSdk = sdk) {
     const root = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'cocos4-game-operations-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
+    if (process.platform === 'win32') await enforceWindowsPrivate(root);
     const workspace = path.join(root, 'workspace');
     const state = path.join(root, 'state');
     const artifactsRoot = path.join(state, 'artifacts');
     await fs.mkdir(workspace);
     await fs.mkdir(state, { mode: 0o700 });
     await fs.mkdir(artifactsRoot, { mode: 0o700 });
+    if (process.platform === 'win32') for (const directory of [workspace, state, artifactsRoot]) await enforceWindowsPrivate(directory);
     return { root, workspace, state, artifactsRoot, sdk: selectedSdk };
 }
 function request(paths, operation, input, extra = {}) {
@@ -90,7 +103,13 @@ test('real 2D and 3D SDK starters create editable projects, genuinely typecheck,
         assert.deepEqual(paths.createReport.profile, profileIdentity);
         assert.equal(JSON.parse(original.get('package.json')).name, 'my-test-game');
         assert.deepEqual(JSON.parse(original.get('tsconfig.json')).compilerOptions.paths, { cc: ['./types/cc.d.ts'] });
-        for (const name of original.keys()) assert.equal((await fs.stat(path.join(paths.project, name))).mode & 0o777, 0o600);
+        for (const name of original.keys()) {
+            const file = path.join(paths.project, name);
+            if (process.platform === 'win32') {
+                await verifyWindowsTrust(file, true);
+                await fs.access(file, constants.W_OK);
+            } else assert.equal((await fs.stat(file)).mode & 0o777, 0o600);
+        }
         await fs.appendFile(path.join(paths.project, 'src/main.ts'), '\nexport const gameRevision = "ACTUAL_USER_GAME_20260918";\n');
         await fs.writeFile(path.join(paths.project, 'assets/rules.json'), '{"title":"USER ASSET","restart":"R"}\n');
         await fs.writeFile(path.join(paths.project, 'assets/new.txt'), 'new user asset');
@@ -307,7 +326,7 @@ test('a shadowed emitted exporter cannot forge evidence for an implemented sourc
         let intercepted = false;
         // Corrupt only disposable emitted bytes, never SDK files or source inputs.
         promises.writeFile = async (filename, bytes, ...args) => {
-            if (String(filename).endsWith('/compiled/main.js')) {
+            if (path.basename(String(filename)) === 'main.js' && path.basename(path.dirname(String(filename))) === 'compiled') {
                 intercepted = true;
                 bytes = `System.register([], function (_export, _context) {
     function decoy(_export) { _export("start", async function () {}); }
@@ -452,7 +471,7 @@ test('compiler dependency resolution cannot escape the private closure to engine
     const original = Module._resolveFilename;
     let redirected = false;
     Module._resolveFilename = function (request, ...args) {
-        if (request.endsWith('/node_modules/typescript/lib/typescript.js')) { redirected = true; return outside; }
+        if (request.endsWith(path.join('node_modules', 'typescript', 'lib', 'typescript.js'))) { redirected = true; return outside; }
         return original.call(this, request, ...args);
     };
     try {
@@ -496,14 +515,14 @@ test('project publication never replaces an existing directory/file/symlink and 
     for (const kind of ['empty-directory', 'file', 'symlink']) {
         if (kind === 'empty-directory') await fs.mkdir(destination);
         else if (kind === 'file') await fs.writeFile(destination, 'KEEP USER DATA');
-        else await fs.symlink(paths.root, destination);
+        else await directoryLink(paths.root, destination);
         await assert.rejects(commitGameOutput(job, job, report), code('OUTPUT_CONFLICT'));
         if (kind === 'file') assert.equal(await fs.readFile(destination, 'utf8'), 'KEEP USER DATA');
         await fs.rm(destination, { recursive: true });
         assert((await fs.stat(path.join(job.staging, 'output'))).isDirectory());
     }
     await fs.rmdir(nested);
-    await fs.symlink(paths.root, nested);
+    await directoryLink(paths.root, nested);
     await assert.rejects(commitGameOutput(job, job, report), code('PATH_OUTSIDE_WORKSPACE'));
     await absent(path.join(paths.root, 'new-game'));
 });
@@ -521,9 +540,11 @@ test('parent rejects payload/hash/inventory tampering and artifact destination c
     await fs.writeFile(main, 'TAMPERED');
     await assert.rejects(commitGameOutput(job, job, report), code('ARTIFACT_INVALID'));
     await fs.writeFile(main, original);
-    await fs.chmod(main, 0o644);
+    if (process.platform === 'win32') await grantOtherUsersRead(main);
+    else await fs.chmod(main, 0o644);
     await assert.rejects(commitGameOutput(job, job, report), code('ARTIFACT_INVALID'));
-    await fs.chmod(main, 0o600);
+    if (process.platform === 'win32') await enforceWindowsPrivate(main);
+    else await fs.chmod(main, 0o600);
     await fs.mkdir(path.join(output, 'empty-unlisted'), { mode: 0o700 });
     await assert.rejects(commitGameOutput(job, job, report), code('ARTIFACT_INVALID'));
     await fs.rmdir(path.join(output, 'empty-unlisted'));
@@ -553,7 +574,7 @@ test('snapshot primitives reject project symlinks/hardlinks/private files and un
     await fs.writeFile(path.join(trusted, 'compiler.cjs'), 'trusted');
     const inventory = { root: trusted, files: [{ path: 'compiler.cjs', bytes: 7, sha256: hash('trusted') }] };
     const snapshot = (staging = path.join(paths.state, randomUUID())) => withGameSnapshot(paths.workspace, '.', staging, inventory, async () => 'safe');
-    await fs.symlink('/etc/passwd', path.join(paths.workspace, 'file'));
+    await fs.symlink(path.join(trusted, 'compiler.cjs'), path.join(paths.workspace, 'file'), 'file');
     await assert.rejects(snapshot(), code('PATH_OUTSIDE_WORKSPACE'));
     await fs.unlink(path.join(paths.workspace, 'file'));
     await fs.link(path.join(trusted, 'compiler.cjs'), path.join(paths.workspace, 'file'));
@@ -564,9 +585,10 @@ test('snapshot primitives reject project symlinks/hardlinks/private files and un
     await fs.unlink(path.join(paths.workspace, '.env'));
     const publicState = path.join(paths.root, 'public-state');
     await fs.mkdir(publicState, { mode: 0o755 });
+    if (process.platform === 'win32') await grantOtherUsersRead(publicState);
     await assert.rejects(snapshot(publicState), code('PERMISSION_DENIED'));
     await assert.rejects(snapshot(path.join(paths.workspace, 'state')), code('PERMISSION_DENIED'));
-    await fs.symlink(paths.state, path.join(paths.root, 'state-link'));
+    await directoryLink(paths.state, path.join(paths.root, 'state-link'));
     await assert.rejects(snapshot(path.join(paths.root, 'state-link', 'job')), code('PATH_OUTSIDE_WORKSPACE'));
 });
 
@@ -576,6 +598,7 @@ test('atomic publication uses inherited no-follow pins: destination and ancestor
     await fs.mkdir(staging, { mode: 0o700 });
     await fs.mkdir(path.join(staging, 'output'), { mode: 0o700 });
     await fs.writeFile(path.join(staging, 'output/file'), 'payload', { mode: 0o600 });
+    await privateFixtureTree(staging);
     const parent = path.join(paths.workspace, 'parent');
     await fs.mkdir(parent);
     const context = { ...paths, staging };
@@ -583,6 +606,22 @@ test('atomic publication uses inherited no-follow pins: destination and ancestor
         writeFileSync(path.join(parent, 'game'), 'CONCURRENT USER FILE');
     }), code('OUTPUT_CONFLICT'));
     assert.equal(await fs.readFile(path.join(parent, 'game'), 'utf8'), 'CONCURRENT USER FILE');
+    await fs.unlink(path.join(parent, 'game'));
+    if (process.platform === 'win32') {
+        // The Windows backend holds non-delete-shared leases. A concurrent
+        // ancestor rename is prevented while the original output is published.
+        let attempted = false;
+        await publishGameOutput(context, { project: 'parent/game' }, files => {
+            attempted = true;
+            assert.equal(files.get('file').toString(), 'payload');
+            assert.throws(() => renameSync(parent, path.join(paths.workspace, 'moved')), error =>
+                ['EPERM', 'EACCES', 'EBUSY'].includes(error.code));
+        });
+        assert(attempted);
+        assert.equal(await fs.readFile(path.join(parent, 'game/file'), 'utf8'), 'payload');
+        await absent(path.join(paths.workspace, 'moved'));
+        return;
+    }
     const original = promises.open;
     let swapped = false;
     promises.open = async (filename, flags, ...args) => {

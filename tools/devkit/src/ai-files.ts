@@ -2,6 +2,7 @@
 import fs, { constants as C, type BigIntStats } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { acquireWindowsPath, validateWindowsPath, type WindowsPathLease } from './windows-fs.js';
 
 type Root = { path: string; dev: string; ino: string };
 export type FilePolicy = { workspace: Root; readable: Root[]; mode: 'read-only' | 'develop' };
@@ -18,8 +19,16 @@ const inode = (s: BigIntStats): string => `${s.dev}:${s.ino}`;
 const contentsVersion = (s: BigIntStats): string => `${inode(s)}:${s.size}:${s.mtimeNs}:${s.mode}:${s.uid}:${s.gid}`;
 const version = (s: BigIntStats): string => `${contentsVersion(s)}:${s.nlink}:${s.ctimeNs}`;
 const fdPath = (fd: number): string => `/proc/self/fd/${fd}`;
+const windows = process.platform === 'win32';
+const pathKey = (filename: string): string => windows ? filename.toLowerCase() : filename;
+const samePath = (left: string, right: string): boolean => pathKey(left) === pathKey(right);
+const contains = (root: string, filename: string): boolean => {
+    const relative = path.relative(root, filename);
+    return !relative || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+};
 
 function safeName(filename: string): boolean {
+    filename = windows ? filename.replaceAll('\\', '/') : filename;
     return !filename.split('/').some(part => /^(?:\.env(?:\..*)?|\.envrc|\.git(?:-credentials)?|\.ssh|\.gnupg|\.aws|\.azure|\.npmrc|\.pypirc|\.netrc|\.opencode|\.claude|\.agents|\.config|opencode\.jsonc?|credentials.*|secrets.*|id_rsa.*|id_ed25519.*|\.cocos4-ai-.*)$/i.test(part)
         || /\.(?:pem|key|p12|pfx|keystore)$/i.test(part)) && !filename.toLowerCase().includes('/.local/share/opencode');
 }
@@ -27,11 +36,12 @@ function safeName(filename: string): boolean {
 export function captureFilePolicy(workspace: string, sdk: string, skills: string, mode: FilePolicy['mode']): FilePolicy {
     const readable = [workspace, sdk, skills].map(filename => {
         const stat = fs.lstatSync(filename, { bigint: true });
-        if (!stat.isDirectory() || fs.realpathSync(filename) !== filename) fail('DENIED', 'Noncanonical tool root.');
+        if (!stat.isDirectory() || !samePath(fs.realpathSync(filename), filename)) fail('DENIED', 'Noncanonical tool root.');
+        if (windows) validateWindowsPath(filename);
         return { path: filename, dev: String(stat.dev), ino: String(stat.ino) };
     });
-    if (readable.slice(1).some(root => root.path === workspace || root.path.startsWith(`${workspace}/`)
-        || workspace.startsWith(`${root.path}/`))) fail('DENIED', 'Workspace and read-only roots must be disjoint.');
+    if (readable.slice(1).some(root => contains(workspace, root.path)
+        || contains(root.path, workspace))) fail('DENIED', 'Workspace and read-only roots must be disjoint.');
     return { workspace: readable[0], readable, mode };
 }
 
@@ -109,24 +119,30 @@ function patchContent(original: string, chunks: Chunk[]): string {
 }
 
 export function createFileTools(input: FilePolicy) {
-    if (process.platform !== 'linux' || !process.getuid || process.getuid() === 0) {
-        fail('DENIED', 'Safe client file tools require non-root Linux with procfs.');
+    if (!(windows && process.arch === 'x64') && (process.platform !== 'linux' || !process.getuid || process.getuid() === 0)) {
+        fail('DENIED', 'Safe client file tools require Windows x64 directory leases or non-root Linux with procfs.');
     }
     const policy: FilePolicy = JSON.parse(JSON.stringify(input));
     const authorize = (value: string, write: boolean): { filename: string; root: Root } => {
-        if (!value || value.length > 4096 || /[\x00-\x1f\x7f\\]/.test(value) || value.split('/').includes('..')) {
+        if (!value || value.length > 4096 || /[\x00-\x1f\x7f]/.test(value)
+            || (value.includes('\\') && (!windows || !path.isAbsolute(value))) || value.split(/[\\/]/).includes('..')
+            || (windows && value.includes(':') && !/^[a-z]:[\\/]/i.test(value))) {
             return fail('DENIED', 'Invalid file path.');
         }
         const filename = path.resolve(policy.workspace.path, value);
+        if (windows) {
+            try { validateWindowsPath(filename); } catch { return fail('DENIED', 'Invalid Windows file path.'); }
+        }
         const roots = write ? [policy.workspace] : policy.readable;
-        const root = roots.find(item => filename === item.path || filename.startsWith(`${item.path}/`));
-        if (!root || !safeName(filename) || (write && (policy.mode !== 'develop' || filename === root.path))) {
+        const root = roots.find(item => contains(item.path, filename));
+        if (!root || !safeName(filename) || (write && (policy.mode !== 'develop' || samePath(filename, root.path)))) {
             return fail('DENIED', 'File path or operation is outside the startup permissions.');
         }
         return { filename, root };
     };
 
-    function perform(kind: 'read' | 'write' | 'edit' | 'apply_patch', args: Record<string, unknown>, changes: Change[]) {
+    function perform(kind: 'read' | 'write' | 'edit' | 'apply_patch', args: Record<string, unknown>, changes: Change[],
+        leases: Map<string, WindowsPathLease> = new Map()) {
         type Dir = { fd: number; filename: string; stamp: string };
         type Pin = { filename: string; entry: string; parent: Dir; fd?: number; before?: BigIntStats; directory?: Dir };
         type Mutation = { pin: Pin; after?: string; stage?: string; staged?: BigIntStats;
@@ -144,29 +160,34 @@ export function createFileTools(input: FilePolicy) {
             try { return fs.lstatSync(entry, { bigint: true }); } catch (error) { if (!absent(error)) throw error; }
         };
         function trustedDirectory(stat: BigIntStats): boolean {
+            if (windows) return stat.isDirectory(); // Native leases enforce owner, ACL and reparse checks.
             return stat.isDirectory() && (stat.uid === 0n || stat.uid === BigInt(process.getuid!()))
                 && (!(stat.mode & 0o022n) || !!(stat.uid === 0n && (stat.mode & 0o1000n)));
         }
         function directory(filename: string): Dir {
-            const cached = dirs.get(filename);
+            const cached = dirs.get(pathKey(filename));
             if (cached) return cached;
             if (dirs.size > 512) return fail('INVALID', 'Directory budget exceeded.');
-            const parent = filename === '/' ? undefined : directory(path.dirname(filename));
-            const entry = parent ? `${fdPath(parent.fd)}/${path.basename(filename)}` : '/';
-            const fd = fs.openSync(entry, C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW | C.O_NONBLOCK);
+            const parent = windows || filename === '/' ? undefined : directory(path.dirname(filename));
+            const lease = leases.get(pathKey(filename));
+            if (windows && !lease) return fail('DENIED', 'A Windows directory has no verified lease.');
+            const entry = windows ? lease!.absolute : parent ? `${fdPath(parent.fd)}/${path.basename(filename)}` : '/';
+            const fd = fs.openSync(entry, windows ? C.O_RDONLY : C.O_RDONLY | C.O_DIRECTORY | C.O_NOFOLLOW | C.O_NONBLOCK);
             handles.push(fd);
             const stat = fs.fstatSync(fd, { bigint: true });
             if (!trustedDirectory(stat)) {
                 return fail('DENIED', 'Directories must be trusted and not writable by other users.');
             }
             const dir = { fd, filename, stamp: inode(stat) };
-            dirs.set(filename, dir);
+            dirs.set(pathKey(filename), dir);
             return dir;
         }
         function checkDirs(): void {
             for (const dir of dirs.values()) {
                 const stat = fs.fstatSync(dir.fd, { bigint: true });
-                if (!trustedDirectory(stat) || inode(stat) !== dir.stamp || fs.readlinkSync(fdPath(dir.fd)) !== dir.filename) {
+                const canonical = windows ? fs.realpathSync(dir.filename) : fs.readlinkSync(fdPath(dir.fd));
+                if (!trustedDirectory(stat) || inode(stat) !== dir.stamp || !samePath(canonical, dir.filename)
+                    || (windows && inode(fs.lstatSync(dir.filename, { bigint: true })) !== dir.stamp)) {
                     fail('CHANGED', 'A pinned directory moved; refusing path-based fallback.');
                 }
             }
@@ -180,10 +201,10 @@ export function createFileTools(input: FilePolicy) {
         function pin(value: string, write: boolean): Pin {
             const { filename, root } = authorize(value, write);
             const anchored = rootDir(root);
-            if (filename === root.path) return { filename, entry: fdPath(anchored.fd), parent: anchored, directory: anchored };
+            if (samePath(filename, root.path)) return { filename, entry: windows ? anchored.filename : fdPath(anchored.fd), parent: anchored, directory: anchored };
             const parent = directory(path.dirname(filename));
             checkDirs();
-            const entry = `${fdPath(parent.fd)}/${path.basename(filename)}`;
+            const entry = windows ? path.join(parent.filename, path.basename(filename)) : `${fdPath(parent.fd)}/${path.basename(filename)}`;
             const before = optionalStat(entry);
             if (!before) return { filename, entry, parent };
             if (before.isDirectory() && !write) return { filename, entry, parent, directory: directory(filename) };
@@ -192,7 +213,7 @@ export function createFileTools(input: FilePolicy) {
             }
             inputBytes += Number(before.size);
             if (inputBytes > MAX_BATCH_BYTES) return fail('INVALID', 'Transaction input byte budget exceeded.');
-            const fd = fs.openSync(entry, C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK);
+            const fd = fs.openSync(entry, windows ? C.O_RDONLY : C.O_RDONLY | C.O_NOFOLLOW | C.O_NONBLOCK);
             handles.push(fd);
             if (version(fs.fstatSync(fd, { bigint: true })) !== version(before)) fail('CHANGED', 'File changed while opening.');
             checkDirs();
@@ -227,7 +248,7 @@ export function createFileTools(input: FilePolicy) {
         };
         try {
             const workspace = rootDir(policy.workspace);
-            const lockEntry = `${fdPath(workspace.fd)}/${LOCK}`;
+            const lockEntry = windows ? path.join(workspace.filename, LOCK) : `${fdPath(workspace.fd)}/${LOCK}`;
             if (kind === 'read') {
                 if (optionalStat(lockEntry)) fail('BUSY', 'A file transaction or recovery lock is present.');
                 const item = pin(args.filePath as string, false);
@@ -236,7 +257,7 @@ export function createFileTools(input: FilePolicy) {
                 if (item.directory) {
                     const before = fs.fstatSync(item.directory.fd, { bigint: true });
                     const entries: string[] = [];
-                    const stream = fs.opendirSync(fdPath(item.directory.fd));
+                    const stream = fs.opendirSync(windows ? item.directory.filename : fdPath(item.directory.fd));
                     try {
                         for (let entry = stream.readSync(); entry; entry = stream.readSync()) {
                             if (entries.length >= 10000) fail('INVALID', 'Directory entry budget exceeded.');
@@ -245,7 +266,7 @@ export function createFileTools(input: FilePolicy) {
                     } finally { stream.closeSync(); }
                     lines = entries.sort().flatMap(name => {
                         if (/[\x00-\x1f\x7f\\]/.test(name) || !safeName(path.join(item.filename, name))) return [];
-                        const stat = optionalStat(`${fdPath(item.directory!.fd)}/${name}`);
+                        const stat = optionalStat(windows ? path.join(item.directory!.filename, name) : `${fdPath(item.directory!.fd)}/${name}`);
                         return stat?.isDirectory() ? [`${name}/`] : stat?.isFile() && stat.nlink === 1n ? [name] : [];
                     });
                     if (version(before) !== version(fs.fstatSync(item.directory.fd, { bigint: true }))) fail('CHANGED', 'Directory changed during inspection.');
@@ -267,8 +288,8 @@ export function createFileTools(input: FilePolicy) {
             const pins = new Map<string, Pin>();
             for (const change of changes) for (const value of [change.source, ...(change.destination !== undefined ? [change.destination] : [])]) {
                 const filename = authorize(value, true).filename;
-                if (pins.has(filename)) fail('INVALID', 'Duplicate/overlapping patch endpoints.');
-                pins.set(filename, pin(filename, true));
+                if (pins.has(pathKey(filename))) fail('INVALID', 'Duplicate/overlapping patch endpoints.');
+                pins.set(pathKey(filename), pin(filename, true));
             }
             const lockFd = fs.openSync(lockEntry, C.O_CREAT | C.O_EXCL | C.O_RDWR | C.O_NOFOLLOW, 0o600);
             handles.push(lockFd);
@@ -277,7 +298,7 @@ export function createFileTools(input: FilePolicy) {
             // All endpoints are authorized/opened before reading hunks or creating stages.
             let outputBytes = 0;
             for (const change of changes) {
-                const source = pins.get(authorize(change.source, true).filename)!;
+                const source = pins.get(pathKey(authorize(change.source, true).filename))!;
                 let after: string | undefined;
                 if (kind === 'write') after = args.content as string;
                 else if (kind === 'edit') {
@@ -300,7 +321,7 @@ export function createFileTools(input: FilePolicy) {
                 outputBytes += Buffer.byteLength(after ?? '');
                 if (outputBytes > MAX_BATCH_BYTES) fail('INVALID', 'Transaction output byte budget exceeded.');
                 if (change.destination !== undefined) {
-                    const destination = pins.get(authorize(change.destination, true).filename)!;
+                    const destination = pins.get(pathKey(authorize(change.destination, true).filename))!;
                     if (destination.before) fail('INVALID', 'Move destination must not exist.');
                     mutations.push({ pin: source }, { pin: destination, after });
                 } else mutations.push({ pin: source, after });
@@ -308,7 +329,8 @@ export function createFileTools(input: FilePolicy) {
             const nonce = randomUUID();
             for (let i = 0; i < mutations.length; ++i) {
                 const item = mutations[i];
-                const base = `${fdPath(item.pin.parent.fd)}/.cocos4-ai-${nonce}-${i}`;
+                const base = windows ? path.join(item.pin.parent.filename, `.cocos4-ai-${nonce}-${i}`)
+                    : `${fdPath(item.pin.parent.fd)}/.cocos4-ai-${nonce}-${i}`;
                 if (item.pin.before) item.backup = `${base}.old`;
                 if (item.after !== undefined) item.stage = `${base}.new`;
             }
@@ -329,7 +351,7 @@ export function createFileTools(input: FilePolicy) {
                 try {
                     item.staged = fs.fstatSync(fd, { bigint: true });
                     fs.writeFileSync(fd, item.after!);
-                    fs.fchmodSync(fd, item.pin.before ? Number(item.pin.before.mode & 0o777n) & ~0o022 : 0o600);
+                    if (!windows) fs.fchmodSync(fd, item.pin.before ? Number(item.pin.before.mode & 0o777n) & ~0o022 : 0o600);
                     fs.fsyncSync(fd);
                     item.staged = fs.fstatSync(fd, { bigint: true });
                 } finally { fs.closeSync(fd); }
@@ -380,7 +402,7 @@ export function createFileTools(input: FilePolicy) {
                     if (item.backed && version(fs.lstatSync(item.backup!, { bigint: true })) !== version(item.backed)) {
                         fail('CHANGED', 'A withdrawn input changed; rolling back.');
                     }
-                    fs.fsyncSync(item.pin.parent.fd);
+                    if (!windows) fs.fsyncSync(item.pin.parent.fd);
                 }
             } catch (error) {
                 let restored = true;
@@ -474,7 +496,41 @@ export function createFileTools(input: FilePolicy) {
                 .map(filename => authorize(filename, kind !== 'read').filename);
             await ctx.ask({ permission: `cocos4_${kind}`, patterns, always: [], metadata: { paths: patterns } });
             if (ctx.abort?.aborted) return fail('CANCELLED', 'File operation cancelled.');
-            return perform(kind, args, changes);
+            if (!windows) return perform(kind, args, changes);
+            // Windows has no procfs descriptor paths. Keep native no-delete-share
+            // leases on every traversed directory until the synchronous transaction
+            // and rollback finish. Final entries still use identity checks and
+            // no-replace publication; no old input inode is ever written.
+            const leases = new Map<string, WindowsPathLease>();
+            const acquire = async (filename: string): Promise<void> => {
+                if (leases.has(pathKey(filename))) return;
+                if (leases.size >= 512) return fail('INVALID', 'Directory budget exceeded.');
+                const lease = await acquireWindowsPath(filename, { directory: true, trusted: true });
+                leases.set(pathKey(filename), lease);
+            };
+            try {
+                await acquire(policy.workspace.path);
+                for (const filename of patterns) {
+                    const { root } = authorize(filename, kind !== 'read');
+                    await acquire(root.path);
+                    if (!samePath(filename, root.path)) await acquire(path.dirname(filename));
+                    if (kind === 'read') {
+                        const stat = fs.lstatSync(filename, { bigint: true });
+                        if (stat.isDirectory()) await acquire(filename);
+                    }
+                }
+                for (const lease of leases.values()) await lease.check();
+                if (ctx.abort?.aborted) return fail('CANCELLED', 'File operation cancelled.');
+                const output = perform(kind, args, changes, leases);
+                for (const lease of leases.values()) await lease.check();
+                return output;
+            } catch (error) {
+                if (error instanceof Error && error.message.startsWith('AI_FILES_')) throw error;
+                return fail('DENIED', 'Windows filesystem lease refused the operation.');
+            } finally {
+                const results = await Promise.allSettled([...leases.values()].reverse().map(lease => lease.close()));
+                if (results.some(result => result.status === 'rejected')) fail('CHANGED', 'A Windows filesystem lease could not be released.');
+            }
         },
     };
     return tools;

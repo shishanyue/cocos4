@@ -5,7 +5,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fixture, connect, check, finished, starter, write, cli, sdkRoot } from './fixtures/logic-client.mjs';
 
-test('trusted pure logic through official MCP: real TS 4.9.5, Node declarations, permissions and results', { timeout: 360000 }, async t => {
+// Each Windows case verifies the genuine SDK and creates a private compiler closure.
+test('trusted pure logic through official MCP: real TS 4.9.5, Node declarations, permissions and results', { timeout: process.platform === 'win32' ? 1800000 : 360000 }, async t => {
     const env = await fixture(t);
     const manifestBefore = await fs.readFile(path.join(sdkRoot, 'manifest.json'));
     let session = await connect(env, false);
@@ -117,7 +118,7 @@ test('snapshot', async () => { console.log('SNAPSHOT_RUNNING'); await new Promis
             const page = await session.call('job_get', { jobId: receipt.jobId });
             assert.equal(page.job.state, 'running', JSON.stringify(page));
             return (await session.call('job_logs', { jobId: receipt.jobId })).text.includes('SNAPSHOT_RUNNING');
-        }, 60000);
+        }, process.platform === 'win32' ? 150000 : 60000);
         await write(env, 'src/rules.ts', 'export function score(value: number): number { throw new Error("USER_FILE_EXECUTED"); }');
         const page = await finished(session, receipt);
         assert.equal(page.job.state, 'failed', JSON.stringify(page));

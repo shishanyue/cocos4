@@ -4,10 +4,10 @@ const http = require('node:http');
 const path = require('node:path');
 const { chromium } = require('playwright-core');
 const { PNG } = require('../../../node_modules/pngjs');
-const { assertAbsent, inventory, readRegular, sha256 } = require('./files.cjs');
+const { assertAbsent, canonicalDirectory, inventory, readRegular, sha256 } = require('./files.cjs');
 
 async function verifyBrowser({ runtimeDirectory, executablePath, outDirectory, headless = true }) {
-    assert.ok(path.isAbsolute(executablePath), 'An explicit absolute Chrome executablePath is required');
+    assert.ok(path.isAbsolute(executablePath), 'An explicit absolute Chromium browser executablePath is required');
     await fs.access(executablePath, fs.constants.X_OK);
     const executableSha256 = sha256(await fs.readFile(executablePath));
     const root = await fs.realpath(runtimeDirectory);
@@ -20,7 +20,11 @@ async function verifyBrowser({ runtimeDirectory, executablePath, outDirectory, h
     assert.equal(descriptor.sourceMap, false);
     assert.deepEqual((await inventory(root)).filter(file => file.path !== 'runtime.json'), descriptor.files,
         'Runtime descriptor/file integrity mismatch');
-    const output = path.resolve(outDirectory);
+    const requestedOutput = path.resolve(outDirectory);
+    const output = path.join(await canonicalDirectory(path.dirname(requestedOutput)), path.basename(requestedOutput));
+    const relative = path.relative(root, output);
+    assert.ok(relative && (path.isAbsolute(relative) || relative === '..' || relative.startsWith(`..${path.sep}`)),
+        'Browser evidence must be separate from the immutable runtime');
     await assertAbsent(output);
     await fs.mkdir(output);
     const report = { schemaVersion: 1, profile: descriptor.profile, runtimeSha256: sha256(descriptorBytes),
@@ -32,7 +36,7 @@ async function verifyBrowser({ runtimeDirectory, executablePath, outDirectory, h
             playwright: require('playwright-core/package.json').version, node: process.version },
         graphics: null, requests: [], console: [], pageErrors: [],
         screenshots: [], validation: {}, success: false,
-        limitations: ['Real Chrome with explicit ANGLE SwiftShader software WebGL, not physical GPU/device validation',
+        limitations: ['Real Chromium browser with explicit ANGLE SwiftShader software WebGL, not physical GPU/device validation',
             'Audio evidence observes decoded PCM, real WebAudio start/end and running context, not physical speaker output'] };
     const allowed = new Set(descriptor.files.map(file => file.path));
     const mime = { '.js': 'text/javascript', '.json': 'application/json', '.html': 'text/html', '.png': 'image/png', '.wav': 'audio/wav' };
@@ -63,7 +67,10 @@ async function verifyBrowser({ runtimeDirectory, executablePath, outDirectory, h
         return result;
     };
     try {
-        await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+        await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(0, '127.0.0.1', () => { server.off('error', reject); resolve(); });
+        });
         const origin = `http://127.0.0.1:${server.address().port}`;
         const args = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
         report.launchArgs = args;

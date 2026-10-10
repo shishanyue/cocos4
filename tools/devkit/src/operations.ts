@@ -34,10 +34,12 @@ export async function diagnoseSdk(sdk: Sdk): Promise<Report> {
             sdk.toolchainRoot
                 ? { name: 'Game development', status: 'info', message: `${sdk.manifest.catalog.profiles.length} delivered profiles and ${sdk.manifest.catalog.templates.length} templates verified. They support template creation, strict type checks and game builds. Preview is HTML5-only; mini-game source preflight requires platform configuration. Vendor publishing is not validated.` }
                 : { name: 'Game development', status: 'warning', code: 'PROFILE_NOT_AVAILABLE', message: 'No prebuilt profiles, runnable templates, game build, preview, export or vendor publishing capability is established.' },
-            { name: 'Host filesystem', status: 'passed', message: 'Linux pinned-descriptor, no-follow reads verified for the packaged validator.' },
+            { name: 'Host filesystem', status: 'passed', message: process.platform === 'win32'
+                ? 'Windows pinned-handle leases, reparse-point rejection and trust checks verified for the packaged validator.'
+                : 'Linux pinned-descriptor, no-follow reads verified for the packaged validator.' },
             { name: 'Host runtime', status: 'info', message: `Running Node ${process.version} on ${process.platform}/${process.arch}. Read checks do not establish publisher/supervisor kernel support, browser availability or supported-host acceptance.` },
         ],
-        validationLevels: ['manifest-schema', 'payload-sha256', 'linux-pinned-reads'],
+        validationLevels: ['manifest-schema', 'payload-sha256', process.platform === 'win32' ? 'windows-pinned-reads' : 'linux-pinned-reads'],
     });
 }
 
@@ -53,7 +55,7 @@ export async function runOperation(request: WorkerRequest, log: (text: string) =
     if (args.operation === 'doctor') {
         const report = await diagnoseSdk(sdk);
         report.items.push({ name: 'Test execution', status: 'info', message: args.permissions?.executeTests
-            ? 'Startup explicitly trusts pure logic tests. The fixed Linux supervisor manages process lifetime, not a sandbox: child code can access host files, spawn processes and use the network.'
+            ? `Startup explicitly trusts pure logic tests. The fixed ${process.platform === 'win32' ? 'Windows Job Object' : 'Linux'} supervisor manages process lifetime, not a sandbox: child code can access host files, spawn processes and use the network.`
             : 'Project code execution is disabled. Enable --execute-tests true with develop only for trusted projects; MCP arguments cannot grant it.' });
         if (args.input.project !== undefined) {
             log('Inspecting bounded project data without resolving dependencies or running scripts.');

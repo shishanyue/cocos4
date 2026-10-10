@@ -18,6 +18,7 @@ const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(
     : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
         : JSON.stringify(value);
 const pin = JSON.parse(await fs.readFile(new URL('../packaging/node-win32-lock.json', import.meta.url), 'utf8'));
+const legacyLinuxAssembly = { skip: process.platform !== 'linux' ? 'The retained component-only crossbuild uses Linux unzip/LLVM; Windows portable assembly has separate coverage.' : false };
 function seal(value) {
     const { componentId, ...body } = value;
     return { ...body, componentId: `sha256-${hash(canonical(body))}` };
@@ -38,7 +39,7 @@ function metadata() {
         checksumScope: 'Metadata fixture only; no authentication, execution or approval.' });
 }
 async function fixture(t) {
-    const directory = await fs.mkdtemp(path.join(tmpdir(), 'cocos4-windows-components-test-'));
+    const directory = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), 'cocos4-windows-components-test-')));
     t.after(() => fs.rm(directory, { recursive: true, force: true }));
     return { directory, out: path.join(directory, 'components'), nodeArchive: path.join(directory, 'input.zip'),
         compiler: path.join(directory, 'unused-zig') };
@@ -53,10 +54,10 @@ test('reviewed Node pin cannot silently switch source, version, target or select
     }
 });
 
-test('configuration rejects relative/aliased/unsafe paths and SDK/release options before work', async t => {
+test('configuration rejects relative/aliased/unsafe paths and SDK/release options before work', legacyLinuxAssembly, async t => {
     const options = await fixture(t);
     const { out, nodeArchive, directory, compiler } = options;
-    assert.equal(path.dirname(directory), tmpdir());
+    assert.equal(path.dirname(directory), await fs.realpath(tmpdir()));
     for (const value of [undefined, {}, { out: 'relative', nodeArchive, compiler }, { out, nodeArchive: 'relative', compiler },
         { out: `${out}/../other`, nodeArchive, compiler }, { out, nodeArchive, compiler: 'zig' },
         { out, nodeArchive, compiler, sdkRoot: directory }, { out, nodeArchive, compiler, kitVersion: '1.0.0' },
@@ -69,7 +70,7 @@ test('configuration rejects relative/aliased/unsafe paths and SDK/release option
     assert.deepEqual(await fs.readdir(directory), ['alias']);
 });
 
-test('assembler and both crossbuilders require an explicit absolute compiler without building', async t => {
+test('assembler and both crossbuilders require an explicit absolute compiler without building', legacyLinuxAssembly, async t => {
     const { out, nodeArchive, directory } = await fixture(t);
     await assert.rejects(prepareWindowsComponents({ out, nodeArchive }), /absolute compiler/);
     await assert.rejects(buildSupervisorWin32(), /explicit absolute Zig/);
@@ -82,7 +83,7 @@ test('assembler and both crossbuilders require an explicit absolute compiler wit
     assert.deepEqual(await fs.readdir(directory), []);
 });
 
-test('Windows acceptance is outside Linux test discovery and explicitly rejects the wrong host', async t => {
+test('Windows acceptance is outside Linux test discovery and explicitly rejects the wrong host', legacyLinuxAssembly, async t => {
     assert.equal(process.platform, 'linux', 'This regression checks wrong-host rejection on Linux');
     const { directory } = await fixture(t);
     const harness = 'windows-supervisor.mjs';
@@ -106,7 +107,7 @@ test('Windows acceptance is outside Linux test discovery and explicitly rejects 
     assert.deepEqual(await fs.readdir(directory), []);
 });
 
-test('every existing destination/companion is retained before archive access or compilation', async t => {
+test('every existing destination/companion is retained before archive access or compilation', legacyLinuxAssembly, async t => {
     for (const suffix of ['', '.zip', '.zip.sha256', '.build.json']) {
         const { directory, out, nodeArchive, compiler } = await fixture(t);
         const conflict = `${out}${suffix}`;
@@ -125,7 +126,7 @@ test('every existing destination/companion is retained before archive access or 
     }
 });
 
-test('missing or tampered Node input fails before extraction, tool invocation or staging', async t => {
+test('missing or tampered Node input fails before extraction, tool invocation or staging', legacyLinuxAssembly, async t => {
     const { directory, out, nodeArchive, compiler } = await fixture(t);
     await assert.rejects(prepareWindowsComponents({ out, nodeArchive, compiler }), { code: 'ENOENT' });
     await fs.writeFile(nodeArchive, 'not the official ZIP');

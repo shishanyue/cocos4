@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -17,7 +18,11 @@ for (let i = 0; i < args.length; i += 2) {
 assert.equal(flags.size, 4);
 const evidence = flags.get('--evidence-root');
 const { prepareOpenCode } = await import(pathToFileURL(path.join(flags.get('--build-root'), 'src/ai.js')).href);
-const root = await fs.mkdtemp('/tmp/opencode/cocos4-ai-file-tools-');
+const windows = process.platform === 'win32';
+const { enforceWindowsPrivate } = windows
+    ? await import(pathToFileURL(path.join(flags.get('--build-root'), 'src/windows-fs.js')).href) : {};
+const root = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'cocos4-ai-file-tools-'));
+if (windows) await enforceWindowsPrivate(root);
 const workspace = path.join(root, 'workspace with spaces \u6e38\u620f');
 const home = path.join(root, 'home');
 const sdk = path.join(root, 'sdk-copy');
@@ -71,29 +76,35 @@ async function pristine() {
 }
 
 try {
-    for (const directory of [workspace, home, outside, path.join(workspace, 'src')]) await fs.mkdir(directory, { mode: 0o700 });
+    for (const directory of [workspace, home, outside, path.join(workspace, 'src')]) {
+        await fs.mkdir(directory, { mode: 0o700 });
+        if (windows) await enforceWindowsPrivate(directory);
+    }
     // Reflink when available, never hardlink: a regression must not damage the
     // parent's retained SDK or share writable input inodes with it.
     await fs.cp(flags.get('--sdk-root'), sdk, { recursive: true, force: false, errorOnExist: true, mode: fs.constants.COPYFILE_FICLONE });
     await fs.chmod(sdk, 0o500);
     const options = { client: 'opencode', executable: flags.get('--executable'), workspace,
         sdkRoot: sdk, stateRoot: state, mode: 'read-only', preview: false };
-    const env = { HOME: home, PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', NO_COLOR: '1' };
+    const env = { HOME: home, PATH: windows ? '' : '/usr/bin:/bin', LANG: 'C.UTF-8', NO_COLOR: '1',
+        ...(windows ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
+            USERPROFILE: home, TEMP: root, TMP: root } : {}) };
     readOnly = await prepareOpenCode(options, env);
     develop = await prepareOpenCode({ ...options, mode: 'develop' }, env);
     for (const prepared of [readOnly, develop]) assert.deepEqual(prepared.config.mcp.cocos4.command.slice(0, 4),
-        [path.join(flags.get('--build-root'), 'host/cocos4-mcp-launch'), 'cocos4-mcp-launch-v1', '--node', await fs.realpath(process.execPath)]);
+        [path.join(flags.get('--build-root'), `host/cocos4-mcp-launch${windows ? '.exe' : ''}`),
+            'cocos4-mcp-launch-v1', '--node', await fs.realpath(process.execPath)]);
     for (const name of ['first.ts', 'second.ts']) await fs.writeFile(path.join(workspace, 'src', name), 'before\n');
     const publicFile = path.join(workspace, 'src/first.ts');
     const secretFile = path.join(workspace, '.env');
     await fs.writeFile(secretFile, 'DUMMY_AI_PRIVATE_SENTINEL_ENV\n');
     await fs.writeFile(path.join(outside, 'second.ts'), 'DUMMY_AI_PRIVATE_SENTINEL_OUTSIDE\n');
     await fs.writeFile(path.join(state, 'private.txt'), 'DUMMY_AI_PRIVATE_SENTINEL_STATE\n', { mode: 0o600 });
-    await fs.symlink('.env', path.join(workspace, 'public.txt'));
+    await fs.symlink('.env', path.join(workspace, 'public.txt'), 'file');
     await fs.link(secretFile, path.join(workspace, 'hardlink.txt'));
-    await fs.symlink(outside, path.join(workspace, 'linked-directory'));
-    await fs.symlink(state, path.join(workspace, 'linked-state'));
-    await fs.symlink('src', path.join(workspace, 'internal-link'));
+    await fs.symlink(outside, path.join(workspace, 'linked-directory'), windows ? 'junction' : 'dir');
+    await fs.symlink(state, path.join(workspace, 'linked-state'), windows ? 'junction' : 'dir');
+    await fs.symlink(path.join(workspace, 'src'), path.join(workspace, 'internal-link'), windows ? 'junction' : 'dir');
     // Added AFTER startup: no startup scan may be the security boundary.
     await fs.mkdir(path.join(workspace, '.opencode/plugins'), { recursive: true });
     await fs.mkdir(path.join(workspace, '.opencode/skills/injected'), { recursive: true });
@@ -177,9 +188,11 @@ try {
     const toolFile = path.join(path.dirname(develop.configFile), 'tools/cocos4.js');
     const wrapper = await fs.readFile(toolFile, 'utf8');
     const raceModule = new URL('./fixtures/ai/file-race.mjs', import.meta.url).href;
-    const races = ['read-symlink', 'read-hardlink', 'read-parent-open', 'read-parent-after-open', 'read-extra-link',
+    // This injector resolves open file descriptors through /proc and targets
+    // Linux syscalls. Windows leases are verified by the Windows helper suite.
+    const races = process.platform === 'linux' ? ['read-symlink', 'read-hardlink', 'read-parent-open', 'read-parent-after-open', 'read-extra-link',
         'write-symlink', 'write-hardlink', 'patch-symlink', 'patch-hardlink', 'patch-parent', 'patch-io-error',
-        'move-symlink', 'move-hardlink'];
+        'move-symlink', 'move-hardlink'] : [];
     for (const name of races) {
         const directory = path.join(workspace, `race-${name}`);
         await fs.mkdir(directory, { mode: 0o700 });
@@ -230,15 +243,21 @@ try {
     await develop?.cleanup(); await readOnly?.cleanup();
     await fs.writeFile(path.join(evidence, 'file-tools-evidence.json'), `${JSON.stringify({ version: develop?.version,
         executable: develop?.executable, node: process.version, mcpCommand: develop?.config.mcp.cocos4.command,
-        completed, checks: reports, modelRequests: 0,
-        originalSdkWasAttackTarget: false, raceMethod: 'test-only syscall-boundary instrumentation in real debug-agent execution',
-        limitations: ['Non-root Linux only.', 'No OS isolation from hostile same-UID processes, mounts or client/kit tampering.',
+        platform: process.platform, completed, checks: reports, modelRequests: 0,
+        originalSdkWasAttackTarget: false, linuxSyscallRacesChecked: process.platform === 'linux' && completed,
+        raceMethod: process.platform === 'linux' ? 'test-only syscall-boundary instrumentation in real debug-agent execution' : null,
+        limitations: [...(windows ? ['Linux syscall race injection is not executed on Windows.'] : ['Non-root Linux only.']),
+            'No OS isolation from hostile same-user processes, mounts or client/kit tampering.',
             'Multi-file publication is not crash-atomic; conflicts preserve a recovery lock rather than overwrite concurrent data.'] }, null, 2)}\n`,
         { flag: 'wx', mode: 0o600 });
     // Only the newly copied fixture SDK is chmodded, never the retained SDK.
     async function writableDirs(directory) {
         await fs.chmod(directory, 0o700);
-        for (const entry of await fs.readdir(directory, { withFileTypes: true })) if (entry.isDirectory()) await writableDirs(path.join(directory, entry.name));
+        for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+            const filename = path.join(directory, entry.name);
+            if (entry.isDirectory()) await writableDirs(filename);
+            else if (windows && entry.isFile()) await fs.chmod(filename, 0o600);
+        }
     }
     await writableDirs(root);
     await fs.rm(root, { recursive: true });

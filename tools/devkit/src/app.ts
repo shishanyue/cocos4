@@ -1,5 +1,5 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { lstat, realpath } from 'node:fs/promises';
+import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
@@ -9,6 +9,7 @@ import { JobManager } from './jobs.js';
 import { loadReleaseIdentity } from './release.js';
 import { loadSdk, catalogSchema, searchSchema, documentSchema, type Sdk } from './sdk.js';
 import { inspectProject, inspectionSchema, validateProjectDestination, validateRelativePath } from './workspace.js';
+import { hostRealpath as realpath } from './windows-fs.js';
 
 const cursor = z.string().min(1).max(1024);
 const page = { cursor: cursor.optional(), limit: z.number().int().min(1).max(100).default(20) };
@@ -98,7 +99,7 @@ export class Application {
         if (permissions.mode === 'develop') {
             const requestKey = z.string().min(1).max(128).regex(/^[A-Za-z0-9._-]+$/)
                 .describe('Required deduplication key. Use a new key for changed inputs; retained keys never silently rebuild.');
-            register('cocos4_project_create', 'Create an editable SDK starter at an absent relative directory. Mini-game starters keep mutable vendor configuration under platforms/<target>; set its app ID before building. Never replaces existing files. Publication requires the packaged Linux publisher helper and the same filesystem as private state.',
+            register('cocos4_project_create', 'Create an editable SDK starter at an absent relative directory. Mini-game starters keep mutable vendor configuration under platforms/<target>; set its app ID before building. Never replaces existing files. Publication requires the packaged host publisher helper and the same filesystem as private state.',
                 operationRequestSchema.options[2].shape.input.extend({ requestKey }).strict(), receiptSchema, input => {
                     const { requestKey, ...args } = input;
                     validateProjectDestination(args.directory);
@@ -184,7 +185,9 @@ export class Application {
             throw new AppError('PERMISSION_DENIED', 'Preview and test execution require explicit develop mode and their separate startup permissions.');
         }
         const permissions = parsed.data;
-        if (process.platform !== 'linux') throw new AppError('SDK_INCOMPLETE', 'This development server currently supports verified Linux filesystem operations only.');
+        if (process.platform !== 'linux' && !(process.platform === 'win32' && process.arch === 'x64')) {
+            throw new AppError('SDK_INCOMPLETE', 'This development server requires Linux or the verified Windows x64 host helpers.');
+        }
         for (const value of [options.workspace, options.sdkRoot, options.stateRoot]) {
             if (!path.isAbsolute(value) || value.includes('\0')) throw new AppError('INVALID_ARGUMENTS', 'Startup roots must be explicit absolute paths.');
         }

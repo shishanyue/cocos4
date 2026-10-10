@@ -197,6 +197,7 @@ export class PortableSdkFixture extends Component {
         import assert from 'node:assert/strict';
         import Module, { createRequire, isBuiltin } from 'node:module';
         import fs from 'node:fs/promises';
+        import path from 'node:path';
         import { TextDecoder } from 'node:util';
         import { loadSdk } from './runtime/sdk.js';
         const { readFile, writeFile } = fs;
@@ -221,7 +222,9 @@ export class PortableSdkFixture extends Component {
         const resolve = Module._resolveFilename;
         Module._resolveFilename = function (...args) {
             const resolved = resolve.apply(this, args);
-            assert(isBuiltin(resolved) || resolved.startsWith(sdk.toolchainRoot + '/'), 'OUTSIDE_TOOLCHAIN_MODULE: ' + resolved);
+            const relative = isBuiltin(resolved) ? '' : path.relative(sdk.toolchainRoot, resolved);
+            assert(isBuiltin(resolved) || (relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative)),
+                'OUTSIDE_TOOLCHAIN_MODULE: ' + resolved);
             return resolved;
         };
         const { compileGame } = require(sdk.toolchainRoot + '/compiler/compile-game.cjs');
@@ -261,7 +264,10 @@ export class PortableSdkFixture extends Component {
             && error.diagnostics.some(item => item.code === 2322 && item.file === 'src/main.ts' && item.line === 5 && item.column > 1));
         await writeFile(options.projectDirectory + '/src/main.ts', "export { MeshRenderer } from 'cc';");
         await assert.rejects(compileGame({ ...options, checkOnly: true }), error => error.code === 'FEATURE_NOT_IN_PROFILE');
-        assert(Object.keys(require.cache).every(file => file.startsWith(process.cwd() + '/data/toolchain/')));
+        assert(Object.keys(require.cache).every(file => {
+            const relative = path.relative(path.join(process.cwd(), 'data/toolchain'), file);
+            return relative && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+        }));
         console.log(JSON.stringify({ checked: checked.typeChecked, compiled: compiled.typeChecked, exports: compiled.requiredCCExports }));
     `;
     const { stdout } = await run(process.execPath, ['--input-type=module', '-e', script],

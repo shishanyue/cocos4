@@ -13,6 +13,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+import { listeningSockets } from './listening-sockets.mjs';
 
 // Isolated verification from tools/devkit (does not replace build/src):
 // ./node_modules/.bin/tsc --outDir build/bilibili-development-agent --pretty false
@@ -20,6 +21,7 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv
 // LEGACY_HTML5_SDK_ROOT optionally selects a concrete older HTML5-only SDK.
 const devkit = fileURLToPath(new URL('../', import.meta.url));
 const build = new URL(process.env.BILIBILI_DEVELOPMENT_TEST_BUILD_PREFIX ?? '../build/src/', import.meta.url);
+const { verifyWindowsTrust } = process.platform === 'win32' ? await import(new URL('windows-fs.js', build)) : {};
 const cli = fileURLToPath(new URL('cli.js', build));
 const sdkRoot = resolve(process.env.COMBINED_SDK_ROOT ?? join(devkit, 'build/game-sdk'));
 const legacyRoot = resolve(process.env.LEGACY_HTML5_SDK_ROOT ?? join(devkit, 'build/legacy-game-sdk'));
@@ -244,7 +246,8 @@ async function verifyArtifact(env, artifact, edited, target = 'BILIBILI') {
     assert.equal(artifact.variant, 'debug');
     assert.equal(artifact.entry, target === 'BILIBILI' ? 'game.js' : 'index.html');
     const directory = join(env.stateDirectory, `artifact-${artifact.artifactId}`);
-    assert.equal((await fs.stat(directory)).mode & 0o077, 0);
+    if (process.platform === 'win32') await verifyWindowsTrust(directory, true);
+    else assert.equal((await fs.stat(directory)).mode & 0o077, 0);
     const raw = await fs.readFile(join(directory, 'artifact-inventory.json'));
     assert.equal(hash(raw), artifact.sha256);
     const inventory = JSON.parse(raw);
@@ -305,26 +308,6 @@ async function verifyArtifact(env, artifact, edited, target = 'BILIBILI') {
     await absent(join(env.workspace, edited.project, `artifact-${artifact.artifactId}`));
     await absent(join(env.root, 'PROJECT_CODE_EXECUTED'));
     return { directory, entries };
-}
-
-async function listeningSockets(pid) {
-    const sockets = new Set();
-    for (const fd of await fs.readdir(`/proc/${pid}/fd`)) {
-        try {
-            const link = await fs.readlink(`/proc/${pid}/fd/${fd}`);
-            const match = /^socket:\[(\d+)\]$/.exec(link);
-            if (match) sockets.add(match[1]);
-        } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    }
-    const listeners = [];
-    for (const table of ['tcp', 'tcp6']) {
-        const rows = (await fs.readFile(`/proc/${pid}/net/${table}`, 'utf8')).trim().split('\n').slice(1);
-        for (const row of rows) {
-            const fields = row.trim().split(/\s+/);
-            if (fields[3] === '0A' && sockets.has(fields[9])) listeners.push(`${table}:${fields[1]}`);
-        }
-    }
-    return listeners.sort();
 }
 
 async function previewRejected(session, artifact) {
@@ -486,7 +469,8 @@ test('combined BILIBILI development through official MCP/Ajv and real CLI', { ti
         const delivered = manifest.catalog.profiles.find(item => item.target === 'BILIBILI' && item.id === profile && item.variant === 'debug');
         const expected = JSON.parse(await fs.readFile(join(sdkRoot, delivered.directory, 'game.json')));
         assert.deepEqual(JSON.parse(await fs.readFile(join(directory, 'game.json'))), { ...expected, appId: '', version: pkg.version });
-        assert.equal((await fs.stat(join(directory, 'game.json'))).mode & 0o777, 0o600);
+        if (process.platform === 'win32') await verifyWindowsTrust(join(directory, 'game.json'), true);
+        else assert.equal((await fs.stat(join(directory, 'game.json'))).mode & 0o777, 0o600);
         const declarations = manifest.files.filter(file => file.path.startsWith(`${delivered.directory}/types/`));
         assert.ok(declarations.length);
         assert.deepEqual(await filesIn(join(directory, 'types')), declarations.map(file => file.path.slice(`${delivered.directory}/types/`.length)).sort());

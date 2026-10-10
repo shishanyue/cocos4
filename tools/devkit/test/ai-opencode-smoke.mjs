@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -19,20 +20,29 @@ const sdkRoot = flags.get('--sdk-root');
 const evidence = flags.get('--evidence-root');
 const { prepareOpenCode } = await import(pathToFileURL(path.join(build, 'src/ai.js')).href);
 const { opencodeSupport, bundledSkillNames } = await import(pathToFileURL(path.join(build, 'src/ai-config.js')).href);
-const root = await fs.mkdtemp('/tmp/opencode/cocos4-ai-real-');
+const windows = process.platform === 'win32';
+const { enforceWindowsPrivate } = windows ? await import(pathToFileURL(path.join(build, 'src/windows-fs.js')).href) : {};
+const root = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'cocos4-ai-real-'));
+if (windows) await enforceWindowsPrivate(root);
 const home = path.join(root, 'home');
+const hostEnv = windows ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
+    USERPROFILE: home, TEMP: root, TMP: root } : {};
+const clientEnv = { ...hostEnv, HOME: home, PATH: windows ? '' : '/usr/bin:/bin', LANG: 'C.UTF-8', NO_COLOR: '1' };
 const repository = path.join(root, 'repository');
 const workspace = path.join(repository, 'workspace with spaces');
 await fs.mkdir(home, { mode: 0o700 });
 await fs.mkdir(repository, { mode: 0o700 });
 await fs.mkdir(workspace, { mode: 0o700 });
+if (windows) for (const directory of [home, repository, workspace]) await enforceWindowsPrivate(directory);
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 const manifestBefore = sha256(await fs.readFile(path.join(sdkRoot, 'manifest.json')));
 // A fixture repository with a remote-derived identity would normally make this
 // client write .git/opencode. No checkout, remote request, or user Git config.
 for (const argv of [['init', '--quiet', repository], ['-C', repository, 'config', 'remote.origin.url', 'https://example.invalid/cocos4-ai-fixture.git']]) {
     await new Promise((resolve, reject) => {
-        const child = spawn('/usr/bin/git', argv, { env: { HOME: home, PATH: '/usr/bin:/bin', GIT_CONFIG_NOSYSTEM: '1' },
+        const child = spawn(process.env.AI_TEST_GIT_EXECUTABLE ?? (windows ? 'git.exe' : '/usr/bin/git'), argv,
+            { env: { ...hostEnv, HOME: home, PATH: windows ? process.env.PATH : '/usr/bin:/bin',
+                GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: path.join(home, 'absent-gitconfig') },
             shell: false, stdio: ['ignore', 'ignore', 'pipe'] });
         child.stderr.resume();
         child.once('error', reject);
@@ -56,7 +66,7 @@ let prepared;
 const reports = [];
 async function capture(name, argv, expectedCode = 0) {
     await prepared.verifyExecutable();
-    const noEnv = name === 'mcp-list';
+    const noEnv = process.platform === 'linux' && name === 'mcp-list';
     const command = noEnv ? '/usr/bin/bwrap' : prepared.executable;
     let actualArgs = argv;
     if (noEnv) {
@@ -85,7 +95,7 @@ async function capture(name, argv, expectedCode = 0) {
         const timer = setTimeout(() => child.kill('SIGKILL'), 120000);
         child.stdout.on('data', data => { bytes += data.length; if (bytes < 1024 * 1024) stdout += data; else child.kill('SIGKILL'); });
         child.stderr.on('data', data => { bytes += data.length; if (bytes < 1024 * 1024) stderr += data; else child.kill('SIGKILL'); });
-        child.once('error', reject);
+        child.once('error', error => { clearTimeout(timer); reject(error); });
         child.once('close', (code, signal) => { clearTimeout(timer); resolve({ executable: prepared.executable, args: argv,
             command, actualArgs, hostEnvUnavailable: noEnv, code, signal, stdout, stderr }); });
     });
@@ -107,12 +117,12 @@ try {
     // Auth propagation is tested separately with dummy values in ai.test.mjs.
     prepared = await prepareOpenCode({ client: 'opencode', executable: flags.get('--executable'),
         workspace, sdkRoot, stateRoot: path.join(root, 'state'), mode: 'read-only', preview: false },
-    { HOME: home, PATH: '/usr/bin:/bin', LANG: 'C.UTF-8', NO_COLOR: '1' });
+    clientEnv);
     const version = await capture('version', ['--version']);
     assert.equal(version.stdout.trim(), opencodeSupport.version);
     const config = JSON.parse((await capture('config', ['debug', 'config'])).stdout);
     assert.deepEqual(config.mcp, prepared.config.mcp);
-    assert.equal(config.mcp.cocos4.command[0], path.join(build, 'host/cocos4-mcp-launch'));
+    assert.equal(config.mcp.cocos4.command[0], path.join(build, `host/cocos4-mcp-launch${windows ? '.exe' : ''}`));
     assert.equal(config.mcp.cocos4.command.includes('/usr/bin/env'), false);
     assert.deepEqual(config.skills, prepared.config.skills);
     assert.deepEqual(config.permission, prepared.config.permission);
@@ -128,7 +138,8 @@ try {
     assert.deepEqual(skills.filter(skill => skill.name.startsWith('cocos4')).map(skill => skill.name).sort(), [...bundledSkillNames].sort());
     for (const name of bundledSkillNames) {
         const skill = skills.find(item => item.name === name);
-        assert.ok(skill.location.startsWith(`${prepared.skillsRoot}/`));
+        const relative = path.relative(prepared.skillsRoot, skill.location);
+        assert.ok(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
         assert.ok(skill.description.length && skill.content.length);
     }
     const agent = JSON.parse((await capture('agent', ['debug', 'agent', 'cocos4'])).stdout);
@@ -174,9 +185,11 @@ try {
         gitSha256Before: gitBefore, gitSha256After: gitAfter, clientWorktree: '/',
         config: prepared.config, configSha256: sha256(await fs.readFile(prepared.configFile)),
         discoveredSkills: skills.map(skill => ({ name: skill.name, location: skill.location })),
-        checks: reports, modelRequests: 0, credentialsImported: false, modelGameplayDemonstration: false,
+        checks: reports, platform: process.platform, linuxNamespaceChecked: process.platform === 'linux',
+        modelRequests: 0, credentialsImported: false, modelGameplayDemonstration: false,
         limitations: ['Configuration, discovery and stdio evidence only; no model/gameplay demonstration.',
-            'No vendor compilation or real-device acceptance.', 'No released portable archive or non-Linux host acceptance.'] };
+            'No vendor compilation or real-device acceptance.', 'No released portable archive acceptance.',
+            ...(windows ? ['Linux namespace/env-removal checks do not apply to this Windows client run.'] : [])] };
     await prepared.cleanup();
     assert.equal((await fs.readdir(path.join(root, 'state'))).some(name => name.startsWith('ai-opencode-')), false);
     await fs.writeFile(path.join(evidence, 'opencode-evidence.json'), `${JSON.stringify({ ...report, temporaryConfigRemoved: true }, null, 2)}\n`,

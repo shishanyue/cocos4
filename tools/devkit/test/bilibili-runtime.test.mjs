@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { delimiter, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -9,15 +9,42 @@ import vm from 'node:vm';
 const require = createRequire(import.meta.url);
 const { buildRuntime } = require('../scripts/build-runtime.cjs');
 const { inspectClosure, readRuntime, verifyBilibili } = require('../runtime/verify-bilibili.cjs');
+const { verifyWechat } = require('../runtime/verify-wechat.cjs');
+const { verifyBytedance } = require('../runtime/verify-bytedance.cjs');
 const { exerciseBilibili } = require('../runtime/bilibili-local-host.cjs');
 const { inventory, sha256 } = require('../runtime/files.cjs');
 
 test('runtime target selection rejects unsupported targets without building', async () => {
-    for (const target of ['WECHAT', 'bilibili', '', null]) {
+    for (const target of ['ANDROID', 'IOS', 'NATIVE', 'bilibili', '', null]) {
         await assert.rejects(buildRuntime({ profile: '2d-basic', builtinDirectory: '.', outDirectory: '.', target }), /TARGET_NOT_AVAILABLE/);
     }
-    for (const target of [undefined, 'HTML5', 'BILIBILI']) {
+    for (const target of [undefined, 'HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE']) {
         await assert.rejects(buildRuntime({ profile: '2d-basic', builtinDirectory: '.', outDirectory: '.', target }), /OUTPUT_CONFLICT/);
+    }
+});
+
+test('local report outputs cannot enter the input runtime through Windows path casing', async t => {
+    const temporary = await realpath(await mkdtemp(join(tmpdir(), 'minigame evidence-')));
+    t.after(() => rm(temporary, { recursive: true, force: true }));
+    const directory = join(temporary, 'Runtime');
+    await mkdir(directory);
+    await writeFile(join(directory, 'payload.txt'), 'Output boundary fixture only');
+    // An inventory fixture can reach the output guard, but cannot pass runtime closure inspection.
+    await writeFile(join(directory, 'runtime.json'), JSON.stringify({ schemaVersion: 1, files: await inventory(directory) }));
+    for (const [target, verify] of [['bilibili', verifyBilibili], ['wechat', verifyWechat], ['bytedance', verifyBytedance]]) {
+        await t.test(target, async () => {
+            const aliases = [directory];
+            if (process.platform === 'win32') aliases.push(join(temporary, 'runtime'));
+            for (const alias of aliases) {
+                for (const outDirectory of [alias, join(alias, 'evidence'), join(alias, '..evidence')]) {
+                    await assert.rejects(verify({ runtimeDirectory: directory, outDirectory }), /Evidence output must be outside the runtime/);
+                }
+            }
+            const sibling = `${directory}-local`;
+            await assert.rejects(verify({ runtimeDirectory: directory, outDirectory: sibling }),
+                error => error.code === 'ERR_ASSERTION' && error.expected === `cocos4-${target}-runtime`);
+            await assert.rejects(readFile(join(sibling, 'local-report.json')), { code: 'ENOENT' });
+        });
     }
 });
 
@@ -117,7 +144,7 @@ test('fresh Bilibili artifacts: closure, canonical preflight and real loader/App
                 assert.equal(report.evidence.failures.length, 9);
             });
             await t.test(`${descriptor.profile}: verifier refuses tampering and invalid canonical config`, async () => {
-                const temporary = await mkdtemp(join(tmpdir(), 'bilibili-negative-'));
+                const temporary = await realpath(await mkdtemp(join(tmpdir(), 'bilibili negative-')));
                 t.after(() => rm(temporary, { recursive: true, force: true }));
                 const copy = join(temporary, 'runtime');
                 await cp(directory, copy, { recursive: true });

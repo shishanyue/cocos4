@@ -1,6 +1,7 @@
 import { isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { privateFixtureTree } from './windows-private.mjs';
 
 // Tool-owned test code only. No project modules, scripts or subprocesses run in
 // a worker. The main-thread branch is a disposable cross-process lock owner.
@@ -45,6 +46,7 @@ if (isMainThread) {
         await mkdir(workerData.staging, { mode: 0o700 });
         await mkdir(join(workerData.staging, 'snapshot'), { mode: 0o700 });
         await writeFile(join(workerData.staging, 'snapshot', 'data.json'), '{}', { mode: 0o600 });
+        await privateFixtureTree(workerData.staging);
         parentPort.postMessage({ type: 'log', text: 'fixture:staging\n' });
     }
     switch (mode) {

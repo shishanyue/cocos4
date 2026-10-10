@@ -11,7 +11,8 @@ class FixtureManager extends JobManager {
     constructor(options) { super(options, new URL('./fixtures/lifetime-worker.mjs', import.meta.url)); }
 }
 
-test('real worker crash, terminate, deadline and disk-full failure reap an actual escaped runner tree', { timeout: 90000 }, async t => {
+const windows = process.platform === 'win32';
+test('real worker crash, terminate, deadline and storage failure reap an actual detached runner tree', { timeout: 90000 }, async t => {
     for (const mode of ['worker-crash', 'worker-kill', 'deadline', 'disk-full']) await t.test(mode, async t => {
         const env = await fixture(t, mode);
         const manager = await FixtureManager.open({ workspace: env.workspace, stateRoot: env.stateRoot, sdkRoot, sdkId: 'lifetime-fixture',
@@ -24,23 +25,24 @@ test('real worker crash, terminate, deadline and disk-full failure reap an actua
         if (mode === 'worker-kill') await manager.active.get(receipt.jobId).worker.terminate();
         if (mode === 'disk-full') {
             const original = manager.flushLogFiles.bind(manager);
-            // /dev/full supplies a real ENOSPC write, injected at the storage
-            // boundary while genuine worker/runner/escaped descendants are live.
-            manager.flushLogFiles = async () => { await fs.writeFile('/dev/full', 'durability probe'); };
+            // Exercise an actual failing write while real worker/runner trees
+            // remain live. Windows has no /dev/full: opening a directory for
+            // writing supplies a real storage error at the same boundary.
+            manager.flushLogFiles = async () => { await fs.writeFile(windows ? env.stateDirectory : '/dev/full', 'durability probe'); };
             await assert.rejects(manager.persist(), error => error.code === 'PROCESS_FAILED');
             manager.flushLogFiles = original;
         }
         const job = await until(() => { const value = manager.get(receipt.jobId); return terminal.has(value.state) && value; });
         assert.equal(job.state, mode === 'deadline' ? 'timed_out' : 'failed', JSON.stringify(job));
         assert.equal(job.error.code, mode === 'deadline' ? 'TIMEOUT' : 'PROCESS_FAILED');
-        assert.equal(job.exitCode, null);
-        assert(job.signal === 'SIGTERM' || job.signal === 'SIGKILL', JSON.stringify(job));
+        if (windows) assert.deepEqual([job.exitCode, job.signal], [0xc000013a, null]);
+        else { assert.equal(job.exitCode, null); assert(job.signal === 'SIGTERM' || job.signal === 'SIGKILL', JSON.stringify(job)); }
         for (const pid of pids) assert.equal((await processIdentity(pid))?.alive ?? false, false, `Leaked PID ${pid}`);
         assert(!(await fs.readdir(env.stateDirectory)).some(name => name.startsWith('staging-')));
     });
 });
 
-test('official MCP lifetime: startup cancellation, timeout, stdin EOF, SIGTERM, server SIGKILL and restart keys', { timeout: 240000 }, async t => {
+test('official MCP lifetime: startup cancellation, timeout, stdin EOF, SIGTERM, server SIGKILL and restart keys', { timeout: windows ? 1200000 : 240000 }, async t => {
     const env = await fixture(t, 'mcp-lifetime');
     let session = await connect(env);
     await starter(session);
@@ -62,16 +64,18 @@ test('trusted lifetime', async () => {
         assert.equal((await finished(session, receipt)).job.state, 'cancelled');
         assert.equal((await session.call('job_cancel', { jobId: receipt.jobId })).accepted, false);
     });
-    for (const reason of ['cancel', 'deadline', 'EOF', 'SIGTERM', 'SIGKILL']) await t.test(reason, async () => {
+    // Windows kill(SIGTERM) is TerminateProcess, not a catchable signal. Its
+    // force-death path is exercised by SIGKILL; stdin EOF is graceful shutdown.
+    for (const reason of ['cancel', 'deadline', 'EOF', ...(windows ? [] : ['SIGTERM']), 'SIGKILL']) await t.test(reason, async () => {
         // The deadline includes SDK loading, snapshotting and strict compilation.
         // Leave those real stages time to finish so this case reaches a live tree.
-        const args = check('game', ['logic'], { timeoutMs: reason === 'deadline' ? 30000 : 60000 });
+        const args = check('game', ['logic'], { timeoutMs: windows ? reason === 'deadline' ? 180000 : 240000 : reason === 'deadline' ? 30000 : 60000 });
         const receipt = await session.call('project_check', args);
         const pids = await until(async () => {
             const page = await session.call('job_get', { jobId: receipt.jobId });
             assert(!terminal.has(page.job.state), `Runner stopped before ready: ${JSON.stringify(page)}`);
             try { return JSON.parse(await fs.readFile(path.join(env.stateDirectory, `staging-${receipt.jobId}`, 'logic/pids.json'), 'utf8')); } catch { return false; }
-        }, 60000);
+        }, windows ? 150000 : 60000);
         if (reason === 'cancel') {
             const start = performance.now();
             const result = await session.call('job_cancel', { jobId: receipt.jobId });
@@ -82,9 +86,12 @@ test('trusted lifetime', async () => {
             await session.close(reason);
             session = await connect(env);
         }
-        const page = await finished(session, receipt);
+        const page = await finished(session, receipt, windows && reason === 'deadline' ? args.timeoutMs + 30000 : 120000);
         assert.equal(page.job.state, reason === 'deadline' ? 'timed_out' : reason === 'SIGKILL' ? 'interrupted' : 'cancelled', JSON.stringify(page));
-        if (reason !== 'SIGKILL') assert(page.job.signal === 'SIGTERM' || page.job.signal === 'SIGKILL');
+        if (reason !== 'SIGKILL') {
+            if (windows) assert.deepEqual([page.job.exitCode, page.job.signal], [0xc000013a, null]);
+            else assert(page.job.signal === 'SIGTERM' || page.job.signal === 'SIGKILL');
+        }
         assert.equal((await session.call('project_check', args)).jobId, receipt.jobId);
         for (const pid of pids) await until(async () => !(await processIdentity(pid))?.alive, 10000);
         assert(!(await fs.readdir(env.stateDirectory)).some(name => name.startsWith('staging-')));

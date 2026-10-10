@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { fork } from 'node:child_process';
+import { execFile, fork } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
-import { chmod, chown, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, chown, lstat, mkdir as mkdirFilesystem, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile as writeFileFilesystem } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -10,6 +10,17 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { JobManager } from '../build/src/jobs.js';
 import { AppError, jobSchema, receiptSchema } from '../build/src/contracts.js';
+import { enforceWindowsPrivate, verifyWindowsTrust } from '../build/src/windows-fs.js';
+import { privateFixturePath } from './fixtures/windows-private.mjs';
+
+async function mkdir(filename, options) {
+    const result = await mkdirFilesystem(filename, options);
+    await privateFixturePath(filename); return result;
+}
+async function writeFile(filename, bytes, options) {
+    await writeFileFilesystem(filename, bytes, options);
+    await privateFixturePath(filename);
+}
 
 const fixture = new URL('./fixtures/job-worker.mjs', import.meta.url);
 class FixtureManager extends JobManager {
@@ -40,6 +51,7 @@ async function setup(t) {
     });
     const options = { workspace: join(base, 'workspace'), sdkRoot: join(base, 'sdk'), sdkId: 'sdk-one', stateRoot: join(base, 'state') };
     await Promise.all([options.workspace, options.sdkRoot, options.stateRoot].map(path => mkdir(path, { mode: 0o700 })));
+    if (process.platform === 'win32') await enforceWindowsPrivate(options.stateRoot);
     const directory = join(options.stateRoot, createHash('sha256').update(options.workspace).digest('hex'));
     return { base, options, directory, onCleanup: dispose => cleanup.push(dispose), open: async (override = {}, expectedCloseError) => {
         const manager = await FixtureManager.open({ ...options, ...override });
@@ -98,6 +110,7 @@ test('metadata expiry and cross-SDK startup never delete delivered or unreferenc
         await assert.rejects(lstat(join(env.directory, `log-${receipt.jobId}.txt`)), { code: 'ENOENT' });
         await current.close();
     }
+    if (process.platform === 'win32') for (const directory of artifacts) await enforceWindowsPrivate(join(directory, 'index.html'));
 });
 
 test('abandoned foreign-SDK preview metadata cannot occupy the current workspace preview slot', async t => {
@@ -389,7 +402,8 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         assert.throws(() => manager.logs('missing'), code('JOB_NOT_FOUND'));
         await assert.rejects(manager.cancel('missing'), code('JOB_NOT_FOUND'));
         await manager.close();
-        assert.equal((await lstat(join(env.directory, 'metadata.json'))).mode & 0o777, 0o600);
+        if (process.platform === 'win32') await verifyWindowsTrust(join(env.directory, 'metadata.json'), true);
+        else assert.equal((await lstat(join(env.directory, 'metadata.json'))).mode & 0o777, 0o600);
         const metadata = await readFile(join(env.directory, 'metadata.json'), 'utf8');
         assert.ok(!metadata.includes('private-request-key'));
         assert.equal(JSON.parse(metadata).records[0].sdkId, env.options.sdkId);
@@ -618,7 +632,7 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         assert.equal((await owner.message).type, 'ready');
         await assert.rejects(env.open({ sdkId: 'sdk-two' }), code('WORKSPACE_BUSY'));
         const alias = join(env.base, 'alias');
-        await symlink(env.options.workspace, alias);
+        await symlink(env.options.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir');
         await assert.rejects(env.open({ workspace: alias }), code('WORKSPACE_BUSY'));
         const response = once(owner.child, 'message');
         owner.child.send('close');
@@ -639,7 +653,7 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         const contenders = Array.from({ length: 4 }, () => launch(env, 'contender'));
         const outcomes = await Promise.all(contenders.map(contender => contender.message));
         assert.equal(outcomes.filter(outcome => outcome.type === 'ready').length, 1, JSON.stringify(outcomes));
-        assert.ok(outcomes.filter(outcome => outcome.type !== 'ready').every(outcome => outcome.code === 'WORKSPACE_BUSY'));
+        assert.ok(outcomes.filter(outcome => outcome.type !== 'ready').every(outcome => outcome.code === 'WORKSPACE_BUSY'), JSON.stringify(outcomes));
         const winner = contenders[outcomes.findIndex(outcome => outcome.type === 'ready')];
         await assert.rejects(env.open(), code('WORKSPACE_BUSY'));
         winner.child.send('close');
@@ -694,16 +708,34 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
 
     await t.test('symlink, public, foreign-owned and in-workspace state roots are rejected without chmod or following links', async t => {
         const env = await setup(t);
-        await chmod(env.options.stateRoot, 0o755);
-        await assert.rejects(env.open(), code('PERMISSION_DENIED'));
-        assert.equal((await lstat(env.options.stateRoot)).mode & 0o777, 0o755);
-        await chmod(env.options.stateRoot, 0o700);
+        if (process.platform === 'win32') {
+            await new Promise((resolve, reject) => execFile(join(process.env.SystemRoot, 'System32', 'icacls.exe'),
+                [env.options.stateRoot, '/grant', '*S-1-1-0:(OI)(CI)F'], { windowsHide: true }, error => error ? reject(error) : resolve()));
+            await assert.rejects(env.open(), code('PERMISSION_DENIED'));
+            await enforceWindowsPrivate(env.options.stateRoot);
+        } else {
+            await chmod(env.options.stateRoot, 0o755);
+            await assert.rejects(env.open(), code('PERMISSION_DENIED'));
+            assert.equal((await lstat(env.options.stateRoot)).mode & 0o777, 0o755);
+            await chmod(env.options.stateRoot, 0o700);
+        }
         const alias = join(env.base, 'state-alias');
-        await symlink(env.options.stateRoot, alias);
+        await symlink(env.options.stateRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
         await assert.rejects(env.open({ stateRoot: alias }), code('PERMISSION_DENIED'));
         await assert.rejects(env.open({ stateRoot: join(alias, 'nested') }), code('PERMISSION_DENIED'));
         await assert.rejects(env.open({ stateRoot: join(env.options.workspace, 'state') }), code('PERMISSION_DENIED'));
-        if (process.getuid() === 0) {
+        if (process.platform === 'win32') {
+            await new Promise((resolve, reject) => execFile(join(process.env.SystemRoot, 'System32', 'icacls.exe'),
+                [env.options.stateRoot, '/setowner', '*S-1-1-0'], { windowsHide: true }, error => error ? reject(error) : resolve()));
+            await assert.rejects(env.open(), code('PERMISSION_DENIED'));
+            const account = await new Promise((resolve, reject) => execFile(join(process.env.SystemRoot, 'System32', 'whoami.exe'),
+                ['/user', '/fo', 'csv', '/nh'], { windowsHide: true }, (error, stdout) => error ? reject(error) : resolve(stdout)));
+            const sid = account.match(/S-1-5-21-(?:\d+-){3}\d+/)?.[0];
+            assert(sid, 'Expected the current fixture user SID');
+            await new Promise((resolve, reject) => execFile(join(process.env.SystemRoot, 'System32', 'icacls.exe'),
+                [env.options.stateRoot, '/setowner', `*${sid}`], { windowsHide: true }, error => error ? reject(error) : resolve()));
+            await enforceWindowsPrivate(env.options.stateRoot);
+        } else if (process.getuid() === 0) {
             await chown(env.options.stateRoot, 65534, 65534);
             await assert.rejects(env.open(), code('PERMISSION_DENIED'));
             await chown(env.options.stateRoot, 0, 0);
@@ -777,7 +809,7 @@ test('readonly JobManager: real worker thread scheduling, persistence and contai
         const external = join(env.base, 'not-job-data');
         await mkdir(external, { mode: 0o700 });
         await writeFile(join(external, 'sentinel'), 'untouched', { mode: 0o600 });
-        await symlink(external, join(env.directory, `staging-${cancelled.jobId}`, 'external-link'));
+        await symlink(external, join(env.directory, `staging-${cancelled.jobId}`, 'external-link'), process.platform === 'win32' ? 'junction' : 'dir');
         await manager.cancel(cancelled.jobId);
         assert.equal(await readFile(join(external, 'sentinel'), 'utf8'), 'untouched');
         assert.ok(!(await readdir(env.directory)).some(name => name.startsWith('staging-')));

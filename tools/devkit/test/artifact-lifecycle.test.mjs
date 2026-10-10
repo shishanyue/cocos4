@@ -7,6 +7,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { JobManager } from '../build/src/jobs.js';
+import { verifyWindowsTrust } from '../build/src/windows-fs.js';
+import { privateFixtureTree } from './fixtures/windows-private.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const day = 24 * 60 * 60 * 1000;
@@ -74,9 +76,11 @@ async function fixture(t, { version = 5, age = 0, count = 2 } = {}) {
     if (version >= 4) metadata.artifacts = structuredClone(metadata.records.flatMap(record => record.job.report.artifacts));
     const save = () => fs.writeFile(metadataFile, JSON.stringify(metadata), { mode: 0o600 });
     await save();
+    await privateFixtureTree(root);
     const managers = [];
     t.after(async () => {
         for (const manager of managers.reverse()) await manager.close();
+        await privateFixtureTree(root, { preserveReadonly: false });
         await fs.rm(root, { recursive: true, force: true });
     });
     return { options, directory, metadataFile, metadata, artifacts, save,
@@ -119,7 +123,11 @@ async function preserved(env) {
     for (const { artifact, output, payload, raw } of env.artifacts) {
         assert.deepEqual(await fs.readFile(path.join(output, artifact.entry)), payload);
         assert.deepEqual(await fs.readFile(path.join(output, 'artifact-inventory.json')), raw);
-        assert.equal((await fs.stat(path.join(output, artifact.entry))).mode & 0o777, 0o400);
+        const filename = path.join(output, artifact.entry);
+        if (process.platform === 'win32') {
+            await verifyWindowsTrust(filename, true);
+            assert.equal((await fs.stat(filename)).mode & 0o222, 0);
+        } else assert.equal((await fs.stat(filename)).mode & 0o777, 0o400);
     }
 }
 
@@ -190,6 +198,7 @@ test('crash recovery preserves unregistered published output, removes failed sta
     const orphan = path.join(env.directory, `artifact-${orphanId}`);
     await fs.mkdir(orphan, { mode: 0o700 });
     await fs.writeFile(path.join(orphan, 'keep'), 'already published', { mode: 0o400 });
+    await privateFixtureTree(orphan);
     const record = structuredClone(env.metadata.records[0]);
     record.requestKeyDigest = null;
     Object.assign(record.job, { jobId: orphanId, state: 'running', phase: 'committing', report: null, finishedAt: null });
@@ -199,6 +208,7 @@ test('crash recovery preserves unregistered published output, removes failed sta
     const staging = path.join(env.directory, `staging-${orphanId}`);
     await fs.mkdir(staging, { mode: 0o700 });
     await fs.writeFile(path.join(staging, 'partial'), 'discardable staging', { mode: 0o600 });
+    await privateFixtureTree(staging);
     const manager = await env.open(env.options.sdkId, CandidateManager);
     assert.equal(manager.get(orphanId).state, 'interrupted');
     assert.equal(await fs.readFile(path.join(orphan, 'keep'), 'utf8'), 'already published');

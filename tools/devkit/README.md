@@ -27,6 +27,36 @@ earlier HTML5/BILIBILI candidate and focused results, not the new exporters; the
 [September 24-25 checkpoint](ACCEPTANCE.md#september-24-25-checkpoint) retains
 earlier identities, skill checks and interrupted verification.
 
+New portable exports include root `AGENTS.md`, copied from the reviewed
+[AI guide template](packaging/AGENTS.md). It explains bundled skills, MCP setup,
+CLI fallback, external projects/state, profiles and job results. The
+[run9 ZIP](build/windows-agents-delivery-20261010-run9/devkit-win32-run9.zip)
+contains this guide and updated getting-started instructions; its
+[packaging verification](build/windows-agents-delivery-20261010-run9/agents-packaging-verification.json)
+binds guide bytes, relative links, source provenance and ZIP membership. The real
+packaged startup/relocation and modified-guide rejection check passed. Its SDK,
+engine and compiler payloads match run7; the new guide release has its own ID.
+The sixteen-game/browser results below remain evidence for run7.
+
+The Windows run7 candidate passed local packaged checks: sixteen edited
+HTML5/BILIBILI/WECHAT/BYTEDANCE 2D/3D debug/release exports in two independent
+workspaces, plus four real HTML5 browser cases. Download the
+[ZIP](build/windows-delivery-20261010-run7/devkit-win32-run7.zip) (326,191,219 bytes)
+and inspect the [delivery summary](build/windows-delivery-20261010-run7/acceptance-summary.json).
+SHA-256 is `1ef233818583773cde45e18c75c2728f93f336d1c7b4c389c4e499d158636a5e`.
+Use the protected D-drive task directory below. The two target groups are not a
+single sixteen-profile run; current full source matrices remain unaccepted.
+Existing engine/MCP results retain their own scopes. Exact identities, browser
+results and remaining gates are in [Windows Local Delivery](ACCEPTANCE.md#windows-local-delivery-october-10).
+
+The current Codex conversation separately completed
+[Signal Switch](build/windows-delivery-20261010-run7/signal-switch/acceptance-summary.json)
+through the packaged CLI: creation, TS2322, strict repair, build and real browser
+gameplay. Victory/failure/timer, mouse/touch/keyboard, thirteen restarts and native
+WebAudio PCM passed. This proves that CLI route; installed Codex MCP discovery
+and the independent OpenCode/provider session remain unaccepted. The package is
+a local candidate with `distributionApproved: false`.
+
 Earlier [Effect work](effects/README.md) resolved the strict 3D EFX2404 blocker
 without dropping builtin roots or disabling parser/driver validation. The
 separate [runtime pipeline](runtime/README.md) records prior decorated 2D/3D
@@ -36,7 +66,7 @@ an HTTP-ready preview alone does not establish browser rendering or interaction.
 
 ## Run
 
-From an extracted Linux candidate, not the engine repository root:
+From an extracted Linux candidate:
 
 ```sh
 ./cocos4 doctor
@@ -44,6 +74,28 @@ From an extracted Linux candidate, not the engine repository root:
 ./cocos4 ai --client opencode --executable /absolute/path/to/opencode \
   --workspace /absolute/path/to/games --mode develop --preview true
 ```
+
+From an extracted Windows x64 candidate under the selected protected task directory:
+
+```powershell
+& 'D:\cocos4-work\devkit-win32-run7\cocos4.exe' doctor
+& 'D:\cocos4-work\devkit-win32-run7\cocos4.exe' mcp --workspace 'D:\cocos4-work\games' --state-root 'D:\cocos4-work\state' --mode develop --preview true
+```
+
+The Windows launcher uses its bundled Node and helpers. Existing workspace and
+state directories must pass the handle and ACL checks. The selected subtree
+must be private and protected from foreign modification; an ordinary shared
+writable ancestor still fails even when the leaf is private. The fixed-volume
+root has a separate ancestor rule; its ACL need not be changed. Keep workspace,
+SDK and state as disjoint paths. Configure TEMP and browser profiles under the
+same task subtree, and pass `--state-root` explicitly to keep task output on D.
+The [package guide](packaging/README.md) records
+Windows startup and installed-client requirements, and the [acceptance
+ledger](ACCEPTANCE.md) records the exact workflows tested.
+
+OpenCode is optional. The `ai` command integrates that reviewed reference client;
+CLI commands and the stdio MCP server run independently. A compatible MCP
+client can connect to the package launcher without using the OpenCode adapter.
 
 Portable `doctor` without `--workspace` is SDK-only: no workspace, `HOME`, XDG state
 configuration or private state is needed or created. It checks release/SDK integrity
@@ -54,7 +106,8 @@ execution grants are rejected. Portable `ai` requires the absolute `--executable
 of an installed supported OpenCode. The launcher fixes the SDK and rejects
 `--sdk-root`; source-mode CLI commands instead require all three explicit roots.
 For workspace commands, state defaults to `$XDG_STATE_HOME/cocos4` or
-`$HOME/.local/state/cocos4`, unless `--state-root` is supplied.
+`$HOME/.local/state/cocos4` on Linux, and `%LOCALAPPDATA%\cocos4` or
+`%USERPROFILE%\AppData\Local\cocos4` on Windows, unless `--state-root` is supplied.
 
 Maintainer source workflow, from the engine repository root:
 
@@ -71,9 +124,10 @@ source runtime builds and real browser checks have their own prerequisites and
 explicit integration settings; see the runtime guide. A checked/served artifact
 is not a substitute for those browser checks.
 
-Maintainer SDK preparation currently requires Linux `/usr/bin/python3` and
-`renameat2(RENAME_NOREPLACE)`. Installed publication uses the compiled
-`cocos4-publish` helper instead; `npm run build` compiles the three host helpers into
+Maintainer SDK preparation uses Linux `/usr/bin/python3` and
+`renameat2(RENAME_NOREPLACE)`, or the Windows host publisher on Windows.
+Installed publication uses the compiled
+`cocos4-publish` helper instead; `npm run build` compiles the host helpers into
 `build/host/` and portable candidates include them. Staging and destination must
 share a filesystem and the canonical destination parent must exist. Publication
 uses pinned descriptor chains and a five-second timeout, without Python, a shell
@@ -107,8 +161,9 @@ Keep maintained code in the project and retained SDKs/evidence in ignored
 `tools/devkit/build/`, not only in system temporary storage. The retained eight-profile
 SDK is identified in the [acceptance checkpoint](ACCEPTANCE.md#packaged-2048-check).
 Legacy eight-profile HTML5/BILIBILI SDKs remain valid. The new four-target kit is
-expected to contain 16 profiles (each target's 2D/3D debug/release combinations);
-its final SDK, candidate and packaged demo have not yet been assembled. Query the
+expected to contain 16 profiles (each target's 2D/3D debug/release combinations).
+The October 1 Linux delivery is recorded in [the acceptance ledger](ACCEPTANCE.md);
+Windows has its own assembly and validation records. Query the
 actual catalog rather than assuming these source changes upgrade an installed SDK.
 Historical SDKs remain at `build/game-sdk-isolated` (debug) and
 `build/game-sdk-release-workstream-20260919-lexical` (eight profiles). A compatibility fixture
@@ -216,12 +271,33 @@ recorded in `package-lock.json`. This is not a release SBOM or license clearance
 
 ## Executed Evidence
 
+[Run7 delivery](build/windows-delivery-20261010-run7/acceptance-summary.json)
+binds the exact ZIP/release/SDK to sixteen exports and four Edge/SwiftShader
+browser reports, with package and archive unchanged. It records standard
+Windows extraction, Unicode/long-path relocation, SDK-only doctor and actual
+official-client MCP calls. HTML5 desktop/mobile pixels, input, native WebAudio,
+missing assets and ten restarts passed; browser/driver remain explicit external
+dependencies. Mini-game evidence is local source preflight, not vendor rendering.
+[Signal Switch](build/windows-delivery-20261010-run7/signal-switch/acceptance-summary.json)
+adds the current Codex packaged-CLI loop and clean preview TTL exit 0.
+
+The [D-drive checks](ACCEPTANCE.md#d-working-directories-october-10) passed
+filesystem/runtime 16/16 on each pinned Node and strictly loaded the actual SDK.
+The current source matrix was interrupted, with null totals and `success: false`;
+these scopes are not combined into a full-matrix pass. The
+[cleanup summary](build/c-drive-cleanup-20261010/summary.json) records zero task
+items in C-root and user-home scopes; useful small evidence is retained on D.
+VM, non-admin, offline/source-hidden/read-only-mount, device/hardware, vendor,
+authenticated source and redistribution acceptance remain open.
+
+Earlier checkpoints below retain their original scope and identity.
+
 `build/minigame-exporters-20260930/summary.json` records eight successful new
 WECHAT/BYTEDANCE 2D/3D debug/release runtime builds and local reports. Local checks
 use explicit host/`cc` mocks and static engine inspection, not engine execution or
 rendering; browser, vendor, device and portable-SDK validation remain false.
 The parent reports 26 focused shared production-validator tests passed. This doc
-update runs no tests/builds and claims no final new SDK/candidate/demo result;
+update at that checkpoint ran no tests/builds and claimed no final new SDK/candidate/demo result;
 final proof belongs in [ACCEPTANCE.md](ACCEPTANCE.md).
 
 The current [acceptance ledger](ACCEPTANCE.md) separates retained reports from
@@ -231,10 +307,10 @@ the namespace workflow records eight builds and four browser reports with
 release/profile identity assertions. Parent direct runs passed 139
 job/log/artifact/preview cases on each pinned Node and 49 game cases on Node 24.
 No current full Node 18/24 matrix pass is established. See the
-[current checkpoint](ACCEPTANCE.md#packaged-2048-check) and historical
+[historical packaged checkpoint](ACCEPTANCE.md#packaged-2048-check) and historical
 [September 26 focused verification](ACCEPTANCE.md#september-26-focused-verification).
 The verification-script fixes passed scoped source/harness checks; no further full
-runs were performed. The later candidate assembly supersedes "not rebuilt"
+runs were performed at that checkpoint. The later candidate assembly supersedes "not rebuilt"
 without inheriting earlier matrix passes.
 
 The actual OpenCode 1.18.21 `opencode/big-pickle` attempt retained in

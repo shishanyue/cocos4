@@ -7,48 +7,57 @@ The table maps that contract to implementation and inspectable evidence. A sourc
 test, fixture, startup receipt, or historical pass is not a portable release pass.
 Unknown, skipped, interrupted, and unverified requirements remain open.
 
-The current focused checkpoint is the [WeChat And ByteDance Delivery](#wechat-and-bytedance-delivery).
+Current Windows source and SDK checks are recorded in
+[Windows Host Checks](#windows-host-checks-october-9) and
+[Windows SDK Preparation](#windows-sdk-preparation-october-9).
+The latest candidate and D-drive checks are recorded in
+[Windows Local Delivery](#windows-local-delivery-october-10) and
+[D Working Directories](#d-working-directories-october-10). Run7 passed its local
+16-export workflow in two independent target groups and four HTML5 browser cases.
+The [WeChat And ByteDance Delivery](#wechat-and-bytedance-delivery) remains the
+earlier Linux candidate checkpoint.
 The earlier [Packaged 2048 Check](#packaged-2048-check),
 [September 24-25 checkpoint](#september-24-25-checkpoint) and
 [September 26 source/harness fixes](#september-26-focused-verification) remain
 historical; no current full Node 18/24 pass is established.
-The current user instruction is no further full matrix runs, only necessary
-focused checks. Selected tests and retained archives do not establish full acceptance.
+The September checkpoint limited work to focused checks. The October 9 continuation
+resumes Windows implementation and package validation; that historical restriction
+does not govern the resumed work. Selected tests and retained archives do not establish full acceptance.
 All `build/` evidence paths below are relative to `tools/devkit/`.
 
 ## Requirement Map
 
 | Plan / Requirement | Artifact Or Verification Entry | Current Evidence / Remaining Work |
 | --- | --- | --- |
-| 1, 3.1, P1: No engine checkout, Creator, system Node/npm, or first-use download | `packaging/launcher.c`, `packaging/launch.mjs`, `scripts/prepare-release.mjs`, `scripts/verify-portable-host.mjs` | Historical candidate v5-a passed eight builds and four actual browser scenarios in an offline, non-admin namespace without source/home/system executable mounts; browser and driver mounts are explicit test prerequisites. SDK-only `./cocos4 doctor` needs no workspace/HOME/state; explicit workspace retains jobs. Fresh VM, model and other hosts remain open. |
+| 1, 3.1, P1: No engine checkout, Creator, system Node/npm, or first-use download | `packaging/launcher.c`, `packaging/launch.mjs`, `scripts/prepare-release.mjs`, `scripts/verify-portable-host.mjs` | Run7 used its bundled Node with empty MCP PATH for 16 edited game exports and SDK-only doctor without HOME/state. Browser and driver were explicit external prerequisites. Windows source-hidden/offline/fresh-VM/non-admin checks remain open; earlier v5-a Linux namespace evidence retains its own identity. |
 | 3.1, 3.4: Fixed runtime/dependency closure, reproducible payload, manifest, archive checksum and provenance | `scripts/prepare-game-sdk.mjs`, `src/sdk.ts`, `src/release.ts`, outer `release.json`, SPDX inventory | New four-target candidate identity/size/checksum below; v5-a is retained separately. Historical e/f have identical payload and archive hashes, not a repeated current build. New artifacts bind verified release/profile provenance; legacy imports are not relabeled. Clean end-to-end source provenance and authentication remain open. |
-| 3.1, 11.1: Linux x64, Windows x64, macOS arm64 host verification | Real per-host portable matrix | Linux candidate and namespace evidence only; no full VM or Windows/macOS acceptance. Do not advertise the other hosts. |
+| 3.1, 11.1: Linux x64, Windows x64, macOS arm64 host verification | Real per-host portable matrix | Run7 Windows local package workflow passed in two independent groups. Full VM/non-admin/offline/source-hidden Windows and macOS acceptance remain open; Linux namespace evidence remains historical. See [Windows Local Delivery](#windows-local-delivery-october-10). |
 | 3.2, 11.1: Locked dependencies and strict independent TypeScript | `package-lock.json`, `tsconfig.json`, `npm run build` | Strict tool compilation and pinned Node 18.20.8 / 24.21.0 tests exist; final merged matrix is open. |
-| 3.3: Independently built HTML5/BILIBILI/WECHAT/BYTEDANCE, 2D/3D, debug/release | `scripts/build-runtime.cjs`, `scripts/prepare-game-sdk.mjs`, `test/release-profile.test.mjs` | Current 16-profile SDK: [WeChat And ByteDance Delivery](#wechat-and-bytedance-delivery); eight new target runtimes plus retained HTML5/BILIBILI inputs. Earlier eight-profile SDK: [September checkpoint](#september-24-25-checkpoint). Historical SDK `build/game-sdk-release-workstream-20260919-lexical`, ID `sha256-68bbd6aa9b7e56f9d22c61a35541d8f5113c8d7920cac9033a5382f40a720a28`, contains eight profiles. Four public release cases passed on both pinned runtimes for that earlier evidence; final merged matrix remains open. |
+| 3.3: Independently built HTML5/BILIBILI/WECHAT/BYTEDANCE, 2D/3D, debug/release | `scripts/build-runtime.cjs`, `scripts/prepare-game-sdk.mjs`, `test/release-profile.test.mjs` | Run7 delivered and built all 16 game combinations across two independent workspaces. Retained engine inputs preserve their original producer receipts; this run did not rebuild engine bundles. Earlier SDK identities remain in their historical checkpoints. Final merged source matrix remains open. |
 | 3.3, 6.3: Capability levels derived from allowlist and delivered profiles | `src/sdk.ts`, `src/app.ts`, catalog tests | Implemented; final merged protocol and payload matrix required. No white-list entry alone promises an exporter. |
-| 4.1: Independent module loader, real init, builtins, strict Effects and decorated game behavior | `runtime/`, `effects/`, runtime/loader/compiler tests | Real 2D/3D runtime and browser evidence exists; packaging must preserve the verified closures and demonstrate it without source access. |
+| 4.1: Independent module loader, real init, builtins, strict Effects and decorated game behavior | `runtime/`, `effects/`, runtime/loader/compiler tests | Run7's four emitted HTML5 artifacts passed real 2D/3D browser execution. Source-hidden Windows acceptance remains open. Engine/Effect evidence is independently bound to its inputs, without relabeling old shader compilation as a new run. |
 | 4.2, 6.3: Standard editable TS/JS projects and supported resources, no implicit scripts/plugins | `src/game.ts`, `runtime/compile-game.cjs`, `test/game.test.mjs` | Creation, strict checking and builds implemented. Unknown resources, profile linkage and failed-build preservation have regressions; full current matrix open. |
 | 4.2, 6.3: BILIBILI game bootstrap, adapter, module/resource closure and canonical preflight | `src/bilibili.ts`, `runtime/verify-bilibili.cjs`, `scripts/validate-bilibili.cjs`, BILIBILI tests | Shadowed-exporter defect repaired using lexical bindings. Real public 2D/3D release builds now passed on Node 18/24. Local host simulation is not vendor rendering. |
-| 4.2, 6.3, P5: WECHAT/BYTEDANCE source exporters and project-owned metadata | Target-specific `runtime/` preparers/verifiers, `src/bilibili.ts`, `scripts/validate-minigame.cjs` | Eight genuine target runtime builds/local reports and packaged 2048 `2d-basic/release` exports passed at the current checkpoint. Config bytes and copied inventories verified; local host/cc mocks and static checks are not engine execution, vendor compilation or device rendering. |
-| 5, P4: Temporary installed OpenCode connection, no global configuration mutation | `src/ai.ts`, `src/ai-config.ts`, `src/ai-files.ts`, `runtime/mcp-launch.c`, `test/ai-run-focused.mjs` | Historical OpenCode 1.18.21 non-root Linux checks: `build/ai-p4-BLF0Lw/` (Node 18), `build/ai-p4-RLoMPw/` (Node 24), 37 focused tests and 93 real file-tool checks each. Current static-no-libc MCP helper removes runtime `/usr/bin/env`; separate provider auth environment is unchanged. Portable AI requires `--executable`, rejects `--sdk-root`. Real model attempt below failed; no gameplay demonstration. |
-| 6.1-6.2: Official SDK stdio, strict schemas, resources, error routing, bounded matching text/structured responses | `src/server.ts`, `src/app.ts`, `probes/mcp-client.ts`, protocol tests | Implemented; revalidate current merged source with official client. No experimental Tasks or arbitrary file resource exposure. |
+| 4.2, 6.3, P5: WECHAT/BYTEDANCE source exporters and project-owned metadata | Target-specific `runtime/` preparers/verifiers, `src/bilibili.ts`, `scripts/validate-minigame.cjs` | Run7 passed all eight WECHAT/BYTEDANCE 2D/3D debug/release source exports, config-byte copies and resource inventories. Their local preflight and retained host/cc mocks do not establish vendor compilation or device rendering. |
+| 5, P4: Temporary installed OpenCode connection, no global configuration mutation | `src/ai.ts`, `src/ai-config.ts`, `src/ai-files.ts`, `runtime/mcp-launch.c`, `test/ai-run-focused.mjs` | Historical Linux file-tool checks remain separate. Windows OpenCode 1.18.21 / Bun 1.3.14 MCP/skill discovery passed, but its read-only-DACL guarded-tool loader remains unaccepted. OpenCode is optional; the current Codex packaged-CLI game proof does not clear that adapter/provider gate. |
+| 6.1-6.2: Official SDK stdio, strict schemas, resources, error routing, bounded matching text/structured responses | `src/server.ts`, `src/app.ts`, `probes/mcp-client.ts`, protocol tests | Run7 target groups used the official SDK client for actual stdio discovery, catalog/docs/resources, schema-checked matching responses and game jobs. The full merged source matrix remains open. No experimental Tasks or arbitrary file resource exposure. |
 | 6.3: All fourteen named MCP tools and CLI parity | `src/app.ts`, `src/cli.ts`, `src/operations.ts` | Ten default / thirteen develop / fifteen with preview, including additional preview_stop; logic is an authorized check option, not a new arbitrary execution tool. |
 | 6.3, 8: Explicit execute-tests permission and useful pure logic results | `src/logic.ts`, `src/logic-runner.ts`, `src/process.ts`, `runtime/supervise.c` | Public develop + execute-tests grant, fixed Node tests, real declarations and TS/JS/MJS/CJS compiler checks implemented. Both pinned logic/lifecycle matrices: 35/35. Trusted execution is not a sandbox. |
 | 7: Required request keys, seven-day idempotency, deadlines, exits and report inventories | `src/jobs.ts`, `src/contracts.ts`, `test/jobs.test.mjs`, `test/artifact-lifecycle.test.mjs` | Metadata v5 keeps SDK artifact ownership independent of seven-day jobs/logs/keys and preserves original producers. New release-aware keys cannot reuse another release or unknown legacy producer; the same verified release may relocate. Parent direct Node 18/24 runs each passed 139 job/log/artifact/preview tests, zero failures/skips. v2/v3/v4 migration invents no provenance. Full merged revalidation remains open. |
-| 7: Queue/locks, unique terminal states, cancellation and disconnect | `src/jobs.ts`, `src/worker.ts`, lifecycle tests | Linux fixed workers and real supervised process trees passed the selected matrices below. Other hosts remain unimplemented. |
+| 7: Queue/locks, unique terminal states, cancellation and disconnect | `src/jobs.ts`, `src/worker.ts`, lifecycle tests | Linux and Windows Job Object checks exist in their recorded scopes; current full-matrix acceptance remains open. macOS supervision remains unimplemented. |
 | 7: Server SIGKILL, worker crash, disk full, backpressure, startup cancellation | Job/process failure tests | Real Linux kill/EOF/crash/cancellation and write-failure injection covered. Full physical filesystem exhaustion/power-loss and every host/schedule are not established. |
 | 7: Seven-day logs, 8 MiB/job, 256 MiB/workspace, continued draining and expired cursors | `src/jobs.ts`, `src/app.ts`, `test/job-logs.test.mjs` | 24 MiB stdout, 8 MiB log limit, 256 MiB eviction, expired cursors and 64-record admission preserving seven-day keys passed. Metadata and logs are separate. |
 | 7: Validated staging, no overwrite, snapshot consistency, immutable artifacts | `src/workspace.ts`, `runtime/publish.c`, `test/publisher.test.mjs`, `test/jobs.test.mjs` | Fixed compiled descriptor-pinned helper replaces runtime Python. Real no-replace/EXDEV/ancestor/Unicode cases passed. Delivered files no longer expire with job metadata; rename and metadata remain separate crash outcomes. |
 | 8, 11.1: Path/alias/race limits, secrets, authority boundaries | Workspace, preview and AI file-tool tests | Descriptor-pinned MCP paths and guarded client tools exist. AI alias/patch-destination failures reproduced and repaired; final integrated acceptance remains open. |
 | 8: Preview only owned HTML5 artifacts on tokenized loopback, TTL/Host/Origin protection | `src/preview.ts`, `test/preview.test.mjs`, browser tests | Implemented. BILIBILI browser preview is rejected; final merged matrix open. |
-| 9: Offline API, skills, valid references and real declaration examples | `src/api-index.ts`, `API-DOCS.md`, `skills/`, API/skill tests | Historical eight-profile index contains 13,792 API/member symbols and 16 template source examples. All-eight-variant example checks are completed in the [September checkpoint](#september-24-25-checkpoint); final candidate acceptance remains open. |
-| 9, 11.2: Actual AI create/edit/error/fix/profile/build/preview/export loop | Installed client/model session plus deterministic replay | Open: retained OpenCode 1.18.21 `opencode/big-pickle` invocation received HTTP 403 `FreeTierError`, zero model text/tools; the gameplay prompt was not submitted. This is not success or proof all models are unavailable. Client tool smoke tests do not fulfill the demonstration. |
+| 9: Offline API, skills, valid references and real declaration examples | `src/api-index.ts`, `API-DOCS.md`, `skills/`, API/skill tests | Run7 queried real packaged API docs/resources. Historical all-eight-variant example checks retain their [September checkpoint](#september-24-25-checkpoint) identity; current full sixteen-variant skill/example acceptance remains outside this local package scope. |
+| 9, 11.2: Actual AI create/edit/error/fix/profile/build/preview/export loop | Current Codex packaged CLI proof; installed-client discovery and deterministic protocol tests remain separate | Signal Switch passed create, TS2322 failure, strict repair, HTML5/2d-basic/debug build and real browser gameplay through the packaged CLI. Installed Codex MCP discovery, independent OpenCode/provider inference and AI profile-switch/export acceptance remain open. The historical OpenCode 403 remains a separate failed attempt. |
 | 11.1: Offline, no source mount/cache/system tools, relocation, read-only SDK, non-admin | `build/portable-host-WU6Ruj/` and later candidate reports | Initial namespace workflow passed with real archive extraction, Unicode/space/long-path relocation, UID 1000, empty PATH, read-only kit and loopback-only network. This is explicitly not a new VM. |
 | 11.1: Redistributable closure, licenses, SBOM, notices | `LICENSE`, dependency license files, external provenance, release inventory | Open: external license inventory and compiler/engine license metadata conflicts require review. Preserve notices; never invent a license grant. |
-| 11.2: Real 2D/3D browser pixels, desktop/mobile input/layout, images/JSON/audio, failure and ten restarts | `test/browser-game.mjs`, `test/release-development.test.mjs`, namespace browser driver | Source release matrices passed both HTML5 cases and both BILIBILI builds. Package v5-a separately passed four edited HTML5 browser cases (2D/3D, debug/release) under namespace isolation, with release/profile identity assertions. Chromium/SwiftShader is not device or hardware-GPU proof. |
-| 11.3: Source engine regression commands | Commands below; `build/engine-verification-20260919T032859Z-source-gates/` | All eleven commands exited 0 on that unchanged source snapshot, host Node 26.7.0. Re-run when relevant engine inputs change. |
+| 11.2: Real 2D/3D browser pixels, desktop/mobile input/layout, images/JSON/audio, failure and ten restarts | Retained run7 browser reports and explicit browser drivers | All four run7 HTML5 2D/3D debug/release outputs passed desktop/mobile pixels, mouse/touch, native WebAudio PCM, missing-asset behavior and ten restarts. Signal Switch separately passed victory/failure/timer, keyboard and thirteen restarts. Edge/SwiftShader does not establish hardware/device rendering or physical speaker output. |
+| 11.3: Source engine regression commands | Commands below; `build/continuation-20261010-engine/summary.json` | The audit verified retained October 9 engine input/log/bundle hashes against current source; prepare/platform/declaration/Jest/WECHAT/OPPO/dev/cli gate results retain their original execution scope. Current Effect tests separately passed 10/10. No new engine gates or bundles were claimed. |
 | 11.4: Honest local/vendor/device/release support statements | CLI reports, README/MCP docs, release gates | Vendor compile/upload/device acceptance remains unverified and is not inferred from local builds. No release publication is authorized. |
-| 12: Current progress and user documentation | `README.md`, `MCP.md`, plan progress section | Current [WeChat And ByteDance Delivery](#wechat-and-bytedance-delivery), with earlier checkpoints retained as historical. Retain full open scope. |
+| 12: Current progress and user documentation | `README.md`, `MCP.md`, plan progress section | Current [Windows Local Delivery](#windows-local-delivery-october-10), with earlier checkpoints retained as historical. Retain full open scope. |
 
 ## Engine Gate Commands
 
@@ -89,6 +98,248 @@ passing totals from partial output. The preceding `build/matrix-node24-E9bbpP/`
 failure (510 tests, 492 passed / 18 failed) remains separate and preserved.
 
 ## Current Evidence
+
+### Packaged AI Guide (October 10)
+
+Every new `prepare-release.mjs` export copies `packaging/AGENTS.md` to the package
+root. The source-input provenance, release inventory and SPDX file inventory
+include it; the verifier permits this exact root filename. It is an installed
+SDK usage guide, separate from the source checkout's engine-maintenance rules.
+
+The [run9 guide delivery](build/windows-agents-delivery-20261010-run9/agents-packaging-verification.json)
+records source/package/ZIP SHA-256 equality, valid bundled skill/document links
+and release ID `sha256-6413e3a5e4b82c606d9c96ecc15af378aa6ccc417d5604568662b917e1b2e645`.
+The [ZIP](build/windows-agents-delivery-20261010-run9/devkit-win32-run9.zip) is
+326,202,781 bytes, SHA-256
+`9aae645885519b2a558fbfb15665a1229b448913b0e65643aafed0d5280cad90`.
+The selected actual-package test in `build/portable-agents-startup-20261010-run9.log`
+passed 1/1, zero failed/cancelled/skipped: source guide equality, readonly
+relocation, SDK-only doctor, explicit workspace jobs, unchanged startup grants
+and rejection of a modified root guide. This is a targeted package check.
+
+The SDK ID and engine/compiler payloads match run7. Changes are limited to
+`AGENTS.md`, the packaged verifier/getting-started instructions and provenance/
+SPDX records. Run7's sixteen builds and browser/game results retain their original
+release identity; no new vendor/device or complete source matrix pass is claimed.
+
+### D Working Directories (October 10)
+
+`build/windows-d-private-20261010/summary.json` records the fixed-volume
+ancestor correction. Only a fixed-volume root used as an ancestor may retain
+its own DELETE, extended-attribute and attribute-write permissions. Foreign
+WRITE_DAC, WRITE_OWNER and FILE_DELETE_CHILD remain rejected there; ordinary
+ancestors and requested leaves keep the strict ACL, identity and reparse rules.
+The drive-root ACL was not changed. A protected private subtree at
+`D:/cocos4-work` now passes the real helper handshake, which the earlier helper
+rejected with exit 73.
+
+Node 18.20.8 and 24.21.0 each passed all 16 filesystem/runtime regressions with
+no failures or skips. Real private-workspace catalog/docs/project inspection
+and package-snapshot preflight passed on both runtimes. Both also strictly
+loaded the actual run7 SDK's 16 profiles and 16 templates under immutable leases;
+this verifies SDK access, not 16 game builds. Helper SHA-256 is
+`d549c20411c895b52becb2ab8d47bbf1be0e3757f770883ec39810ace0355b3c`.
+
+### Windows Local Delivery (October 10)
+
+[Delivery summary](build/windows-delivery-20261010-run7/acceptance-summary.json)
+records `success: true` for the run7 local package checks. The delivery directory
+contains the current ZIP, checksum, manifests, receipts, export inventories,
+browser reports/screenshots and editable Signal Switch project.
+The selected SDK's original engine-producer identities are preserved;
+`newlyBuiltEngineBundles: false`.
+
+| Field | Current Local Candidate |
+| --- | --- |
+| Delivery | `build/windows-delivery-20261010-run7/` |
+| Active kit | `D:/cocos4-work/devkit-win32-run7` |
+| Release ID | `sha256-41b71ff5bad58c69201e10f5715fb516b6b69ba071c3438e74cc5cc892ff07dd` |
+| SDK ID | `sha256-f8be9870cbf2c1c6f9794cd66b80efb8ecd579837ee2692988e5ae76d975d098` |
+| Archive | [devkit-win32-run7.zip](build/windows-delivery-20261010-run7/devkit-win32-run7.zip); 326,191,219 bytes |
+| Archive SHA-256 | `1ef233818583773cde45e18c75c2728f93f336d1c7b4c389c4e499d158636a5e` |
+| Status | Local packaged checks passed; dirty-source candidate; `distributionApproved: false` |
+
+Windows PowerShell Expand-Archive extraction, Unicode/long-path relocation and
+SDK-only doctor without HOME/state passed. The official MCP client used bundled
+Node and empty MCP PATH in two fresh independent workspaces:
+[BILIBILI/BYTEDANCE](build/windows-delivery-20261010-run7/acceptance/bilibili-bytedance/report.json)
+and [HTML5/WECHAT](build/windows-delivery-20261010-run7/acceptance/html5-wechat/report.json).
+Each built eight edited games, covering all sixteen 2D/3D debug/release
+combinations. Artifact/profile provenance, exact config bytes, copied resources,
+inventories and unchanged package/ZIP hashes were verified. These are independent
+target groups; `freshFullSingleRun: false`, not a single sixteen-profile run.
+
+All four HTML5 outputs passed Edge `154.0.4258.62` / ANGLE SwiftShader desktop
+and mobile pixels, mouse/touch, native WebAudio PCM, missing assets and ten
+restarts, with empty page-error lists. The browser and driver are explicit
+external verification prerequisites. Mini-game exports passed local source
+preflight; no vendor renderer/compiler or device ran.
+
+[Signal Switch](build/windows-delivery-20261010-run7/signal-switch/acceptance-summary.json)
+separately records the current Codex conversation through public packaged
+`cocos4.exe` CLI: creation, genuine TS2322, numeric repair with strict library
+checks, HTML5/2d-basic/debug build, and real browser victory/failure/timer,
+mouse/touch/keyboard, thirteen restarts and native WebAudio PCM. Preview TTL
+closed with exit 0. The game uses public Sprite rendering from the delivered profile.
+`installedCodexMcpConnector: false` and independent OpenCode/provider acceptance
+remain false. OpenCode/Bun's read-only file-DACL loader protection is retained.
+
+The Node 24 source matrix at `build/continuation-20261010-node24/full/result.json`
+was interrupted while honoring the work-drive constraint: totals are null,
+`success: false`, `fullSuccess: false`, and its Job Object closed. Existing MCP
+55/55 and engine-gate evidence retain their own scopes and input identities;
+they are not combined with these new checks into a full-matrix pass. The engine
+input/log/bundle audit and current Effect 10/10 scope are retained in
+`build/continuation-20261010-engine/summary.json`. Run6's six-of-sixteen partial
+builds remain interrupted and do not supply run7 success.
+
+Future task output, workspace/state, browser profiles and configured TEMP stay
+under the selected protected task subtree. Fixtures use canonical configured
+TEMP rather than a drive root or user-home fallback. Retained reports keep
+their original execution paths as provenance; slim evidence is kept in the
+repository's ignored `tools/devkit/build/`. The cleanup
+`build/c-drive-cleanup-20261010/summary.json` confirms zero task directories/items
+in both C-root and user-home scopes; useful small records were retained on D and
+unused extraction/test copies removed. Historical producer paths do not imply
+those execution copies still exist. VM, non-admin, network isolation,
+source-hidden, read-only mount, hardware/device, vendor, source authentication
+and redistribution acceptance remain open.
+
+### Windows Host Checks (October 9)
+
+The resumed work ran on Windows 11 x64 (`10.0.26200`), using the reviewed
+Node `24.21.0` and compatibility runtime `18.20.8`. These are local source and
+host-helper checks; they do not establish complete portable-package acceptance.
+Existing historical failures and interrupted matrices remain preserved.
+
+- `build/engine-takeover-20261009/summary-full.json` records successful preparation,
+  57/57 platform tests with no skips, declaration generation and consumer checks,
+  and WECHAT/OPPO engine builds with
+  `base,2d,ui,audio,tween,gfx-webgl,gfx-webgl2`. Current Jest results are 161 passed
+  suites, one skipped suite, 1,125 passed tests, two skipped tests and 16 TODOs;
+  all 34 snapshots passed. The skipped/TODO cases were not disabled by this work.
+  `test:dts`, full-feature HTML5 `build:dev` and NODEJS `build:cli-min` also
+  succeeded. CI YAML and PowerShell structure were checked locally; hosted CI
+  was not run.
+- `build/windows-host-takeover-20261009/matrix.json` records Node 24 supervisor
+  acceptance (19 passed, no skips), publisher checks including D/C cross-volume
+  rejection (11 passed, one Linux-only skip), and filesystem/MCP/runtime-file
+  checks (12 passed, one Linux-only skip). Node 18 supervisor acceptance passed
+  all 19 cases; WindowsSession passed seven compatibility checks, and its MCP
+  launcher test passed with one Linux-only skip. Per-run logs and receipts are
+  retained alongside the matrix; the recorded private user-profile paths identify
+  historical execution originals, whose unused copies were later removed.
+- The later `readonly-transition/` evidence under that same host-matrix root
+  records a real failure with the earlier filesystem helper, then 10 helper
+  regressions and two WindowsSession readonly-to-private transitions passing
+  on each of Node 18 and Node 24. The corrected helper restores the trusted
+  owner's write ACL before requesting owner/attribute access, rechecks the
+  pinned file identity and retains foreign-owner rejection.
+- Publisher ancestor handles now prevent directory replacement while permitting
+  the kernel's rename operation. The supervisor returns a structured
+  `ipcDescriptor` error when fd3 is ignored, instead of MSVC fast-fail
+  `0xc0000409`. Filesystem checks cover junctions, hard links, DOS aliases,
+  write protection and ACL changes; no existing drive or user-directory ACL was
+  changed to make a test pass.
+
+At this earlier checkpoint, the helper rejected D-drive execution and tests used
+private user-profile directories. The later fixed-volume correction is recorded
+in [D Working Directories](#d-working-directories-october-10). Supervisor broken-pipe, console
+cancellation and blocked-observation paths remain unverified; this matrix also
+does not establish non-admin, fresh-VM, real-client/model or vendor/device acceptance.
+
+### Windows SDK Preparation (October 9)
+
+`build/windows-sdk-20261009-run3/matrix-final-summary.json` records a successful
+16-profile SDK with independently built HTML5/BILIBILI/WECHAT/BYTEDANCE,
+`2d-basic`/`3d-basic`, debug/release runtimes. SDK
+`sha256-1e4646d0fac89161883e4b9eca913d79f6e40879e2e130d8f8c1176c8b5267d9`
+has 2,916 files, 204,407,903 payload bytes and 84 locked dependencies. The
+summary binds each descriptor, engine bundle, browser/local report and execution
+receipt; `sdk.evidence/receipt.json` binds the assembled SDK.
+
+All four HTML5 profiles passed actual Edge/Chromium with ANGLE SwiftShader:
+desktop/mobile pixels, mouse/touch, WebAudio, missing-asset behavior and ten
+restarts. The twelve mini-game profiles passed hash-bound local lifecycle
+contracts and source preflight, using mocks rather than vendor engine rendering.
+Copied-compiler checks passed 17 negative cases, both 2D/3D check-only paths and
+byte-identical transforms, with no outside reads or check-only writes.
+
+Windows-generated loader CRLF initially failed the reviewed LF byte pin. The
+checked build stage now emits LF, and all six loader regressions passed. The
+first four debug runtimes were rebuilt under `windows-sdk-20261009-run3-lf-rebuild`;
+their superseded payloads and failed SDK-preparation log remain intact. The
+summary explicitly does not claim unchanged source across the interrupted
+preparation and repair. This is a dirty-checkout local SDK result, not a clean
+CI build, authenticated release, final packaged workflow or device acceptance.
+
+### Windows Reference Client
+
+OpenCode is optional; the CLI and stdio MCP server do not require it. An isolated
+OpenCode `1.18.21` Windows executable was integrity-checked against official npm
+metadata. No global client installation or configuration was changed, and no
+model/authentication command was run.
+
+The real client passed version, configuration, project discovery, MCP connection
+and skill discovery checks. Agent discovery then failed while importing the
+guarded JavaScript tools under their read-only file ACL. This is not successful
+file-tool or AI-gameplay acceptance.
+
+`build/windows-host-takeover-20261009/opencode-directory-attributes/result.json`
+isolates the earlier directory READONLY marker failure: removing only that
+marker preserved the owner and DACL, kept writes rejected and restored version
+startup. The AI preparation now applies POSIX directory chmod only on POSIX;
+Windows still receives the read-only DACL.
+`opencode-readonly-module-loader/result.json` under the same host evidence root
+records the remaining OpenCode `1.18.21` / Bun `1.3.14` limitation: both a minimal
+tool module and the real guarded wrapper fail under a read-only file DACL even
+after clearing only the file READONLY marker; Node reads succeed and writes
+remain rejected. The protection was not weakened to make the client pass.
+
+### Windows Preview Queue (October 10)
+
+The previous preview listener rejected the ninth active resource request with
+503, including a real Cocos builtin asset during packaged browser verification.
+`src/preview.ts` now keeps eight active verifications and up to 24 waiting
+requests, reserves the aggregate 128 MiB buffer budget only at dispatch, and
+includes queue time in the existing five-second request deadline. Queued
+requests hold no file handles or body buffers and are removed on disconnect,
+expiry or server close. All pin closures settle before an active slot is reused.
+
+`build/preview-queue-20261010/matrix-node18-LGmQQg/result.json` and
+`matrix-node24-7pqgJo/result.json` each record 89 tests, 88 passed, zero failed or
+cancelled, and one Linux-only socket-file fixture skip. Inputs were unchanged,
+both Job Objects closed and test leaders/supervisors were reaped. The tests
+cover a 32-request burst, repeated 17 MiB GETs hitting the aggregate budget,
+FIFO HEAD handling, queued disconnect/expiry/close, and actual Edge loading,
+canvas pixels and input. Earlier default-TEMP ACL failures and the preceding
+88-test runs remain in the same evidence directory as separate records.
+
+These are source-preview regressions. They do not transfer to the superseded
+Windows run4 archive or establish acceptance of a newly assembled package.
+
+### Windows MCP Output (October 10)
+
+Windows Node's synchronous stdout pipe blocked the event loop while a client
+paused reading, preventing EOF handling and leaving the workspace locked. A
+filesystem output stream now keeps cleanup runnable while retaining the official
+SDK framing and existing output budgets. After application and transport cleanup,
+incomplete Windows output exits with code 1. A failed or stalled cleanup retains
+the existing ten-second failed-exit deadline; it never reports successful cleanup.
+
+`build/takeover-tests-20261010-e30c87e8bb17440b86088b6f8c3aed69/`
+contains `matrix-node24-Etnioa/result.json`: 55 passed, zero failed, cancelled or
+skipped, unchanged inputs, closed Job Object and reaped test/supervisor processes.
+Coverage includes paused output, a closed stdout reader cancelling live work,
+workspace re-opening without staging, and throwing/stalled cleanup with blocked
+output. Native diagnostics independently observed server/helper exit and released
+locks before resuming stdout. Earlier synchronous, asynchronous-only and internal
+pipe-handle experiments remain preserved as failed attempts.
+
+The matching Node 18 `matrix-node18-EJLBX4/result.json` has 55 tests, 49 passed
+and six failed. The new output cases passed, but long-path snapshot and alias
+cases still failed; it is not a full Node 18 pass. Their separate investigation
+does not change these retained totals.
 
 ### WeChat And ByteDance Delivery
 
@@ -397,7 +648,9 @@ that a different client was used. The connectivity gate failed, so the gameplay
 prompt was not submitted; no model-created game, job or artifact exists.
 No retry, provider substitution or simulated response was used. This concrete
 failure does not establish that all models are unavailable. Real-model gameplay
-acceptance, including the [current candidate](#wechat-and-bytedance-delivery), remains open.
+acceptance through an independent OpenCode/provider session remains open. The
+later [current Codex packaged-CLI proof](#windows-local-delivery-october-10) has
+its own game, client-route and package identity.
 
 The later `build/ai-connectivity-research-20260924-e66eX2hg/REPORT.md` records
 model discovery only: zero model requests/tools and no established selected
@@ -440,19 +693,24 @@ tests or proof of the current full matrices.
 
 ## Remaining Gates
 
-- Full merged Node 18/24 acceptance remains open; the latest Node 18 run ended
-  interrupted, not still running. Selected passes cannot replace complete totals
-  and unchanged input fingerprints. This gate does not authorize further full runs.
+- Full merged Node 18/24 acceptance remains open. The historical full Linux
+  Node 18 run ended interrupted, not still running. Selected passes cannot
+  replace complete totals and unchanged input fingerprints. The October 9
+  continuation resumes Windows checks; its successful helper checks do not
+  replace the historical Linux matrix.
 - Clean-checkout and hosted CI provisioner rehearsals remain unperformed. The new
   six-test prerequisite checks do not prove the complete provisioning pipeline.
 - Clean end-to-end source/profile/dependency provenance, authenticated release
   signatures or build attestations, and redistribution/license clearance remain
-  open. The [current candidate](#wechat-and-bytedance-delivery) is dirty-source, locally assembled and unapproved.
+  open. The [current candidate](#windows-local-delivery-october-10) is dirty-source, locally assembled and unapproved.
 - Fresh-VM/no-cache acceptance and actual supported-host Linux/Windows/macOS
   verification remain open; namespaces and cross-version Node tests do not close
-  those gates. Other-host process supervision is not implemented/accepted.
-- A real-model create/edit/error/fix/profile/build/preview/export gameplay loop
-  remains unexecuted. The observed 403 blocks that attempt, not all future models.
+  those gates. Windows Job Object helpers now have the local checks above;
+  macOS process supervision remains unimplemented and unaccepted.
+- Installed Codex MCP discovery, independent OpenCode/provider inference and the
+  full AI profile-switch/export contract remain open. Signal Switch's current
+  Codex packaged-CLI coding/gameplay loop passed in its exact recorded scope.
+  The historical 403 still blocks only that older reference-provider attempt.
 - Vendor compilation, upload, devices and hardware-GPU validation remain
   unverified. Local BILIBILI/WECHAT/BYTEDANCE source preflight, host mocks and software
   browser rendering do not establish those results. Physical disk-full/power-loss

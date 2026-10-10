@@ -15,6 +15,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { CallToolResultSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { verifyBrowserGame } from './browser-game.mjs';
+import { verifyWindowsTrust } from '../build/src/windows-fs.js';
 
 const devkit = fileURLToPath(new URL('../', import.meta.url));
 const cli = join(devkit, 'build/src/cli.js');
@@ -125,7 +126,8 @@ async function connect(env, mode = 'preview') {
                     let outcome;
                     try { outcome = await bounded(transport.exited, 15000, `MCP did not stop after ${signal}`); }
                     catch (error) { abort(); await transport.exited; throw error; }
-                    assert.deepEqual(outcome, { code: 0, signal: null }, stderr);
+                    assert.deepEqual(outcome, process.platform === 'win32' && signal !== 'EOF'
+                        ? { code: null, signal } : { code: 0, signal: null }, stderr);
                 }
                 assert.equal(stderr, '');
                 assert.deepEqual(errors, []);
@@ -250,9 +252,9 @@ function launchCli(env, args, mode = 'preview') {
     return { child, done, lines };
 }
 
-async function cliResult(process, code = 0) {
+async function cliResult(process, code = 0, signal = null) {
     const result = await process.done;
-    assert.equal(result.signal, null);
+    assert.equal(result.signal, signal);
     assert.equal(result.code, code, result.stderr || result.stdout);
     assert.equal(result.stderr, '');
     assert.ok(result.stdout.endsWith('\n'));
@@ -457,7 +459,8 @@ test('real development SDK through official MCP/Ajv and CLI, with durable previe
             await session.call('project_create', { ...input, directory: `${project}-different` }, 'REQUEST_CONFLICT');
             succeeded(await finished(session, receipt));
             assert.equal(JSON.parse(await fs.readFile(join(env.workspace, project, 'package.json'), 'utf8')).name, input.projectName);
-            assert.equal((await fs.stat(join(env.workspace, project, 'src/main.ts'))).mode & 0o777, 0o600);
+            if (process.platform === 'win32') await verifyWindowsTrust(join(env.workspace, project, 'src/main.ts'), true);
+            else assert.equal((await fs.stat(join(env.workspace, project, 'src/main.ts'))).mode & 0o777, 0o600);
             const changes = await changeProject(env, project, `ACTUAL_${profile}_REVISION_ONE`);
             edited.set(profile, changes);
             const checked = succeeded(await finished(session, await session.call('project_check', checkInput(project, profile))));
@@ -635,7 +638,8 @@ test('real development SDK through official MCP/Ajv and CLI, with durable previe
         const restored = await session.call('job_get', { jobId: build.job.jobId });
         assert.deepEqual(restored.report.artifacts, [artifact]);
         assert.equal(restored.job.state, 'succeeded');
-        for (const jobId of [receipt.jobId, compiling.jobId]) assert.equal((await session.call('job_get', { jobId })).job.state, 'cancelled');
+        for (const jobId of [receipt.jobId, compiling.jobId]) assert.equal((await session.call('job_get', { jobId })).job.state,
+            process.platform === 'win32' && signal === 'SIGTERM' ? 'interrupted' : 'cancelled');
         assert.ok(!(await fs.readdir(env.stateDirectory)).some(name => name.startsWith('staging-')));
         const restarted = await ready(session, await session.call('preview_start', { artifactId: artifact.artifactId, ttlSeconds: 60, requestKey: randomUUID() }));
         assert.equal((await get(restarted.preview)).status, 200);
@@ -672,6 +676,7 @@ test('real development SDK through official MCP/Ajv and CLI, with durable previe
         } finally { await fs.writeFile(source, changes.source); }
         const retrieved = (await call('job_get', { jobId: built.job.jobId }))[0];
         assert.deepEqual(retrieved.report.artifacts, built.report.artifacts);
+        const forcedWindowsTermination = process.platform === 'win32';
         for (const signal of ['TTL', 'SIGTERM']) {
             const process = launchCli(env, ['call', 'cocos4_preview_start', '--input', JSON.stringify({
                 artifactId: built.report.artifacts[0].artifactId, ttlSeconds: signal === 'TTL' ? 2 : 180,
@@ -686,14 +691,17 @@ test('real development SDK through official MCP/Ajv and CLI, with durable previe
             assert.equal((await get(readyPage.job.preview)).status, 200);
             const probe = await socketProbe(env, readyPage.job.preview);
             if (signal === 'SIGTERM') process.child.kill('SIGTERM');
-            const lines = await cliResult(process, signal === 'TTL' ? 0 : 1);
+            const forced = forcedWindowsTermination && signal === 'SIGTERM';
+            const lines = await cliResult(process, forced ? null : signal === 'TTL' ? 0 : 1, forced ? 'SIGTERM' : null);
             await closedPreview(readyPage.job.preview, probe);
             const retained = (await call('job_get', { jobId: readyPage.job.jobId }))[0];
-            assert.equal(retained.job.state, signal === 'TTL' ? 'succeeded' : 'cancelled');
+            assert.equal(retained.job.state, signal === 'TTL' ? 'succeeded' : forced ? 'interrupted' : 'cancelled');
             // A graceful signal must not replace the terminal job envelope with
             // a failed query against an already-closing Application.
-            const ended = envelope(lines.at(-1), validators.get('cocos4_job_get'), env);
-            assert.equal(ended.job.state, signal === 'TTL' ? 'succeeded' : 'cancelled');
+            if (!forced) {
+                const ended = envelope(lines.at(-1), validators.get('cocos4_job_get'), env);
+                assert.equal(ended.job.state, signal === 'TTL' ? 'succeeded' : 'cancelled');
+            }
         }
         await absent(join(env.root, 'PROJECT_SCRIPTS_EXECUTED'));
     });

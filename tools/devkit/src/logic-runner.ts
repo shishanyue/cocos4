@@ -31,16 +31,20 @@ async function main(): Promise<void> {
             continue;
         }
         if (type !== 'test:pass' && type !== 'test:fail') continue;
-        const failed = type === 'test:fail' && !data.todo;
-        if (data.skip) result.summary.skipped++;
-        else if (data.todo) result.summary.todo++;
+        // node:test allows an empty reason string for both directives. Their
+        // presence still marks a skipped/TODO test, even when it is falsy.
+        const skipped = data.skip !== undefined && data.skip !== false;
+        const todo = data.todo !== undefined && data.todo !== false;
+        const failed = type === 'test:fail' && !skipped && !todo;
+        if (skipped) result.summary.skipped++;
+        else if (todo) result.summary.todo++;
         else if (failed) result.summary.failed++;
         else result.summary.passed++;
         const file = typeof data.file === 'string' ? path.relative(directory, data.file).split(path.sep).join('/') : undefined;
         const item: LogicResult['items'][number] = { name: String(data.name).slice(0, 256),
-            status: failed ? 'failed' : data.skip || data.todo ? 'warning' : 'passed', code: failed ? 'TEST_FAILED' : 'LOGIC_TEST',
+            status: failed ? 'failed' : skipped || todo ? 'warning' : 'passed', code: failed ? 'TEST_FAILED' : 'LOGIC_TEST',
             message: (failed && type === 'test:fail' ? String(data.details.error?.message ?? 'node:test reported a failure.')
-                : data.skip ? 'Skipped by the trusted test.' : data.todo ? 'Marked TODO by the trusted test.' : 'node:test result passed.').slice(0, 512),
+                : skipped ? 'Skipped by the trusted test.' : todo ? 'Marked TODO by the trusted test.' : 'node:test result passed.').slice(0, 512),
             ...(file && !file.startsWith('../') && !path.isAbsolute(file) ? { file: file.slice(0, 512),
                 ...(typeof data.line === 'number' && Number.isInteger(data.line) && data.line > 0 ? { line: data.line } : {}),
                 ...(typeof data.column === 'number' && Number.isInteger(data.column) && data.column > 0 ? { column: data.column } : {}) } : {}) };

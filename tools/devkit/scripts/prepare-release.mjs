@@ -1,4 +1,4 @@
-// Maintainer-only, offline assembly. This never downloads, installs or publishes.
+// Maintainer-only, offline assembly. This never downloads or installs dependencies.
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createReadStream, createWriteStream } from 'node:fs';
@@ -9,15 +9,22 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { createGzip } from 'node:zlib';
 import { loadSdk } from '../build/src/sdk.js';
-import { buildHostTool } from './build-publisher.mjs';
+import { buildHostTool, buildHostToolWin32, buildPublisherWin32 } from './build-publisher.mjs';
 import { buildMcpLauncher } from './build-mcp-launch.mjs';
 import { publishSdk } from './prepare-sdk.mjs';
 import { archiveChecksums, canonical, hash, readRegular, safePath, verifyInventory, verifyReleaseProfiles } from './verify-portable.mjs';
+import { archiveWindows, verifyWindowsArchive } from './windows-archive.mjs';
+import { extractWindowsNode, requireWindowsNodePin } from './prepare-windows-components.mjs';
+import { buildSupervisorWin32, detectWindowsCompiler, inspectPeWin32 } from './build-supervisor-win32.mjs';
+import { buildFsWin32 } from './build-fs-win32.mjs';
 
 const run = promisify(execFile);
-const root = fileURLToPath(new URL('../', import.meta.url)).replace(/\/$/, '');
+const root = path.resolve(fileURLToPath(new URL('../', import.meta.url)));
 const engine = path.resolve(root, '../..');
-const env = { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', SOURCE_DATE_EPOCH: '0' };
+const env = process.platform === 'win32'
+    ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, TEMP: process.env.TEMP, TMP: process.env.TMP,
+        PATH: process.env.PATH, LANG: 'C', LC_ALL: 'C', SOURCE_DATE_EPOCH: '0' }
+    : { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', SOURCE_DATE_EPOCH: '0' };
 const json = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 
@@ -52,21 +59,29 @@ export async function archiveRelease(source, archive, archiveRoot) {
     } finally { await fs.rm(temporary, { recursive: true, force: true }); }
 }
 
-export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '0.0.0-candidate' }) {
-    assert.equal(process.platform, 'linux');
-    assert.equal(process.arch, 'x64', 'Only Linux x64 has a host implementation');
+export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '0.0.0-candidate', target = `${process.platform}-x64`, compiler }) {
+    assert(['linux-x64', 'win32-x64'].includes(target), 'Supported development hosts are Linux x64 and Windows x64');
+    const windows = target === 'win32-x64';
+    assert.equal(process.platform, windows ? 'win32' : 'linux', 'Assemble and verify a portable kit on its target operating system');
+    assert.equal(process.arch, 'x64', 'Only x64 host implementations are available');
+    if (windows && compiler !== undefined) assert(typeof compiler === 'string' && path.isAbsolute(compiler), 'An explicit Windows compiler must be an absolute executable');
+    if (windows) compiler ??= await detectWindowsCompiler();
+    const executable = windows ? '.exe' : '';
+    const archiveExtension = windows ? '.zip' : '.tar.gz';
+    const nodeLockFile = windows ? 'packaging/node-win32-lock.json' : 'packaging/node-lock.json';
+    const git = windows ? 'git.exe' : '/usr/bin/git';
     assert(/^[0-9]+\.[0-9]+\.[0-9]+(?:-[a-z0-9.-]+)?$/.test(kitVersion));
     for (const value of [sdkRoot, nodeArchive, out]) assert(path.isAbsolute(value) && path.resolve(value) === value && !value.includes('\0'));
     assert.equal(await fs.realpath(path.dirname(out)), path.dirname(out));
-    for (const name of [out, `${out}.tar.gz`, `${out}.tar.gz.sha256`, `${out}.build.json`]) await absent(name);
+    for (const name of [out, `${out}${archiveExtension}`, `${out}${archiveExtension}.sha256`, `${out}.build.json`]) await absent(name);
     const sdk = await loadSdk(sdkRoot);
     assert.equal(sdk.manifest.kind, 'portable-development');
     verifyReleaseProfiles(sdk.manifest.catalog.profiles);
     const combinations = sdk.manifest.catalog.profiles.map(item => `${item.target}/${item.id}/${item.variant}`).sort();
-    const lock = JSON.parse(await readRegular(root, 'packaging/node-lock.json'));
+    const lock = JSON.parse(await readRegular(root, nodeLockFile));
     assert.equal(lock.version, '24.21.0');
-    assert.equal(lock.target, 'linux-x64');
-    assert.deepEqual(lock.files, ['bin/node', 'LICENSE', 'README.md']);
+    if (windows) requireWindowsNodePin(lock);
+    else { assert.equal(lock.target, 'linux-x64'); assert.deepEqual(lock.files, ['bin/node', 'LICENSE', 'README.md']); }
     assert.equal(hash(await readRegular(path.dirname(nodeArchive), path.basename(nodeArchive))), lock.sha256, 'Node archive does not match the reviewed official pin');
     const packageLock = JSON.parse(await readRegular(root, 'package-lock.json'));
     const sourceInputs = [];
@@ -75,13 +90,17 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
         sourceInputs.push({ path: name, bytes: bytes.length, sha256: hash(bytes) });
     }
     for (const name of ['package.json', 'package-lock.json', 'tsconfig.json', 'runtime/publish.c', 'runtime/supervise.c', 'runtime/mcp-launch.c',
-        'scripts/build-publisher.mjs', 'scripts/build-supervisor.mjs', 'scripts/build-mcp-launch.mjs', 'scripts/prepare-release.mjs', 'scripts/verify-portable.mjs']) {
+        ...(windows ? ['runtime/publish-win32.c', 'runtime/supervise-win32.c', 'runtime/mcp-launch-win32.c', 'runtime/fs-win32.c',
+            'scripts/build-supervisor-win32.mjs', 'scripts/build-fs-win32.mjs',
+            'scripts/prepare-windows-components.mjs', 'scripts/download-node-win32.mjs', 'scripts/windows-archive.mjs'] : []),
+        'scripts/build-publisher.mjs', 'scripts/build-supervisor.mjs', 'scripts/build-mcp-launch.mjs', 'scripts/prepare-sdk.mjs',
+        'scripts/prepare-release.mjs', 'scripts/verify-portable.mjs']) {
         const bytes = await readRegular(root, name);
         sourceInputs.push({ path: name, bytes: bytes.length, sha256: hash(bytes) });
     }
     sourceInputs.sort((a, b) => compare(a.path, b.path));
-    const revision = (await run('/usr/bin/git', ['rev-parse', 'HEAD'], { cwd: engine, env })).stdout.trim();
-    const status = (await run('/usr/bin/git', ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: engine, env })).stdout;
+    const revision = (await run(git, ['rev-parse', 'HEAD'], { cwd: engine, env, windowsHide: true })).stdout.trim();
+    const status = (await run(git, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], { cwd: engine, env, windowsHide: true })).stdout;
     const work = await fs.mkdtemp(path.join(path.dirname(out), '.cocos4-release-build-'));
     let staging = await fs.mkdtemp(path.join(path.dirname(out), '.cocos4-release-'));
     const files = [], names = new Set(), packages = [], licenseGaps = [];
@@ -102,15 +121,17 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
         // Extract only reviewed members from a hash-verified official archive.
         const node = path.join(work, 'node');
         await fs.mkdir(node);
-        await run('/usr/bin/tar', ['--extract', '--xz', '--file', nodeArchive, '--directory', node,
+        if (windows) await extractWindowsNode({ nodeArchive, output: node });
+        else await run('/usr/bin/tar', ['--extract', '--xz', '--file', nodeArchive, '--directory', node,
             '--no-same-owner', '--no-same-permissions', ...lock.files.map(name => `${lock.archiveRoot}/${name}`)], { env, timeout: 60000 });
-        const nodeRoot = path.join(node, lock.archiveRoot);
-        const nodeBytes = await readRegular(nodeRoot, 'bin/node');
-        const actualNode = (await run(path.join(nodeRoot, 'bin/node'), ['--version'], { env, timeout: 10000 })).stdout.trim();
+        const nodeRoot = windows ? node : path.join(node, lock.archiveRoot);
+        const nodeMember = windows ? 'node.exe' : 'bin/node';
+        const nodeBytes = await readRegular(nodeRoot, nodeMember);
+        const actualNode = (await run(path.join(nodeRoot, nodeMember), ['--version'], { env, timeout: 10000, windowsHide: true })).stdout.trim();
         assert.equal(actualNode, `v${lock.version}`);
-        await write('runtime/node', nodeBytes, { kind: 'node-distribution', url: lock.url, archiveSha256: lock.sha256, member: 'bin/node' }, true);
+        await write(`runtime/node${executable}`, nodeBytes, { kind: 'node-distribution', url: lock.url, archiveSha256: lock.sha256, member: nodeMember }, true);
         for (const file of ['LICENSE', 'README.md']) await copy(nodeRoot, file, `runtime/${file}`, { kind: 'node-distribution', member: file, archiveSha256: lock.sha256 });
-        await copy(root, 'packaging/node-lock.json', 'provenance/node-lock.json', { kind: 'reviewed-source', path: 'packaging/node-lock.json' });
+        await copy(root, nodeLockFile, 'provenance/node-lock.json', { kind: 'reviewed-source', path: nodeLockFile });
         packages.push({ name: 'Node.js', version: lock.version, download: lock.url, archiveSha256: lock.sha256, license: 'NOASSERTION', notices: ['runtime/LICENSE'] });
 
         // Compile the current application rather than copying a stale shared build.
@@ -126,9 +147,9 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
         const queue = roots.map(name => `node_modules/${name}`), seen = new Set();
         const resolveDependency = async (from, name, optional) => {
             assert(/^(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+$/i.test(name), 'Unsafe npm package name');
-            for (let directory = path.join(root, from); directory === root || directory.startsWith(root + '/'); directory = path.dirname(directory)) {
+            for (let directory = path.join(root, from); directory === root || directory.startsWith(root + path.sep); directory = path.dirname(directory)) {
                 if (path.basename(directory) === 'node_modules') continue;
-                const relative = path.relative(root, path.join(directory, 'node_modules', name));
+                const relative = path.relative(root, path.join(directory, 'node_modules', name)).split(path.sep).join('/');
                 if (packageLock.packages[relative]) return relative;
             }
             assert(optional, `Missing locked runtime dependency: ${from} -> ${name}`);
@@ -159,21 +180,55 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
         }
         await copy(root, 'package-lock.json', 'provenance/app-lock.json', { kind: 'reviewed-source', path: 'package-lock.json' });
 
-        const publisher = path.join(work, 'cocos4-publish');
-        const publisherBuild = await buildHostTool(path.join(root, 'runtime/publish.c'), publisher);
-        await copy(work, 'cocos4-publish', 'app/host/cocos4-publish', { kind: 'compiled-host-tool', sourceSha256: publisherBuild.sourceSha256 }, true);
-        await copy(work, 'cocos4-publish.build.json', 'app/host/cocos4-publish.build.json', { kind: 'host-tool-provenance' });
-        const mcpLaunchBuild = await buildMcpLauncher(path.join(work, 'cocos4-mcp-launch'));
-        await copy(work, 'cocos4-mcp-launch', 'app/host/cocos4-mcp-launch',
+        const publisherName = `cocos4-publish${executable}`;
+        const publisher = path.join(work, publisherName);
+        const publisherBuild = windows ? await buildPublisherWin32({ output: publisher, compiler })
+            : await buildHostTool(path.join(root, 'runtime/publish.c'), publisher);
+        await copy(work, publisherName, `app/host/${publisherName}`, { kind: 'compiled-host-tool', sourceSha256: publisherBuild.sourceSha256 }, true);
+        await copy(work, `${publisherName}.build.json`, `app/host/${publisherName}.build.json`, { kind: 'host-tool-provenance' });
+        const mcpLaunchName = `cocos4-mcp-launch${executable}`;
+        const mcpLaunchBuild = await buildMcpLauncher(path.join(work, mcpLaunchName), { compiler });
+        await copy(work, mcpLaunchName, `app/host/${mcpLaunchName}`,
             { kind: 'compiled-host-tool', sourceSha256: mcpLaunchBuild.sourceSha256 }, true);
-        await copy(work, 'cocos4-mcp-launch.build.json', 'app/host/cocos4-mcp-launch.build.json', { kind: 'host-tool-provenance' });
+        await copy(work, `${mcpLaunchName}.build.json`, `app/host/${mcpLaunchName}.build.json`, { kind: 'host-tool-provenance' });
+        if (windows) {
+            const name = 'cocos4-fs.exe';
+            const built = await buildFsWin32({ output: path.join(work, name), compiler });
+            await copy(work, name, `app/host/${name}`, { kind: 'compiled-host-tool', sourceSha256: built.sourceSha256 }, true);
+            await copy(work, `${name}.build.json`, `app/host/${name}.build.json`, { kind: 'host-tool-provenance' });
+            await write('app/host/fs.json', json({ version: 1, platform: 'win32', arch: 'x64', file: name,
+                bytes: built.bytes, sha256: built.binarySha256, sourceSha256: built.sourceSha256 }), { kind: 'host-filesystem-provenance' });
+        }
         const host = path.join(work, 'host-builder');
-        for (const directory of ['scripts', 'runtime']) await fs.mkdir(path.join(host, directory), { recursive: true });
-        for (const file of ['scripts/build-supervisor.mjs', 'runtime/supervise.c']) await fs.writeFile(path.join(host, file), await readRegular(root, file));
-        await fs.symlink(path.join(root, 'node_modules'), path.join(host, 'node_modules'));
-        await run(process.execPath, [path.join(host, 'scripts/build-supervisor.mjs')], { env, timeout: 60000, maxBuffer: 65536 });
-        for (const file of await walk(path.join(host, 'build/host'))) await copy(path.join(host, 'build/host'), file, `app/host/${file}`,
-            { kind: 'host-supervisor-or-types', path: file }, file === 'cocos4-supervise');
+        if (windows) {
+            const name = 'cocos4-supervise.exe';
+            const supervisor = await buildSupervisorWin32({ output: path.join(work, name), compiler });
+            await copy(work, name, `app/host/${name}`, { kind: 'compiled-host-tool', sourceSha256: supervisor.sourceSha256 }, true);
+            await copy(work, `${name}.json`, `app/host/${name}.json`, { kind: 'host-tool-provenance' });
+            await write('app/host/supervisor.json', json({ version: 1, platform: 'win32', arch: 'x64',
+                file: name, sha256: supervisor.sha256, bytes: supervisor.bytes, sourceSha256: supervisor.sourceSha256 }),
+                { kind: 'host-supervisor-provenance' });
+            const typeFiles = [];
+            for (const [name, version, directory] of [['@types/node', '18.19.130', 'node'], ['undici-types', '5.26.5', 'undici-types']]) {
+                const source = path.join(root, 'node_modules', name);
+                const info = JSON.parse(await readRegular(source, 'package.json'));
+                assert.equal(info.name, name); assert.equal(info.version, version, 'Review host declaration upgrades explicitly');
+                for (const file of await walk(source)) {
+                    if (!file.endsWith('.d.ts') && !['package.json', 'LICENSE'].includes(path.posix.basename(file))) continue;
+                    const record = await copy(source, file, `app/host/logic-types/${directory}/${file}`, { kind: 'host-declaration', package: name, version, path: file });
+                    typeFiles.push({ path: `${directory}/${file}`, bytes: record.bytes, sha256: record.sha256 });
+                }
+            }
+            await write('app/host/logic-types/inventory.json', json({ version: 1, node: '18.19.130', undici: '5.26.5', files: typeFiles }),
+                { kind: 'host-declaration-inventory' });
+        } else {
+            for (const directory of ['scripts', 'runtime']) await fs.mkdir(path.join(host, directory), { recursive: true });
+            for (const file of ['scripts/build-supervisor.mjs', 'runtime/supervise.c']) await fs.writeFile(path.join(host, file), await readRegular(root, file));
+            await fs.symlink(path.join(root, 'node_modules'), path.join(host, 'node_modules'));
+            await run(process.execPath, [path.join(host, 'scripts/build-supervisor.mjs')], { env, timeout: 60000, maxBuffer: 65536 });
+            for (const file of await walk(path.join(host, 'build/host'))) await copy(path.join(host, 'build/host'), file, `app/host/${file}`,
+                { kind: 'host-supervisor-or-types', path: file }, file === 'cocos4-supervise');
+        }
         for (const [name, directory] of [['@types/node', 'node'], ['undici-types', 'undici-types']]) {
             const packageJson = `app/host/logic-types/${directory}/package.json`;
             const bytes = await readRegular(staging, packageJson), info = JSON.parse(bytes);
@@ -185,10 +240,11 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
             packages.push({ name, version: info.version, download: pinned.resolved, integrity: pinned.integrity,
                 packageJson, packageSha256: hash(bytes), license: info.license, notices });
         }
-        const launcher = path.join(work, 'cocos4');
-        const launcherBuild = await buildHostTool(path.join(root, 'packaging/launcher.c'), launcher, true);
-        await copy(work, 'cocos4', 'cocos4', { kind: 'compiled-host-launcher', sourceSha256: launcherBuild.sourceSha256 }, true);
-        await copy(work, 'cocos4.build.json', 'provenance/launcher.json', { kind: 'host-tool-provenance' });
+        const launcherName = `cocos4${executable}`, launcher = path.join(work, launcherName);
+        const launcherBuild = windows ? await buildHostToolWin32(path.join(root, 'packaging/launcher-win32.c'), launcher, { compiler })
+            : await buildHostTool(path.join(root, 'packaging/launcher.c'), launcher, true);
+        await copy(work, launcherName, launcherName, { kind: 'compiled-host-launcher', sourceSha256: launcherBuild.sourceSha256 }, true);
+        await copy(work, `${launcherName}.build.json`, 'provenance/launcher.json', { kind: 'host-tool-provenance' });
         for (const [from, to] of [['packaging/launch.mjs', 'app/launch.mjs'], ['scripts/verify-portable.mjs', 'app/verify-portable.mjs']]) {
             await copy(root, from, to, { kind: 'reviewed-source', path: from });
         }
@@ -206,6 +262,7 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
         }
         const sdkManifest = await copy(sdk.root, 'manifest.json', 'sdk/manifest.json', { kind: 'verified-sdk-manifest', sdkId: sdk.sdkId });
         for (const file of await walk(path.join(root, 'skills'))) await copy(path.join(root, 'skills'), file, `skills/${file}`, { kind: 'bundled-skill', path: `skills/${file}` });
+        await copy(root, 'packaging/AGENTS.md', 'AGENTS.md', { kind: 'reviewed-source', path: 'packaging/AGENTS.md' });
         await copy(root, 'packaging/README.md', 'docs/getting-started.md', { kind: 'reviewed-source', path: 'packaging/README.md' });
         await copy(engine, 'LICENSE', 'LICENSE', { kind: 'source-license', path: 'LICENSE' });
         const compilerClosure = JSON.parse(await readRegular(sdk.root, 'toolchain/compiler-dependencies.json'));
@@ -231,7 +288,15 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
         licenseGaps.push({ component: 'Cocos4 engine/runtime/loader/Effect/external closure',
             reason: 'Root MIT metadata does not resolve restrictive source notices, loader/compiler metadata differences, or missing external license provenance. Human redistribution review remains required.' });
         const hostLibraries = [];
-        for (const file of ['cocos4', 'runtime/node', 'app/host/cocos4-publish', 'app/host/cocos4-supervise', 'app/host/cocos4-mcp-launch']) {
+        for (const basename of ['cocos4', 'runtime/node', 'app/host/cocos4-publish', 'app/host/cocos4-supervise', 'app/host/cocos4-mcp-launch',
+            ...(windows ? ['app/host/cocos4-fs'] : [])]) {
+            const file = `${basename}${executable}`;
+            if (windows) {
+                const pe = inspectPeWin32(await readRegular(staging, file), { maximumBytes: 128 * 1024 ** 2, allowDelayImports: basename === 'runtime/node' });
+                hostLibraries.push({ file, machine: pe.machine, format: pe.format,
+                    sharedLibraries: pe.imports.map(item => item.library).sort(), hardening: pe.hardening });
+                continue;
+            }
             const { stdout } = await run('/usr/bin/readelf', ['-l', '-d', '-V', path.join(staging, file)], { env, timeout: 10000, maxBuffer: 1024 * 1024 });
             hostLibraries.push({ file, interpreter: /Requesting program interpreter: ([^\]]+)/.exec(stdout)?.[1] ?? null,
                 sharedLibraries: [...stdout.matchAll(/\(NEEDED\).*\[([^\]]+)\]/g)].map(match => match[1]).sort(),
@@ -245,8 +310,11 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
             ...(status ? ['The source checkout is dirty.'] : []), 'Redistribution license review is incomplete.',
             'No authenticated release signature/build attestation.', 'Clean-machine, supported-host and real-model gameplay acceptance are incomplete.'];
         await write('docs/acceptance.json', json({ distributionApproved: false, blockers, licenseGaps,
-            hostLibraries, requiredKernelFeatures: ['procfs', 'renameat2(RENAME_NOREPLACE)', 'pidfd_open', 'pidfd_send_signal', 'subreapers'],
-            unsupportedHosts: ['Windows x64', 'macOS arm64'], vendorCompilation: false, deviceValidation: false }), { kind: 'release-readiness-report' });
+            hostLibraries, requiredKernelFeatures: windows ? ['Windows 11 x64', 'NTFS local volume', 'Job Object process tree supervision',
+                'atomic no-replace FileRenameInfo', 'private user ACLs']
+                : ['procfs', 'renameat2(RENAME_NOREPLACE)', 'pidfd_open', 'pidfd_send_signal', 'subreapers'],
+            unsupportedHosts: windows ? ['Linux', 'macOS arm64'] : ['Windows x64', 'macOS arm64'],
+            vendorCompilation: false, deviceValidation: false }), { kind: 'release-readiness-report' });
         await write('provenance/tool-inputs.json', json({ revision, dirty: !!status, sourceInputs,
             sdkInput: { sdkId: sdk.sdkId, manifestSha256: sdkManifest.sha256 }, nodeArchiveSha256: lock.sha256 }), { kind: 'source-provenance' });
         await write('THIRD_PARTY_NOTICES', Buffer.from('LOCAL CANDIDATE ONLY. NOT CLEARED FOR REDISTRIBUTION.\n'
@@ -256,7 +324,7 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
         const spdxFiles = [...files].sort((a, b) => compare(a.path, b.path));
         const knownLicenses = new Set(['MIT', 'ISC', 'BSD-2-Clause', 'BSD-3-Clause', 'Apache-2.0', '0BSD', 'CC0-1.0']);
         await write('SBOM.spdx.json', json({ spdxVersion: 'SPDX-2.3', dataLicense: 'CC0-1.0', SPDXID: 'SPDXRef-DOCUMENT',
-            name: `cocos4-devkit-${kitVersion}-linux-x64`, documentNamespace: `https://cocos4.invalid/spdx/${hash(canonical(spdxFiles))}`,
+            name: `cocos4-devkit-${kitVersion}-${target}`, documentNamespace: `https://cocos4.invalid/spdx/${hash(canonical(spdxFiles))}`,
             creationInfo: { created: '1970-01-01T00:00:00Z', creators: [`Tool: cocos4-devkit-prepare-release-${kitVersion}`] },
             packages: packages.map((pkg, i) => ({ SPDXID: `SPDXRef-Package-${i}`, name: pkg.name, versionInfo: pkg.version,
                 downloadLocation: pkg.download, filesAnalyzed: false, licenseConcluded: 'NOASSERTION',
@@ -273,7 +341,8 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
         for (const input of sourceInputs) assert.equal(hash(await readRegular(root, input.path)), input.sha256, `Source changed during assembly: ${input.path}`);
         assert.equal(hash(await readRegular(sdk.root, 'manifest.json')), sdkManifest.sha256);
         const manifest = { schema: 'cocos4-portable-release/v1', kitVersion, channel: 'candidate', distributionApproved: false,
-            layout: { sdk: 'sdk', app: 'app', skills: 'skills' }, host: { platform: 'linux', arch: 'x64', verified: false, libraries: hostLibraries },
+            layout: { sdk: 'sdk', app: 'app', skills: 'skills' }, host: { platform: windows ? 'win32' : 'linux', arch: 'x64', verified: false,
+                ...(windows ? { minimumRelease: '10.0.22000' } : {}), libraries: hostLibraries },
             runtime: { node: { version: lock.version, bundled: true, sha256: hash(nodeBytes), archiveSha256: lock.sha256 } },
             sdk: { sdkId: sdk.sdkId, manifestSha256: sdkManifest.sha256, profiles: combinations }, source: { revision, dirty: !!status,
                 inputsSha256: hash(canonical(sourceInputs)) }, contractVersion: 1, blockers,
@@ -282,17 +351,22 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
         await fs.writeFile(path.join(staging, 'release.json'), json(manifest), { flag: 'wx', mode: 0o444 });
         const readOnly = async directory => {
             for (const entry of await fs.readdir(directory, { withFileTypes: true })) if (entry.isDirectory()) await readOnly(path.join(directory, entry.name));
-            await fs.chmod(directory, 0o555);
+            if (!windows) await fs.chmod(directory, 0o555);
         };
         await readOnly(staging);
         await verifyInventory(staging);
-        await publishSdk(staging, out); staging = undefined;
-        const archiveRoot = `cocos4-devkit-${kitVersion}-linux-x64`;
-        await archiveRelease(out, `${out}.tar.gz`, archiveRoot);
-        const archiveBytes = await readRegular(path.dirname(out), `${path.basename(out)}.tar.gz`, 2 * 1024 ** 3);
+        await publishSdk(staging, out, windows ? { publisher } : undefined); staging = undefined;
+        const archiveRoot = `cocos4-devkit-${kitVersion}-${target}`;
+        const archive = `${out}${archiveExtension}`;
+        if (windows) {
+            const inventory = await archiveWindows(out, archive, archiveRoot);
+            await verifyWindowsArchive(archive, archiveRoot, inventory);
+        } else await archiveRelease(out, archive, archiveRoot);
+        const archiveBytes = await readRegular(path.dirname(out), `${path.basename(out)}${archiveExtension}`, 2 * 1024 ** 3);
         const result = { releaseId: manifest.releaseId, out, channel: manifest.channel, distributionApproved: false, sdkId: sdk.sdkId,
-            files: files.length, payloadBytes: total, archiveBytes: archiveBytes.length, archiveSha256: hash(archiveBytes), blockers };
-        await fs.writeFile(`${out}.tar.gz.sha256`, `${result.archiveSha256}  ${path.basename(out)}.tar.gz\n`, { flag: 'wx', mode: 0o600 });
+            target, archive, archiveRoot, files: files.length, payloadBytes: total, archiveBytes: archiveBytes.length,
+            archiveSha256: hash(archiveBytes), blockers };
+        await fs.writeFile(`${out}${archiveExtension}.sha256`, `${result.archiveSha256}  ${path.basename(out)}${archiveExtension}\n`, { flag: 'wx', mode: 0o600 });
         await fs.writeFile(`${out}.build.json`, json(result), { flag: 'wx', mode: 0o600 });
         return result;
     } catch (error) {
@@ -304,8 +378,9 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
     const args = process.argv.slice(2), options = {};
     for (let i = 0; i < args.length; i += 2) {
-        const key = { '--sdk-root': 'sdkRoot', '--node-archive': 'nodeArchive', '--out': 'out', '--kit-version': 'kitVersion' }[args[i]];
-        assert(key && !(key in options) && args[i + 1], 'Usage: prepare-release.mjs --sdk-root ABSOLUTE --node-archive ABSOLUTE --out ABSENT_ABSOLUTE [--kit-version VERSION]');
+        const key = { '--sdk-root': 'sdkRoot', '--node-archive': 'nodeArchive', '--out': 'out', '--kit-version': 'kitVersion',
+            '--target': 'target', '--compiler': 'compiler' }[args[i]];
+        assert(key && !(key in options) && args[i + 1], 'Usage: prepare-release.mjs --sdk-root ABSOLUTE --node-archive ABSOLUTE --out ABSENT_ABSOLUTE [--kit-version VERSION] [--target linux-x64|win32-x64] [--compiler ABSOLUTE_COMPILER_EXE]');
         options[key] = args[i + 1];
     }
     prepareRelease(options).then(result => process.stdout.write(JSON.stringify(result) + '\n'))

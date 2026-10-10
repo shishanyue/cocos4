@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 // Acceptance for newly emitted MCP artifacts, not the SDK's prebuilt fixture.
-export async function verifyBrowserGame({ preview, artifact, artifactDirectory, executablePath, pointsPerClick = 11 }) {
+export async function verifyBrowserGame({ preview, artifact, artifactDirectory, executablePath, browserEnvironment,
+    userDataDirectory, pointsPerClick = 11 }) {
     const require = createRequire(new URL('../runtime/package.json', import.meta.url));
     const { chromium } = require('playwright-core');
     const { PNG } = require('pngjs');
@@ -16,12 +17,20 @@ export async function verifyBrowserGame({ preview, artifact, artifactDirectory, 
     const report = { sdkId: artifact.sdkId, target: artifact.target, profile: artifact.profile, variant: artifact.variant,
         artifactId: artifact.artifactId, artifactSha256: artifact.sha256, success: false, screenshots: [],
         responses: [], console: [], pageErrors: [], hardwareOrVendorDeviceEvidence: false };
-    let browser;
+    let browser, context;
     try {
-        browser = await chromium.launch({ executablePath, headless: true,
-            args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+        const options = { executablePath, env: browserEnvironment, headless: true,
+            args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] };
+        const contextOptions = { viewport: { width: 640, height: 480 }, deviceScaleFactor: 1, hasTouch: true };
+        if (userDataDirectory) {
+            context = await chromium.launchPersistentContext(userDataDirectory, { ...options, ...contextOptions });
+            browser = context.browser();
+        } else {
+            browser = await chromium.launch(options);
+            context = await browser.newContext(contextOptions);
+        }
         report.browser = browser.version();
-        const context = await browser.newContext({ viewport: { width: 640, height: 480 }, deviceScaleFactor: 1, hasTouch: true });
+        report.browserProfile = userDataDirectory ?? 'Playwright fresh temporary profile';
         const origin = new URL(preview.url).origin;
         await context.route('**/*', route => new URL(route.request().url()).origin === origin ? route.continue() : route.abort());
         const page = await context.newPage();
@@ -122,6 +131,7 @@ export async function verifyBrowserGame({ preview, artifact, artifactDirectory, 
         report.error = String(error.stack ?? error);
         throw error;
     } finally {
+        if (context) await context.close();
         if (browser) await browser.close();
         await fs.writeFile(join(evidenceDirectory, 'report.json'), `${JSON.stringify(report, null, 2)}\n`, { flag: 'wx' });
     }

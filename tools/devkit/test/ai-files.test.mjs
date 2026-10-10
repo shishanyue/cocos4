@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import * as fs from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installFileRace } from './fixtures/ai/file-race.mjs';
@@ -8,17 +11,24 @@ import { installFileRace } from './fixtures/ai/file-race.mjs';
 const devkit = fileURLToPath(new URL('../', import.meta.url));
 const build = path.resolve(process.env.AI_TEST_BUILD_ROOT ?? path.join(devkit, 'build'));
 const { captureFilePolicy, createFileTools } = await import(pathToFileURL(path.join(build, 'src/ai-files.js')).href);
+const windows = process.platform === 'win32';
+const { enforceWindowsPrivate } = windows ? await import(pathToFileURL(path.join(build, 'src/windows-fs.js')).href) : {};
+const execute = promisify(execFile);
 const context = { ask: async () => {} };
 const patch = (...files) => ({ patchText: `*** Begin Patch\n${files.join('\n')}\n*** End Patch` });
 const update = (file, extra = '') => `*** Update File: ${file}\n${extra}@@\n-before\n+after`;
 const refused = operation => assert.rejects(operation, /AI_FILES_(?:DENIED|INVALID|CHANGED|BUSY)/);
 
 async function fixture(t, mode = 'develop') {
-    const root = await fs.mkdtemp('/tmp/opencode/cocos4-ai-files-');
+    const root = await fs.mkdtemp(windows ? path.join(await fs.realpath(tmpdir()), 'cocos4-ai-files-') : '/tmp/opencode/cocos4-ai-files-');
+    if (windows) await enforceWindowsPrivate(root);
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const workspace = path.join(root, 'workspace with spaces \u6e38\u620f');
     const sdk = path.join(root, 'sdk'), skills = path.join(root, 'skills'), outside = path.join(root, 'private');
-    for (const directory of [workspace, sdk, skills, outside, path.join(workspace, 'src')]) await fs.mkdir(directory, { mode: 0o700 });
+    for (const directory of [workspace, sdk, skills, outside, path.join(workspace, 'src')]) {
+        await fs.mkdir(directory, { mode: 0o700 });
+        if (windows) await enforceWindowsPrivate(directory);
+    }
     for (const filename of [path.join(workspace, 'src/first.ts'), path.join(workspace, 'src/second.ts')]) {
         await fs.writeFile(filename, 'before\n', { mode: 0o600 });
     }
@@ -77,8 +87,8 @@ test('late symlinks, directory links and hardlink aliases cannot be read or muta
     const f = await fixture(t);
     await fs.symlink('.env', path.join(f.workspace, 'public.txt'));
     await fs.link(path.join(f.workspace, '.env'), path.join(f.workspace, 'hardlink.txt'));
-    await fs.symlink(f.outside, path.join(f.workspace, 'linked'));
-    await fs.symlink('src', path.join(f.workspace, 'internal-link'));
+    await fs.symlink(f.outside, path.join(f.workspace, 'linked'), windows ? 'junction' : 'dir');
+    await fs.symlink(windows ? path.join(f.workspace, 'src') : 'src', path.join(f.workspace, 'internal-link'), windows ? 'junction' : 'dir');
     for (const file of ['public.txt', 'hardlink.txt', 'linked/second.ts', 'internal-link/first.ts']) {
         for (const [tool, args] of [['read', { filePath: file }], ['write', { filePath: file, content: 'ATTACK\n' }],
             ['edit', { filePath: file, oldString: 'before', newString: 'ATTACK' }],
@@ -149,9 +159,12 @@ test('root replacement, untrusted directories and recovery locks fail closed wit
     await fs.mkdir(f.workspace, { mode: 0o700 });
     await refused(f.tools.read.execute({ filePath: f.workspace }, context));
     await fs.rmdir(f.workspace); await fs.rename(saved, f.workspace);
-    await fs.chmod(path.join(f.workspace, 'src'), 0o777);
+    if (windows) await execute(path.join(process.env.SystemRoot, 'System32/icacls.exe'),
+        [path.join(f.workspace, 'src'), '/grant', '*S-1-1-0:(M)'], { windowsHide: true });
+    else await fs.chmod(path.join(f.workspace, 'src'), 0o777);
     await refused(f.tools.read.execute({ filePath: 'src/first.ts' }, context));
-    await fs.chmod(path.join(f.workspace, 'src'), 0o700);
+    if (windows) await enforceWindowsPrivate(path.join(f.workspace, 'src'));
+    else await fs.chmod(path.join(f.workspace, 'src'), 0o700);
     const lock = path.join(f.workspace, '.cocos4-ai-file-lock');
     await fs.symlink(path.join(f.workspace, '.env'), lock);
     await refused(f.tools.read.execute({ filePath: 'src/first.ts' }, context));
@@ -186,7 +199,9 @@ test('write publication races never write through aliases and roll back the firs
             await refused(f.tools.apply_patch.execute(patch(update('src/first.ts'), update('src/second.ts')), context));
             assert.equal(race.fired, true);
         } finally { race.restore(); }
-        const src = scenario === 'parent' ? saved : parent;
+        const src = scenario === 'parent' && !race.blocked ? saved : parent;
+        if (windows && scenario === 'parent') assert.equal(race.blocked, true, 'The native parent lease must block replacement');
+        if (race.originalFile) assert.equal(await fs.readFile(race.originalFile, 'utf8'), 'before\n', 'The actor-withdrawn original input must never be written');
         assert.equal(await fs.readFile(path.join(src, 'first.ts'), 'utf8'), 'before\n');
         assert.equal(await fs.readFile(path.join(f.workspace, '.env'), 'utf8'), 'DUMMY_SECRET\n');
         assert.equal(await fs.readFile(path.join(f.outside, 'second.ts'), 'utf8'), 'DUMMY_PRIVATE_STATE\n');

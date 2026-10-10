@@ -263,9 +263,11 @@ async function verifyBytedance({ runtimeDirectory, outDirectory }) {
     // Supplied by the shared exporter owner. Missing it is an error, never an optional gate.
     const { validateMiniGame } = require('../../../scripts/validate-minigame.cjs');
     const { root, descriptorBytes, descriptor, files } = await readRuntime(runtimeDirectory);
-    const output = path.resolve(outDirectory ?? `${root}-local`);
-    await canonicalDirectory(path.dirname(output));
-    assert.ok(output !== root && !output.startsWith(`${root}${path.sep}`), 'Evidence output must be outside the runtime');
+    const requestedOutput = path.resolve(outDirectory ?? `${root}-local`);
+    const output = path.join(await canonicalDirectory(path.dirname(requestedOutput)), path.basename(requestedOutput));
+    const relative = path.relative(root, output);
+    assert.ok(relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative),
+        'Evidence output must be outside the runtime');
     await assertAbsent(output);
     const closure = inspectClosure(files);
     const preflight = await validateMiniGame(root, 'BYTEDANCE');

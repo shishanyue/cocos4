@@ -2,6 +2,7 @@ import { parentPort, workerData } from 'node:worker_threads';
 import { once } from 'node:events';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
+import { privateFixtureTree } from './windows-private.mjs';
 
 const mode = workerData.input.project;
 if (workerData.operation === 'doctor') {
@@ -34,6 +35,7 @@ test('live tree', async () => {
     await new Promise(() => {});
 });
 `, { mode: 0o400 });
+    await privateFixtureTree(workerData.staging, { preserveReadonly: false });
     parentPort.postMessage({ type: 'execute_logic' });
     if (mode === 'worker-crash') {
         const timer = setInterval(async () => {

@@ -1,7 +1,14 @@
 # Portable Candidate
 
-This is a Linux x64 **local verification candidate**, not a release cleared for
-redistribution. Read `../THIRD_PARTY_NOTICES` and `acceptance.json` before sharing
+AI agents working in the extracted package should start with root `AGENTS.md`.
+It identifies the bundled skills, MCP connection and CLI workflow, external game
+workspace/state roots, profiles, permissions and job-result checks. The release
+inventory and provenance bind it to `packaging/AGENTS.md`; it is not the source
+checkout's engine-maintenance guide.
+
+This is a **local verification candidate** for the operating system recorded in
+`release.json` (Linux x64 or Windows 11 x64), not a release cleared for
+redistribution. Read the packaged `THIRD_PARTY_NOTICES` and `docs/acceptance.json` before sharing
 any files. License provenance, clean-machine and supported-host acceptance remain
 open. Source integrity and archive checksums are not publisher authentication.
 
@@ -18,7 +25,7 @@ or vendor/device rendering. The original SDK lives in `sdk/` unchanged;
 `release.json` describes this particular enclosing distribution.
 Its own statement that Node is not bundled describes that inner SDK, not the kit.
 
-Use the `cocos4` launcher from any working directory. It locates
+Use the `cocos4` (Linux) or `cocos4.exe` (Windows) launcher from any working directory. It locates
 its bundled Node without PATH lookup and removes Node/dynamic-loader injection
 variables before starting it. Keep projects and private state outside the package.
 `doctor` without `--workspace` checks only the release inventory, SDK and host read
@@ -31,7 +38,8 @@ and exit nonzero; no preparation, repair, downloads or client startup is attempt
 For other commands, workspace defaults to the current directory and must be outside
 the release. Explicit-workspace doctor uses the shared job workflow and private
 state, just like MCP/CLI. Default state for those commands is
-`$XDG_STATE_HOME/cocos4` or `$HOME/.local/state/cocos4`; `--state-root` selects an
+`$XDG_STATE_HOME/cocos4` or `$HOME/.local/state/cocos4` on Linux, and
+`%LOCALAPPDATA%\cocos4` or `%USERPROFILE%\AppData\Local\cocos4` on Windows; `--state-root` selects an
 explicit external path. SDK-only doctor rejects `--state-root` and develop,
 preview or test-execution grants without `--workspace` rather than ignoring them.
 
@@ -42,6 +50,29 @@ preview or test-execution grants without `--workspace` rather than ignoring them
 /absolute/path/to/kit/cocos4 mcp --workspace /absolute/path/to/trusted-games --mode develop --execute-tests true
 /absolute/path/to/kit/cocos4 ai --client opencode --executable /absolute/path/to/opencode --workspace /absolute/path/to/games --mode develop --preview true
 ```
+
+On this Windows host, extract the ZIP beneath the protected private directory
+`D:\cocos4-work`, keeping kit, games and state in separate sibling directories.
+Configure tool TEMP/TMP/TMPDIR there. Use canonical local drive paths; network paths, junctions,
+symlinks, alternate data streams and shared writable installation directories are
+rejected. Keep an existing games directory separate from the kit and private state:
+
+```powershell
+& 'D:\cocos4-work\kit\cocos4.exe' doctor
+& 'D:\cocos4-work\kit\cocos4.exe' mcp --workspace 'D:\cocos4-work\games' --state-root 'D:\cocos4-work\state' --mode develop --preview true
+```
+
+OpenCode is optional: the CLI and stdio MCP server run independently. The
+reference `ai` adapter is not accepted on Windows with OpenCode 1.18.21 / Bun
+1.3.14: MCP connection succeeds, but the client's code loader fails to import
+the guarded tool module under its read-only file ACL. The adapter retains that
+protection. Use the MCP/CLI directly; this package does not claim a completed
+Windows AI workflow. Linux reference-client acceptance is recorded separately.
+
+Windows PowerShell 5.1 extraction is limited by MAX_PATH. Extract into a short
+private path beneath the designated work directory first. Longer Unicode paths can be tested after
+relocating the extracted directory; the host acceptance records the extraction
+and relocation as separate steps.
 
 The first command runs in the extraction directory. The portable launcher fixes
 the SDK to this release and rejects `--sdk-root`. AI requires the explicit path
@@ -55,19 +86,22 @@ publisher/supervisor kernel features, launch a browser, check the installed AI
 client/model, or approve the candidate for distribution.
 
 No system Node, npm, Git, Python, compiler, Creator, download or postinstall is
-needed by the installed game workflow. Linux procfs, renameat2, pidfds, subreapers
-and the OS libraries/versions recorded in `acceptance.json` are required. An
-installed browser and, for AI, supported OpenCode 1.18.21 and model access remain
-external prerequisites. AI networking is separate from offline kit operation.
-Windows and macOS are not verified or supported by this candidate.
+needed by the installed game workflow. Linux requires procfs, renameat2, pidfds
+and subreapers. Windows uses bundled PE helpers for file handles/ACLs, atomic
+publication, clean MCP startup and Job Object process lifetime management.
+The OS libraries/versions recorded in `acceptance.json` are required. Browser
+preview needs an installed browser. The optional `ai --client opencode` command
+needs the reviewed OpenCode 1.18.21 client and model access; other MCP clients use
+the launcher directly. Model networking is separate from offline kit operation.
+Each archive runs only on its declared host. macOS does not yet have a candidate.
 
-Windows host development is separate from engine publishing targets. The checkout's
-`tools/devkit/packaging/WINDOWS-COMPONENTS.md` describes a separately assembled
-Windows x64 **component qualification ZIP**, with official Node and a Job Object
-supervisor test harness. It is not a Windows devkit release: it has no application,
-SDK, game build or preview capability. Windows filesystem/ACL/state/publication
-integration and real-host acceptance remain required. Neither that component work
-nor this Linux package enables native game applications, NATIVE or JSB.
+Windows host development is separate from engine publishing targets. The complete
+Windows candidate contains `cocos4.exe`, the MCP/CLI, bundled Node, helpers and SDK.
+The older component qualification ZIP described in the checkout's
+`tools/devkit/packaging/WINDOWS-COMPONENTS.md` remains a separate supervisor harness.
+Neither package enables native game applications, NATIVE or JSB. Consult the
+checkout's `tools/devkit/ACCEPTANCE.md` for actual host and workflow evidence;
+assembly alone does not establish those results.
 
 MCP tools default to read-only. Startup grants cannot be elevated through tool
 arguments. Project creation, checks, builds and preview require `requestKey`;

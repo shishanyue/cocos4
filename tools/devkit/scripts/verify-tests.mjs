@@ -9,8 +9,12 @@ import { fileURLToPath } from 'node:url';
 const devkit = fileURLToPath(new URL('../', import.meta.url));
 const script = fileURLToPath(import.meta.url);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
-const environmentKeys = new Set(['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'DISPLAY', 'XAUTHORITY',
+const hostEnvironmentKeys = ['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'DISPLAY', 'XAUTHORITY',
+    'USERPROFILE', 'LOCALAPPDATA', 'APPDATA', 'TEMP', 'TMP', 'SystemRoot', 'WINDIR', 'COMSPEC', 'PATHEXT',
+    'ProgramFiles', 'ProgramFiles(x86)', 'WindowsSdkDir', 'COCOS4_WINDOWS_COMPILER'];
+const environmentKeys = new Set([...hostEnvironmentKeys,
     'GAME_OPERATION_SDK_ROOT', 'GAME_SDK_INTEGRATION', 'GAME_CHROME_EXECUTABLE', 'GAME_SDK_RUNTIME_ROOT', 'GAME_TEST_BUILD_PREFIX',
+    'COCOS4_PREVIEW_BROWSER',
     'COMBINED_SDK_ROOT', 'LEGACY_HTML5_SDK_ROOT', 'API_DOCS_SDK_ROOT', 'API_DOCS_LEGACY_SDK_ROOT', 'AI_TEST_SDK_ROOT', 'AI_TEST_EVIDENCE_ROOT',
     'BILIBILI_PACKAGE_SDK', 'BILIBILI_SDK_BASE_ROOT', 'BILIBILI_RUNTIME_DIRECTORIES', 'BILIBILI_SDK_2D_RUNTIME', 'BILIBILI_SDK_3D_RUNTIME',
     'BILIBILI_DEVELOPMENT_TEST_BUILD_PREFIX', 'BILIBILI_PACKAGE_TEST_BUILD_PREFIX',
@@ -22,16 +26,22 @@ const testArguments = ['--test', '--test-reporter=tap', '--test-concurrency=2', 
 // The complete compiler/browser matrix shares CI's two-hour allowance; job deadlines are independent.
 const maximumTimeout = 7200000;
 const graceMs = 5000;
-const cleanupScope = 'Own process group only; setsid escapes and orphan descendant reaping are not established.';
+const cleanupScope = process.platform === 'win32'
+    ? 'Own Job Object only; creation-time association, no breakaway, observed runner exit and zero active processes. Not an OS sandbox.'
+    : 'Own process group only; setsid escapes and orphan descendant reaping are not established.';
 const json = (root, name, value) => fs.writeFile(path.join(root, name), `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
 const testFiles = async () => (await fs.readdir(path.join(devkit, 'test'))).filter(file => file.endsWith('.test.mjs')).sort().map(file => `test/${file}`);
 
 export function testEnvironment(source, strict = false) {
-    const environment = Object.fromEntries(Object.entries(source).filter(([key]) => environmentKeys.has(key)));
+    const canonical = new Map([...environmentKeys].map(key => [key.toUpperCase(), key]));
+    const environment = Object.fromEntries(Object.entries(source).flatMap(([key, value]) => {
+        const name = process.platform === 'win32' ? canonical.get(key.toUpperCase()) : environmentKeys.has(key) && key;
+        return name ? [[name, value]] : [];
+    }));
     if (strict) {
-        const required = [...environmentKeys].filter(key => !['HOME', 'PATH', 'TMPDIR', 'LANG', 'LC_ALL', 'DISPLAY', 'XAUTHORITY',
+        const required = [...environmentKeys].filter(key => ![...hostEnvironmentKeys,
             'GAME_TEST_BUILD_PREFIX', 'BILIBILI_DEVELOPMENT_TEST_BUILD_PREFIX', 'BILIBILI_PACKAGE_TEST_BUILD_PREFIX',
-            'AI_TEST_EVIDENCE_ROOT', 'LOGIC_EVIDENCE_ROOT', 'PORTABLE_STARTUP_NODE'].includes(key));
+            'AI_TEST_EVIDENCE_ROOT', 'LOGIC_EVIDENCE_ROOT', 'PORTABLE_STARTUP_NODE', 'COCOS4_PREVIEW_BROWSER'].includes(key));
         const missing = required.filter(key => !environment[key]
             || (key.endsWith('_INTEGRATION') && environment[key] !== '1'));
         assert.equal(missing.length, 0, `Missing strict integration inputs: ${missing.join(', ')}`);
@@ -74,6 +84,7 @@ async function readCommand(root) {
 }
 
 async function supervise(command) {
+    assert.equal(process.platform, 'linux');
     assert(process.send, 'Internal supervisor requires IPC');
     const stat = await fs.readFile('/proc/self/stat', 'utf8');
     assert.equal(Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[2]), process.pid, 'Supervisor must own its process group');
@@ -114,6 +125,148 @@ async function supervise(command) {
     });
 }
 
+async function windowsHelper() {
+    const file = path.join(devkit, 'build/host/cocos4-supervise.exe');
+    const manifest = JSON.parse(await fs.readFile(path.join(devkit, 'build/host/supervisor.json'), 'utf8'));
+    assert.equal(manifest.version, 1);
+    assert.equal(manifest.platform, 'win32'); assert.equal(manifest.arch, process.arch);
+    assert.equal(manifest.file, 'cocos4-supervise.exe');
+    const entry = await fs.lstat(file), bytes = await fs.readFile(file);
+    assert(entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1, 'Expected the built regular Job Object helper');
+    assert.equal(bytes.length, manifest.bytes); assert.equal(hash(bytes), manifest.sha256);
+    assert.equal(hash(await fs.readFile(path.join(devkit, 'runtime/supervise-win32.c'))), manifest.sourceSha256,
+        'Rebuild the Windows supervisor after source changes');
+    return file;
+}
+
+function windowsIdentity(value) {
+    assert(value && value.platform === 'win32' && Number.isSafeInteger(value.pid) && value.pid > 0 && value.pid <= 0xffffffff);
+    assert(typeof value.creationTime === 'string' && /^\d+$/.test(value.creationTime));
+    return value;
+}
+
+async function ownerIdentity(helper) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(helper, ['--identity', String(process.pid)], {
+            windowsHide: true, shell: false, env: {}, stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        let stdout = '', stderr = '', exceeded = false;
+        const timer = setTimeout(() => { exceeded = true; child.kill(); }, 5000);
+        child.stdout.on('data', bytes => { stdout += bytes; if (stdout.length > 2048) { exceeded = true; child.kill(); } });
+        child.stderr.on('data', bytes => { stderr += bytes; if (stderr.length > 2048) { exceeded = true; child.kill(); } });
+        child.once('error', error => { clearTimeout(timer); reject(error); });
+        child.once('close', (code, signal) => {
+            clearTimeout(timer);
+            try {
+                assert(!exceeded && !stderr && !signal && code === 0 && stdout.endsWith('\n'), 'Windows owner identity failed');
+                const event = JSON.parse(stdout);
+                assert(event.version === 1 && event.platform === 'win32' && event.type === 'identity' && event.alive === true);
+                const identity = windowsIdentity(event.process); assert.equal(identity.pid, process.pid);
+                resolve(identity);
+            } catch (error) { reject(error); }
+        });
+    });
+}
+
+// The helper deliberately starts with an OS-only environment. This trusted
+// wrapper restores only the retained allowlist for the actual Node test child.
+// It remains inside the same non-breakaway Job as every test descendant.
+async function windowsTest(command) {
+    assert.equal(process.platform, 'win32'); assert(process.send, 'Internal Windows runner requires IPC');
+    testEnvironment(command.environment, command.strict);
+    const child = spawn(command.executable, command.args, { cwd: command.cwd, env: command.environment,
+        shell: false, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit'] });
+    child.once('spawn', () => process.send({ type: 'spawned', pid: child.pid }, () => {}));
+    child.once('error', error => process.send({ type: 'test-error', error: String(error.stack ?? error) }, () => {}));
+    child.once('close', (code, signal) => {
+        process.exitCode = code === 0 && !signal ? 0 : 1;
+        process.send({ type: 'test-exit', code, signal }, () => process.disconnect());
+    });
+}
+
+async function superviseWindows(root, command, log, status, interruptions, setStop) {
+    const helper = await windowsHelper(), owner = await ownerIdentity(helper);
+    let protocol = '', pending = '', ready = false, started = false, exited = false, stopping = false, closed = false;
+    await new Promise((resolve, reject) => {
+        const child = spawn(helper, ['--owner', String(owner.pid), owner.creationTime, '--cwd', command.cwd, '--ipc', '--',
+            command.executable, script, '--windows-test', root], {
+            cwd: command.cwd, env: {}, shell: false, windowsHide: true, stdio: ['pipe', 'pipe', log.fd, 'ipc'],
+        });
+        let stopSent = false, forceTimer;
+        const stop = () => {
+            if (stopSent || closed) return;
+            stopSent = true; child.stdin.end('T');
+            forceTimer = setTimeout(() => {
+                status.error ??= 'Windows supervisor did not confirm Job cleanup within ten seconds';
+                // Killing this exact child closes its sole Job handle. Without
+                // treeClosed evidence it can never turn into a successful run.
+                child.kill();
+            }, 10000);
+        };
+        const fail = error => { status.error ??= String(error.stack ?? error); stop(); };
+        const readyTimer = setTimeout(() => fail(new Error('Windows supervisor did not become ready within five seconds')), 5000);
+        setStop(stop);
+        child.stdin.on('error', fail);
+        child.once('error', error => { clearTimeout(readyTimer); clearTimeout(forceTimer); reject(error); });
+        child.on('message', message => {
+            try {
+                assert(ready && message && typeof message === 'object');
+                if (message.type === 'spawned') {
+                    assert(!status.testPid && Number.isSafeInteger(message.pid) && message.pid > 0);
+                    status.testPid = message.pid;
+                } else if (message.type === 'test-exit') {
+                    assert(status.testPid && !status.testLeaderReaped);
+                    assert(message.code === null || Number.isSafeInteger(message.code));
+                    assert(message.signal === null || typeof message.signal === 'string');
+                    Object.assign(status, { code: message.code, signal: message.signal, testLeaderReaped: true });
+                } else if (message.type === 'test-error') fail(new Error(String(message.error)));
+                else assert.fail('Unknown Windows test wrapper message');
+            } catch (error) { fail(error); }
+        });
+        child.stdout.on('data', bytes => {
+            protocol += bytes; pending += bytes;
+            if (protocol.length > 8192 || pending.length > 8192) { fail(new Error('Windows supervisor protocol exceeded its limit')); return; }
+            let end;
+            while ((end = pending.indexOf('\n')) !== -1) {
+                const line = pending.slice(0, end); pending = pending.slice(end + 1);
+                try {
+                    assert(line.length < 1024);
+                    const event = JSON.parse(line);
+                    assert(event.version === 1 && event.platform === 'win32');
+                    if (event.type === 'ready') {
+                        assert(!ready); assert.deepEqual(windowsIdentity(event.owner), owner);
+                        assert.equal(windowsIdentity(event.supervisor).pid, child.pid);
+                        const runner = windowsIdentity(event.runner);
+                        assert(runner.pid !== child.pid && runner.pid !== process.pid);
+                        ready = true; clearTimeout(readyTimer); status.supervisorRunner = runner;
+                        if (interruptions.length || stopSent) stop(); else child.stdin.write('G');
+                    } else if (event.type === 'started') { assert(ready && !started && !exited); started = true; }
+                    else if (event.type === 'runnerExit') {
+                        assert(ready && !exited && Number.isSafeInteger(event.exitCode) && event.exitCode >= 0 && event.exitCode <= 0xffffffff);
+                        exited = true; status.supervisorRunnerExitCode = event.exitCode;
+                    } else if (event.type === 'stopping') {
+                        assert(ready && !stopping); stopping = true; status.cleanupReason = event.reason;
+                        assert(['stop', 'stdinEof', 'ownerExit', 'runnerExit', 'console'].includes(event.reason), `Windows cleanup: ${event.reason}`);
+                    } else if (event.type === 'treeClosed') {
+                        assert(ready && exited && stopping && !status.jobObjectClosed && event.activeProcesses === 0);
+                        status.jobObjectClosed = true;
+                    } else assert.fail(`Windows supervisor failure: ${line}`);
+                } catch (error) { fail(error); }
+            }
+        });
+        child.once('close', (code, signal) => {
+            closed = true; clearTimeout(readyTimer); clearTimeout(forceTimer);
+            status.supervisor = { pid: child.pid, code, signal, reaped: true };
+            if (pending || !ready || !exited || !status.jobObjectClosed || code !== 0 || signal) {
+                status.error ??= 'Windows supervisor closed without complete Job Object cleanup evidence';
+            }
+            resolve();
+        });
+    });
+    await fs.writeFile(path.join(root, 'supervisor.log'), protocol, { flag: 'wx', mode: 0o600 });
+    status.supervisorLogSha256 = hash(protocol);
+}
+
 async function run(root) {
     // Refuse to rerun or overwrite any started/historical matrix.
     assert.deepEqual((await fs.readdir(root)).sort(), ['command.json']);
@@ -121,13 +274,16 @@ async function run(root) {
     const startedAt = new Date().toISOString();
     const interruptions = [];
     let supervisor;
+    let stopSupervisor = () => {};
     let status = { code: null, signal: null };
     const stop = trigger => {
         interruptions.push({ trigger, at: new Date().toISOString() });
-        if (supervisor?.connected) supervisor.send({ type: 'stop', trigger }, () => {});
+        stopSupervisor(trigger);
     };
     const onInt = () => stop('SIGINT'), onTerm = () => stop('SIGTERM');
     process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
+    const onMessage = message => { if (message?.type === 'stop') stop('parent-stop'); };
+    if (process.platform === 'win32') process.on('message', onMessage);
     let deadline;
     let result;
     try {
@@ -165,7 +321,7 @@ async function run(root) {
                 }
                 if (name === 'PORTABLE_STARTUP_RELEASE') {
                     await add(path.join(value, 'release.json'));
-                    await add(path.join(value, 'runtime/node'));
+                    await add(path.join(value, process.platform === 'win32' ? 'runtime/node.exe' : 'runtime/node'));
                 }
                 if (name === 'PORTABLE_STARTUP_NODE') await add(value);
             }
@@ -176,9 +332,12 @@ async function run(root) {
         assert(!interruptions.length, 'Interrupted before test spawn');
         const log = await fs.open(path.join(root, 'test.log'), 'wx', 0o600);
         try {
-            await new Promise((resolve, reject) => {
+            if (process.platform === 'win32') {
+                await superviseWindows(root, command, log, status, interruptions, callback => { stopSupervisor = callback; });
+            } else await new Promise((resolve, reject) => {
                 supervisor = spawn(process.execPath, [script, '--supervise', root], { cwd: devkit, env: command.environment,
                     shell: false, detached: true, stdio: ['ignore', log.fd, log.fd, 'ipc'] });
+                stopSupervisor = trigger => { if (supervisor.connected) supervisor.send({ type: 'stop', trigger }, () => {}); };
                 supervisor.once('error', reject);
                 supervisor.on('message', message => {
                     if (message.type === 'spawned') {
@@ -203,8 +362,11 @@ async function run(root) {
         const output = await fs.readFile(path.join(root, 'test.log'));
         const audit = auditTap(output.toString());
         const unchanged = JSON.stringify(before) === JSON.stringify(after);
-        const passed = status.code === 0 && !status.signal && !status.error && !interruptions.length && unchanged
-            && status.groupKillRequested === true && status.supervisor.signal === 'SIGKILL'
+        const cleanupConfirmed = process.platform === 'win32'
+            ? status.jobObjectClosed === true && status.supervisor.code === 0 && status.supervisor.signal === null
+                && status.supervisorRunnerExitCode === 0 && status.cleanupReason === 'runnerExit' && status.testLeaderReaped === true
+            : status.groupKillRequested === true && status.supervisor.signal === 'SIGKILL';
+        const passed = status.code === 0 && !status.signal && !status.error && !interruptions.length && unchanged && cleanupConfirmed
             && audit.complete && audit.totals.fail === 0 && audit.totals.cancelled === 0;
         result = { totals: audit.totals, completeTotals: audit.complete, unchanged, logSha256: hash(output),
             success: passed && (!command.strict || audit.allPassed), fullSuccess: Boolean(command.strict && passed && audit.allPassed),
@@ -214,6 +376,7 @@ async function run(root) {
     finally {
         clearTimeout(deadline);
         process.removeListener('SIGINT', onInt); process.removeListener('SIGTERM', onTerm);
+        process.removeListener('message', onMessage);
     }
     await json(root, 'result.json', { node: process.version, startedAt, finishedAt: new Date().toISOString(), ...status,
         interrupted: interruptions.length > 0, interruptionTrigger: interruptions[0]?.trigger ?? null, interruptions,
@@ -222,11 +385,12 @@ async function run(root) {
 }
 
 async function main() {
-    assert.equal(process.platform, 'linux', 'Retained process-group verification currently requires Linux');
+    assert(['linux', 'win32'].includes(process.platform), 'Retained verification requires Linux process groups or Windows Job Objects');
     const args = process.argv.slice(2);
-    if (['--run', '--supervise'].includes(args[0])) {
+    if (['--run', '--supervise', '--windows-test'].includes(args[0])) {
         assert(args.length === 2 && path.isAbsolute(args[1]));
         if (args[0] === '--supervise') await supervise(await readCommand(args[1]));
+        else if (args[0] === '--windows-test') await windowsTest(await readCommand(args[1]));
         else await run(args[1]);
         return;
     }
@@ -256,13 +420,14 @@ async function main() {
         console.log(JSON.stringify({ state: 'running', pid: process.pid, evidence: root, result: path.join(root, 'result.json') }));
         await run(root);
     } else {
-        const child = spawn(process.execPath, [script, '--run', root], { cwd: devkit, detached: true, shell: false, stdio: 'ignore', env: environment });
+        const child = spawn(process.execPath, [script, '--run', root], { cwd: devkit, detached: true, shell: false, windowsHide: true, stdio: 'ignore', env: environment });
         await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
         child.unref();
         console.log(JSON.stringify({ state: 'running', pid: child.pid, evidence: root, result: path.join(root, 'result.json') }));
     }
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === script) {
+if (process.argv[1] && (process.platform === 'win32'
+    ? path.resolve(process.argv[1]).toLowerCase() === script.toLowerCase() : path.resolve(process.argv[1]) === script)) {
     main().catch(error => { console.error(error); process.exitCode = 1; });
 }

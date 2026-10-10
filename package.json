@@ -18,7 +18,7 @@
     "build:minigame": "node scripts/build-minigame.cjs",
     "build:offline-mappings": "node scripts/build-offline-mappings.cjs",
     "validate:bilibili": "node scripts/validate-bilibili.cjs",
-    "test:platforms": "node --test scripts/tests/minigame.test.cjs scripts/tests/bilibili.test.cjs scripts/tests/offline-mappings.test.cjs",
+    "test:platforms": "node --test scripts/tests/minigame.test.cjs scripts/tests/bilibili.test.cjs scripts/tests/minigame-package.test.cjs scripts/tests/offline-mappings.test.cjs",
     "build": "npm run build:min && npm run build:declaration",
     "build:cli": "npm run build:cli-min && npm run build:declaration",
     "build:adapter": "node scripts/spread-adapter.cjs",

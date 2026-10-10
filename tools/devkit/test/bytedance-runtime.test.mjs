@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -25,7 +25,7 @@ const { profiles } = require('../effects/builtin-inputs.cjs');
 const json = value => Buffer.from(JSON.stringify(value));
 
 test('focused ByteDance bootstrap contracts, without engine/runtime/SDK builds', { timeout: 115000 }, async t => {
-    const temporary = await mkdtemp(join(tmpdir(), 'bytedance-runtime-'));
+    const temporary = await realpath(await mkdtemp(join(tmpdir(), 'bytedance runtime-')));
     t.after(() => rm(temporary, { recursive: true, force: true }));
     const output = join(temporary, 'bootstrap');
     await mkdir(output);

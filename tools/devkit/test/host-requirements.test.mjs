@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { checkHostRequirements, verifyHost } from '../scripts/verify-portable.mjs';
+import { checkHostRequirements, portablePaths, verifyHost } from '../scripts/verify-portable.mjs';
 
 function fixture() {
     const staticBinary = file => ({ file, interpreter: null, sharedLibraries: [], versions: [] });
@@ -44,4 +44,40 @@ test('missing or unexpected helper ABIs fail closed instead of silently lowering
 
 test('direct CLI cannot claim a release produced by a different interpreter', async () => {
     await assert.rejects(verifyHost('/deliberately-not-the-executing-release', fixture()), /bundled Node/);
+});
+
+function windowsFixture() {
+    return { host: { platform: 'win32', arch: 'x64', minimumRelease: '10.0.22000', libraries:
+        portablePaths('win32').binaries.map(file => ({ file, machine: 'AMD64', format: 'PE32+',
+            sharedLibraries: ['KERNEL32.dll', 'api-ms-win-crt-runtime-l1-1-0.dll'],
+            hardening: { dynamicBase: true, highEntropyVA: true, nxCompatible: true,
+                relocationsPresent: true, writableExecutableSections: [] } })) },
+    runtime: { node: { version: '24.21.0' } } };
+}
+const windowsHost = { platform: 'win32', arch: 'x64', node: 'v24.21.0', windowsVersion: '10.0.26200' };
+
+test('Windows host checks require the bundled runtime, Windows 11 and all six PE identities', () => {
+    assert.deepEqual(checkHostRequirements(windowsFixture(), windowsHost), { ...windowsHost, minimumWindowsVersion: '10.0.22000' });
+    for (const windowsVersion of ['10.0.19045', '10.0.21999', '6.3.9600', 'unknown', undefined]) {
+        assert.throws(() => checkHostRequirements(windowsFixture(), { ...windowsHost, windowsVersion }));
+    }
+    for (const change of [{ platform: 'linux' }, { arch: 'arm64' }, { node: 'v24.16.0' }]) {
+        assert.throws(() => checkHostRequirements(windowsFixture(), { ...windowsHost, ...change }));
+    }
+});
+
+test('Windows verification rejects missing helpers, PE hardening and unreviewed DLLs', () => {
+    for (const change of [
+        manifest => { manifest.host.libraries.pop(); },
+        manifest => { manifest.host.minimumRelease = '10.0.0'; },
+        manifest => { manifest.host.libraries[1].machine = 'ARM64'; },
+        manifest => { manifest.host.libraries[1].format = 'PE32'; },
+        manifest => { manifest.host.libraries[1].sharedLibraries.push('plugin.dll'); },
+        manifest => { manifest.host.libraries[1].sharedLibraries.push('kernel32.DLL'); },
+        manifest => { manifest.host.libraries[1].hardening.nxCompatible = false; },
+        manifest => { manifest.host.libraries[1].hardening.writableExecutableSections.push('.text'); },
+    ]) {
+        const manifest = windowsFixture(); change(manifest);
+        assert.throws(() => checkHostRequirements(manifest, windowsHost));
+    }
 });

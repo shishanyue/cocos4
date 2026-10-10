@@ -30,7 +30,9 @@ async function compileGame(input = {}) {
         }
         const project = await canonicalDirectory(projectDirectory);
         const sourceRoot = await canonicalDirectory(path.join(project, 'src'));
-        const typesRoot = path.resolve(typesDirectory);
+        // Keep every TypeScript snapshot key on the same physical spelling,
+        // including Windows TEMP's 8.3 aliases and drive/directory case.
+        let typesRoot = path.resolve(typesDirectory);
         const toolchain = await canonicalDirectory(toolchainDirectory ?? path.resolve(__dirname, '../../..'));
         const relativeTo = (root, file) => {
             const relative = path.relative(root, path.resolve(file));
@@ -237,7 +239,7 @@ async function compileGame(input = {}) {
                         file, line: location.line + 1, column: location.character + 1 };
                 }));
         }
-        await canonicalDirectory(typesRoot);
+        typesRoot = await canonicalDirectory(typesRoot);
         const ambientModules = new Set();
         const typeQueue = ['cc.d.ts'];
         for (const file of typeQueue) {
@@ -338,8 +340,8 @@ async function compileGame(input = {}) {
             if (!result?.code?.includes('System.register(')) reject('Missing SystemJS game module', `src/${file}`);
             transformed.set(file.replace(/\.ts$/, '.js'), result.code);
         }
-        const output = path.resolve(outDirectory);
-        await canonicalDirectory(path.dirname(output));
+        const requestedOutput = path.resolve(outDirectory);
+        const output = path.join(await canonicalDirectory(path.dirname(requestedOutput)), path.basename(requestedOutput));
         const protectedRoots = [sourceRoot, typesRoot, path.join(toolchain, 'node_modules')];
         if (toolchainDirectory !== undefined) protectedRoots.push(toolchain);
         if (protectedRoots.some(root => relativeTo(root, output) !== null)) reject('Output overlaps compiler inputs');

@@ -8,6 +8,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { AppError, diagnosticSchema, MAX_ARTIFACT_BYTES } from './contracts.js';
+import { acquireWindowsPath, enforceWindowsPrivate, hostRealpath, verifyWindowsTrust, type WindowsPathLease } from './windows-fs.js';
 
 const MiB = 1024 * 1024;
 const inspectionLimits = { entries: 1000, bytes: 8 * MiB, milliseconds: 5000 };
@@ -39,7 +40,7 @@ export const inspectionSchema = z.object({
 }).strict();
 export type Inspection = z.infer<typeof inspectionSchema>;
 type Diagnostic = Inspection['diagnostics'][number];
-type Pin = { handle: FileHandle; absolute: string; stat: BigIntStats };
+type Pin = { handle: FileHandle; absolute: string; stat: BigIntStats; lease?: WindowsPathLease };
 type Limits = typeof inspectionLimits;
 type Scan = { records: Map<string, string>; contents: Map<string, string>; files: number; bytes: number };
 
@@ -56,13 +57,39 @@ function stamp(stat: BigIntStats): string {
 }
 
 function fdPath(pin: Pin): string {
-    return `/proc/self/fd/${pin.handle.fd}`;
+    return process.platform === 'win32' ? pin.absolute : `/proc/self/fd/${pin.handle.fd}`;
 }
 
 function hostCheck(): void {
+    if (process.platform === 'win32' && process.arch === 'x64') return;
     if (process.platform !== 'linux' || !constants.O_NOFOLLOW || !constants.O_DIRECTORY || !constants.O_NONBLOCK) {
-        throw new AppError('SDK_INCOMPLETE', 'Secure workspace reads require verified Linux /proc/self/fd and no-follow opens.');
+        throw new AppError('SDK_INCOMPLETE', 'Secure workspace reads require the Windows x64 filesystem helper or verified Linux no-follow descriptor paths.');
     }
+}
+
+function childPath(pin: Pin, name: string): string {
+    return process.platform === 'win32' ? path.join(pin.absolute, name) : `${fdPath(pin)}/${name}`;
+}
+
+function readFlags(directory: boolean): number {
+    return process.platform === 'win32' ? constants.O_RDONLY
+        : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK | (directory ? constants.O_DIRECTORY : 0);
+}
+
+async function closePin(pin: Pin): Promise<void> {
+    try { await pin.handle.close(); } finally { await pin.lease?.close(); }
+}
+
+async function privatePin(pin: Pin, directory: boolean): Promise<boolean> {
+    if (process.platform === 'win32') {
+        try { await verifyWindowsTrust(pin.absolute, true); return true; }
+        catch (error) {
+            if (error instanceof AppError && error.code === 'PERMISSION_DENIED') return false;
+            throw error;
+        }
+    }
+    return pin.stat.uid === BigInt(process.getuid!()) && (directory
+        ? (pin.stat.mode & 0o7777n) === 0o700n : [0o400n, 0o600n].includes(pin.stat.mode & 0o7777n));
 }
 
 function deadlineCheck(deadline: number): void {
@@ -80,61 +107,75 @@ function filesystemError(error: unknown): never {
 
 async function checkPin(pin: Pin, content = false): Promise<void> {
     try {
+        await pin.lease?.check();
         const current = await pin.handle.stat({ bigint: true });
         const linked = await fs.lstat(pin.absolute, { bigint: true });
         if ((content ? stamp(current) !== stamp(pin.stat) : identity(current) !== identity(pin.stat))
             || identity(linked) !== identity(pin.stat)
-            || await fs.realpath(fdPath(pin)) !== pin.absolute
-            || await fs.realpath(pin.absolute) !== pin.absolute) failChanged();
+            || await hostRealpath(fdPath(pin)) !== pin.absolute
+            || await hostRealpath(pin.absolute) !== pin.absolute) failChanged();
     } catch (error) { filesystemError(error); }
 }
 
-async function openChild(parent: Pin, name: string, directory: boolean): Promise<Pin> {
+async function openChild(parent: Pin, name: string, directory: boolean, immutable = false): Promise<Pin> {
     validateRelativePath(name);
     if (name.includes('/') || name === '.') throw new AppError('PATH_OUTSIDE_WORKSPACE', 'Expected one path component.');
-    const filename = `${fdPath(parent)}/${name}`;
+    const filename = childPath(parent, name);
     let handle: FileHandle | undefined;
+    let lease: WindowsPathLease | undefined;
     try {
+        await checkPin(parent);
         const before = await fs.lstat(filename, { bigint: true });
         if (before.isSymbolicLink()) throw new AppError('PATH_OUTSIDE_WORKSPACE', 'Symbolic links are not workspace inputs.');
         if (directory ? !before.isDirectory() : !before.isFile()) {
             throw new AppError('UNSUPPORTED_PROJECT', 'Only regular files and directories are permitted.');
         }
         if (!directory && before.nlink !== 1n) throw new AppError('PERMISSION_DENIED', 'Hard-linked input files are not permitted.');
-        handle = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-            | (directory ? constants.O_DIRECTORY : 0));
+        if (process.platform === 'win32') lease = await acquireWindowsPath(filename, { directory, immutable });
+        handle = await fs.open(lease?.absolute ?? filename, readFlags(directory));
         const stat = await handle.stat({ bigint: true });
         // Ancestor children may churn independently. scanTree checks content
         // stamps for directories it scans; traversal only pins their identity.
         if (directory ? identity(stat) !== identity(before) : stamp(stat) !== stamp(before)) failChanged();
-        const pin = { handle, absolute: path.join(parent.absolute, name), stat };
+        const pin = { handle, absolute: lease?.absolute ?? path.join(parent.absolute, name), stat, lease };
         await checkPin(pin, !directory);
         return pin;
     } catch (error) {
         await handle?.close();
+        await lease?.close();
         filesystemError(error);
     }
 }
 
-// Walk from / rather than realpath-then-open: every ancestor stays pinned until
-// the operation ends, so replacing an ancestor cannot redirect file reads.
+// Walk from the filesystem root rather than realpath-then-open. On Windows the
+// native leases reject every reparse point and deny ancestor deletion/renaming;
+// Linux resolves children through pinned descriptors with O_NOFOLLOW.
 async function pinAbsolute(absolute: string): Promise<Pin[]> {
     hostCheck();
     if (!path.isAbsolute(absolute) || absolute !== path.resolve(absolute) || absolute.length > 4096) {
         throw new AppError('INVALID_ARGUMENTS', 'The authorized root must be a normalized absolute directory.');
     }
-    if (absolute.split('/').filter(Boolean).length > 64) throw new AppError('LIMIT_EXCEEDED', 'Authorized roots may have at most 64 ancestors.');
+    const windows = process.platform === 'win32';
+    if (windows && !/^[A-Za-z]:\\/.test(absolute)) {
+        throw new AppError('PATH_OUTSIDE_WORKSPACE', 'Windows workspace roots must use a local drive path, without UNC or device namespaces.');
+    }
+    const filesystemRoot = path.parse(absolute).root;
+    const components = absolute.slice(filesystemRoot.length).split(path.sep).filter(Boolean);
+    if (components.length > 64) throw new AppError('LIMIT_EXCEEDED', 'Authorized roots may have at most 64 ancestors.');
     const pins: Pin[] = [];
     try {
-        const handle = await fs.open('/', constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        const root = { handle, absolute: '/', stat: await handle.stat({ bigint: true }) };
+        const lease = windows ? await acquireWindowsPath(filesystemRoot, { directory: true }) : undefined;
+        let handle: FileHandle;
+        try { handle = await fs.open(lease?.absolute ?? filesystemRoot, readFlags(true)); }
+        catch (error) { await lease?.close(); throw error; }
+        const root: Pin = { handle, absolute: lease?.absolute ?? filesystemRoot, stat: await handle.stat({ bigint: true }), lease };
         pins.push(root);
         try {
-            if (await fs.realpath(fdPath(root)) !== '/') throw new Error('Unexpected procfs root.');
+            if (await hostRealpath(fdPath(root)) !== root.absolute) throw new Error('Unexpected filesystem root.');
         } catch {
             throw new AppError('SDK_INCOMPLETE', 'The host does not provide verified Linux pinned-descriptor paths.');
         }
-        for (const component of absolute.split('/').filter(Boolean)) {
+        for (const component of components) {
             pins.push(await openChild(pins[pins.length - 1], component, true));
         }
         return pins;
@@ -145,7 +186,7 @@ async function pinAbsolute(absolute: string): Promise<Pin[]> {
 }
 
 async function closePins(pins: Pin[]): Promise<void> {
-    for (const pin of pins.slice().reverse()) await pin.handle.close();
+    for (const pin of pins.slice().reverse()) await closePin(pin);
 }
 
 async function checkPins(pins: Pin[]): Promise<void> {
@@ -183,18 +224,21 @@ async function readRegular(pin: Pin, maximum: number, deadline: number): Promise
 
 async function createDirectory(parent: Pin, name: string): Promise<Pin> {
     await checkPin(parent);
-    await fs.mkdir(`${fdPath(parent)}/${name}`, { mode: 0o700 });
+    await fs.mkdir(childPath(parent, name), { mode: 0o700 });
+    if (process.platform === 'win32') await enforceWindowsPrivate(childPath(parent, name));
     parent.stat = await parent.handle.stat({ bigint: true });
     return openChild(parent, name, true);
 }
 
 async function writePrivate(parent: Pin, name: string, bytes: Buffer): Promise<void> {
     await checkPin(parent);
-    const handle = await fs.open(`${fdPath(parent)}/${name}`,
-        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+    const handle = await fs.open(childPath(parent, name),
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL
+        | (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK), 0o600);
     try {
         const stat = await handle.stat({ bigint: true });
-        if (!stat.isFile() || stat.nlink !== 1n || stat.uid !== BigInt(process.getuid!())) failChanged();
+        if (!stat.isFile() || stat.nlink !== 1n || (process.platform !== 'win32' && stat.uid !== BigInt(process.getuid!()))) failChanged();
+        if (process.platform === 'win32') await enforceWindowsPrivate(path.join(parent.absolute, name));
         await handle.writeFile(bytes);
         await handle.chmod(0o400);
         await checkPin({ handle, stat: await handle.stat({ bigint: true }), absolute: path.join(parent.absolute, name) }, true);
@@ -212,7 +256,7 @@ async function scanTree(root: Pin, limits: Limits, deadline: number, scan: Scan,
     async function walk(pin: Pin, prefix: string, depth: number, output?: Pin): Promise<void> {
         deadlineCheck(deadline);
         await checkPin(pin, true);
-        if (options.privateOutput && (pin.stat.uid !== BigInt(process.getuid!()) || (pin.stat.mode & 0o7777n) !== 0o700n)) {
+        if (options.privateOutput && !await privatePin(pin, true)) {
             throw new AppError('ARTIFACT_INVALID', 'Output directories must remain private and tool-owned.');
         }
         scan.records.set(prefix || '.', stamp(pin.stat));
@@ -235,9 +279,9 @@ async function scanTree(root: Pin, limits: Limits, deadline: number, scan: Scan,
                     if (child.stat.isDirectory()) {
                         const childOutput = output ? await createDirectory(output, entry.name) : undefined;
                         try { await walk(child, name, depth + 1, childOutput); }
-                        finally { await childOutput?.handle.close(); }
+                        finally { if (childOutput) await closePin(childOutput); }
                     } else {
-                        if (options.privateOutput && (child.stat.uid !== BigInt(process.getuid!()) || ![0o400n, 0o600n].includes(child.stat.mode & 0o7777n))) {
+                        if (options.privateOutput && !await privatePin(child, false)) {
                             throw new AppError('ARTIFACT_INVALID', 'Output files must remain private, non-executable and tool-owned.');
                         }
                         const maximum = Math.min(limits.bytes - scan.bytes, /\.(?:json|jsonc)$/i.test(name) ? options.jsonBytes ?? MiB : limits.bytes);
@@ -250,7 +294,7 @@ async function scanTree(root: Pin, limits: Limits, deadline: number, scan: Scan,
                         if (output) await writePrivate(output, entry.name, bytes);
                         options.file?.(name, bytes);
                     }
-                } finally { await child.handle.close(); }
+                } finally { await closePin(child); }
             }
         } finally { await directory.close(); }
         await checkPin(pin, true);
@@ -409,7 +453,7 @@ export async function readSdkValidator(sdkRoot: string, expectedHash: string, va
             }
             await checkPins(pins);
             return bytes;
-        } finally { await file.handle.close(); }
+        } finally { await closePin(file); }
     } finally { await closePins(pins); }
 }
 
@@ -420,35 +464,27 @@ export async function withPackageSnapshot<T>(workspace: string, directory: strin
     const sourcePins = await pinProject(workspace, directory);
     const statePins: Pin[] = [];
     try {
-        if (staging === workspace || staging.startsWith(`${workspace === '/' ? '' : workspace}/`)) {
-            throw new AppError('PERMISSION_DENIED', 'Job staging must be outside the read-only workspace.');
-        }
+        outside(workspace, staging);
         if (!path.isAbsolute(staging) || staging !== path.resolve(staging)) {
             throw new AppError('INVALID_ARGUMENTS', 'Job staging must be a normalized absolute path.');
         }
         statePins.push(...await pinAbsolute(path.dirname(staging)));
-        for (const pin of statePins) {
-            const owner = pin.stat.uid === 0n || pin.stat.uid === BigInt(process.getuid!());
-            const sharedStickyRoot = pin.stat.uid === 0n && (pin.stat.mode & 0o1000n) !== 0n;
-            if (!owner || ((pin.stat.mode & 0o022n) !== 0n && !sharedStickyRoot)) {
-                throw new AppError('PERMISSION_DENIED', 'Tool-state ancestors must not be replaceable by other users.');
-            }
-        }
+        await trustedAncestors(statePins);
         const parent = statePins[statePins.length - 1];
         const name = validateRelativePath(path.basename(staging));
         try {
-            await fs.lstat(`${fdPath(parent)}/${name}`);
+            await fs.lstat(childPath(parent, name));
         } catch (error) {
             if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') filesystemError(error);
-            if (parent.stat.uid !== BigInt(process.getuid!()) || (parent.stat.mode & 0o077n) !== 0n) {
+            if (!await privatePin(parent, true)) {
                 throw new AppError('PERMISSION_DENIED', 'Only private tool-owned state may contain a new job staging directory.');
             }
             const created = await createDirectory(parent, name);
-            await created.handle.close();
+            await closePin(created);
         }
         statePins.push(await openChild(parent, name, true));
         const state = statePins[statePins.length - 1];
-        if (state.stat.uid !== BigInt(process.getuid!()) || (state.stat.mode & 0o077n) !== 0n) {
+        if (!await privatePin(state, true)) {
             throw new AppError('PERMISSION_DENIED', 'Job staging must be an owner-only directory owned by this tool user.');
         }
         const job = await createDirectory(state, `validation-${randomUUID()}`);
@@ -493,7 +529,14 @@ function outside(root: string, directory: string): void {
     }
 }
 
-function trustedAncestors(pins: Pin[]): void {
+async function trustedAncestors(pins: Pin[]): Promise<void> {
+    if (process.platform === 'win32') {
+        // The native helper checks the whole chain in one lease. Checking each
+        // ancestor as a leaf would incorrectly forbid shared system directories
+        // whose ACL allows creating children but not replacing existing ones.
+        await verifyWindowsTrust(pins[pins.length - 1].absolute);
+        return;
+    }
     for (const pin of pins) {
         const owner = pin.stat.uid === 0n || pin.stat.uid === BigInt(process.getuid!());
         const sticky = pin.stat.uid === 0n && (pin.stat.mode & 0o1000n) !== 0n;
@@ -508,23 +551,23 @@ async function pinGameState(workspace: string, staging: string, create = false):
     const pins = await pinAbsolute(path.dirname(staging));
     try {
         if (staging !== path.resolve(staging)) throw new AppError('INVALID_ARGUMENTS', 'Expected canonical job staging.');
-        trustedAncestors(pins);
+        await trustedAncestors(pins);
         const parent = pins[pins.length - 1];
         const name = path.basename(staging);
         if (create) {
-            try { await fs.lstat(`${fdPath(parent)}/${name}`); }
+            try { await fs.lstat(childPath(parent, name)); }
             catch (error) {
                 if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-                if (parent.stat.uid !== BigInt(process.getuid!()) || (parent.stat.mode & 0o077n) !== 0n) {
+                if (!await privatePin(parent, true)) {
                     throw new AppError('PERMISSION_DENIED', 'New staging requires an owner-only parent.');
                 }
                 const created = await createDirectory(parent, name);
-                await created.handle.close();
+                await closePin(created);
             }
         }
         pins.push(await openChild(parent, name, true));
         const state = pins[pins.length - 1];
-        if (state.stat.uid !== BigInt(process.getuid!()) || (state.stat.mode & 0o7777n) !== 0o700n) {
+        if (!await privatePin(state, true)) {
             throw new AppError('PERMISSION_DENIED', 'Job staging must be private and tool-owned.');
         }
         return pins;
@@ -572,7 +615,7 @@ export async function withGameSnapshot<T>(workspace: string, project: string | u
                         throw new AppError('SDK_INCOMPLETE', 'SDK bytes no longer match the verified manifest.');
                     }
                     await writePrivate(output, name, bytes);
-                } finally { await input.handle.close(); }
+                } finally { await closePin(input); }
             }
             for (const directory of tree.keys()) {
                 if (directory === '.' || path.posix.dirname(directory) !== prefix) continue;
@@ -581,9 +624,9 @@ export async function withGameSnapshot<T>(workspace: string, project: string | u
                 try {
                     const destination = await createDirectory(output, name);
                     try { await copy(child, destination, directory); }
-                    finally { await destination.handle.close(); }
+                    finally { await closePin(destination); }
                     await checkPin(child);
-                } finally { await child.handle.close(); }
+                } finally { await closePin(child); }
             }
         };
         await copy(sdkPins[sdkPins.length - 1], sdkOutput, '.');
@@ -646,8 +689,19 @@ export function validateProjectDestination(directory: string): string {
     return directory;
 }
 
-// Parent process only. Fixed packaged Linux/procfs helper and kernel
-// renameat2(RENAME_NOREPLACE). No shell, environment, project executable, or
+function validPublisherBinary(bytes: Buffer, stat: BigIntStats): boolean {
+    if (process.platform !== 'win32') {
+        return Boolean(stat.mode & 0o100n) && bytes.length >= 64
+            && bytes.subarray(0, 6).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1])) && bytes.readUInt16LE(18) === 62;
+    }
+    if (bytes.length < 256 || bytes.readUInt16LE(0) !== 0x5a4d) return false;
+    const pe = bytes.readUInt32LE(0x3c);
+    return pe >= 64 && pe <= bytes.length - 26 && bytes.readUInt32LE(pe) === 0x4550
+        && bytes.readUInt16LE(pe + 4) === 0x8664 && bytes.readUInt16LE(pe + 24) === 0x20b;
+}
+
+// Parent process only. Fixed packaged helper uses kernel no-replace rename.
+// No shell, project executable, or
 // check-then-rename/cross-device fallback. The caller serializes cancellation.
 // Rename and job metadata are not a crash-recoverable transaction: after host
 // process loss, the parent must reconcile the destination before retrying.
@@ -665,7 +719,7 @@ export async function publishGameOutput(context: { workspace: string; staging: s
             validateProjectDestination(destination.project);
             name = path.posix.basename(destination.project);
             destinationPins.push(...await pinProject(context.workspace, path.posix.dirname(destination.project)));
-            trustedAncestors(destinationPins);
+            await trustedAncestors(destinationPins);
         } else {
             if (!/^artifact-[a-f0-9-]{36}$/i.test(destination.artifact)) throw new AppError('ARTIFACT_INVALID', 'Invalid artifact destination.');
             name = destination.artifact;
@@ -685,36 +739,36 @@ export async function publishGameOutput(context: { workspace: string; staging: s
         validate(files);
         let helper: Pin;
         try {
-            if (process.arch !== 'x64') throw new Error('Only the Linux x64 publisher is built.');
+            if (process.arch !== 'x64') throw new Error('Only x64 publishers are built.');
             // Source builds use build/{src,host}; distributions use app/{src,host}.
             // No PATH, environment override, SDK/project executable or runtime build.
-            const filename = fileURLToPath(new URL('../host/cocos4-publish', import.meta.url));
+            const binary = `cocos4-publish${process.platform === 'win32' ? '.exe' : ''}`;
+            const filename = fileURLToPath(new URL(`../host/${binary}`, import.meta.url));
             helperPins.push(...await pinAbsolute(path.dirname(filename)));
-            trustedAncestors(helperPins);
+            await trustedAncestors(helperPins);
             const directory = helperPins[helperPins.length - 1];
-            const report = await openChild(directory, 'cocos4-publish.build.json', false);
+            const report = await openChild(directory, `${binary}.build.json`, false, true);
             helperPins.push(report);
-            helper = await openChild(directory, 'cocos4-publish', false);
+            helper = await openChild(directory, binary, false, true);
             helperPins.push(helper);
             for (const pin of [report, helper]) {
+                if (process.platform === 'win32') { await verifyWindowsTrust(pin.absolute); continue; }
                 if ((pin.stat.uid !== 0n && pin.stat.uid !== BigInt(process.getuid!())) || (pin.stat.mode & 0o6022n) !== 0n) {
                     throw new Error('Unsafe publisher ownership or permissions.');
                 }
             }
             const deadline = performance.now() + 5000;
             const manifest = z.object({ schemaVersion: z.literal(1), protocol: z.literal('cocos4-publish-v1'),
-                target: z.literal('linux-x64'), bytes: z.number().int().positive().max(MiB),
+                target: z.literal(process.platform === 'win32' ? 'win32-x64' : 'linux-x64'), bytes: z.number().int().positive().max(MiB),
                 binarySha256: z.string().regex(/^[a-f0-9]{64}$/) }).parse(
                 JSON.parse((await readRegular(report, 64 * 1024, deadline)).toString('utf8')));
             const bytes = await readRegular(helper, MiB, deadline);
-            if (!(helper.stat.mode & 0o100n) || bytes.length !== manifest.bytes
-                || createHash('sha256').update(bytes).digest('hex') !== manifest.binarySha256
-                || bytes.length < 64 || !bytes.subarray(0, 6).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1]))
-                || bytes.readUInt16LE(18) !== 62) throw new Error('Invalid publisher ELF or integrity report.');
+            if (bytes.length !== manifest.bytes || createHash('sha256').update(bytes).digest('hex') !== manifest.binarySha256
+                || !validPublisherBinary(bytes, helper.stat)) throw new Error('Invalid publisher binary or integrity report.');
             await checkPins(helperPins);
             await checkPin(helper, true);
         } catch {
-            throw new AppError('SDK_INCOMPLETE', 'Atomic publication requires the verified shipped Linux x64 cocos4-publish helper, procfs and renameat2.',
+            throw new AppError('SDK_INCOMPLETE', 'Atomic publication requires the verified shipped host-specific cocos4-publish helper.',
                 ['Install a complete trusted kit; publication never compiles or downloads a helper.']);
         }
         await checkPins(sourcePins);
@@ -722,13 +776,20 @@ export async function publishGameOutput(context: { workspace: string; staging: s
         const pins = [...sourcePins, ...destinationPins];
         const args = ['cocos4-publish-v1', String(sourcePins.length), name,
             ...pins.flatMap(pin => [pin.absolute, String(pin.stat.dev), String(pin.stat.ino), String(pin.stat.mode)])];
+        // The publisher takes its own delete-capable source handle, rechecks all
+        // identities, and locks the complete ancestor chains before renaming.
+        // Keep Node's descriptor but release the source lease for that handoff.
+        if (process.platform === 'win32') { await source.lease?.close(); source.lease = undefined; }
         await new Promise<void>((resolve, reject) => {
             // Execute the checked inode, not a pathname that can be replaced after
             // validation. The kit and its owner remain trusted, not a sandbox.
-            const child = spawn(`/proc/self/fd/${pins.length + 3}`, args,
-                { env: {}, cwd: '/', shell: false, stdio: ['ignore', 'ignore', 'ignore', ...pins.map(pin => pin.handle.fd), helper.handle.fd] });
+            const windows = process.platform === 'win32';
+            const child = spawn(windows ? helper.absolute : `/proc/self/fd/${pins.length + 3}`, args,
+                { env: windows ? { SystemRoot: process.env.SystemRoot } : {}, cwd: path.parse(helper.absolute).root,
+                    shell: false, windowsHide: true,
+                    stdio: windows ? ['ignore', 'ignore', 'ignore'] : ['ignore', 'ignore', 'ignore', ...pins.map(pin => pin.handle.fd), helper.handle.fd] });
             const timer = setTimeout(() => child.kill('SIGKILL'), 5000);
-            child.once('error', () => { clearTimeout(timer); reject(new AppError('SDK_INCOMPLETE', 'Atomic publication requires the compiled cocos4-publish helper and Linux renameat2.')); });
+            child.once('error', () => { clearTimeout(timer); reject(new AppError('SDK_INCOMPLETE', 'Atomic publication requires the compiled host-specific cocos4-publish helper.')); });
             child.once('exit', (code, signal) => {
                 clearTimeout(timer);
                 if (code === 0) resolve();

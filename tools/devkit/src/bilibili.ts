@@ -61,7 +61,10 @@ export async function validateMiniGamePackage(options: MiniGamePackageOptions): 
                 fail('Validation requires normalized absolute private paths.', undefined, 'INVALID_ARGUMENTS');
             }
         }
-        const within = (root: string, file: string): boolean => file === root || file.startsWith(`${root}${path.sep}`);
+        const within = (root: string, file: string): boolean => {
+            const relative = path.relative(root, file);
+            return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+        };
         if (within(directory, toolchainDirectory) || within(toolchainDirectory, directory) || within(directory, validatorFile)
             || path.basename(validatorFile) !== (target === 'BILIBILI' ? 'validate-bilibili.cjs' : 'validate-minigame.cjs')) fail('SDK tools must be private and separate from game output.', undefined, 'SDK_INCOMPLETE');
         const records = z.array(fileRecord).min(1).max(10000).parse(options.expectedRuntimeFiles);

@@ -81,8 +81,10 @@ export function makeOpenCodeConfig(roots: AiRoots, node: string, cli: string, sk
         skills: { paths: [skills] },
         mcp: { [mcpServerName]: { type: 'local', enabled: true, timeout: 120000,
             // Clearing inside JS would be too late for NODE_OPTIONS/preloads.
-            // The shipped static helper has no loader and accepts no Node/client
-            // argument passthrough, environment assignments, shell or PATH lookup.
+            // The shipped host helper constructs a private environment before
+            // Node starts, with no Node/client argument passthrough, environment
+            // assignments, shell or PATH lookup. Windows uses system Win32 DLLs;
+            // Linux uses a static helper without an ELF loader.
             command: [helper, 'cocos4-mcp-launch-v1', '--node', node, '--cli', cli, '--session', session,
                 '--sdk-root', roots.sdkRoot, '--workspace', roots.workspace, '--state-root', roots.stateRoot,
                 '--mode', roots.mode, '--preview', String(roots.preview)] } },

@@ -45,3 +45,15 @@ native architecture or publishing capabilities of upstream Cocos Creator.
 - Engine source and tooling: `.opencode/skills/cocos4-engine-dev/SKILL.md`.
 - Game projects using this fork: `.opencode/skills/cocos4-minigame-dev/SKILL.md`.
 - Discovery, cross-project usage and example checks: `.opencode/skills/README.md`.
+
+## Local Windows Work Directories
+
+- Keep downloads, extracted kits, test workspaces and temporary files on D: in
+  the repository's ignored build directories or the single `D:\cocos4-work`
+  directory. Set child-tool `TEMP`, `TMP` and `TMPDIR` explicitly.
+- Do not create task directories at `C:\` or `C:\Users\Administrator`, or copy
+  whole engine/dependency trees for each test. Remove unused generated copies;
+  retain the current package, game sources and useful verification records.
+- Use a private ACL on the designated work directory. A Devkit path-check
+  failure is a tooling issue to diagnose, not a reason to scatter files on C:
+  or change permissions for an entire drive.

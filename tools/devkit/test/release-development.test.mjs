@@ -16,28 +16,33 @@ const required = process.env.RELEASE_GAME_INTEGRATION === '1';
 const sdkRoot = process.env.RELEASE_GAME_SDK_ROOT && resolve(process.env.RELEASE_GAME_SDK_ROOT);
 const terminal = new Set(['succeeded', 'failed', 'cancelled', 'timed_out', 'interrupted']);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const targets = ['HTML5', 'BILIBILI', 'WECHAT', 'BYTEDANCE'];
+const profiles = ['2d-basic', '3d-basic'];
+const sourcePreflights = { BILIBILI: 'bilibiliSourcePreflight', WECHAT: 'wechatSourcePreflight', BYTEDANCE: 'bytedanceSourcePreflight' };
 
-test('official MCP builds actual edited release games for both targets/profiles and preserves failed-build evidence',
-    { skip: !sdkRoot && !required, timeout: 600000 }, async t => {
+test('official MCP builds actual edited release games for all four targets and both profiles and preserves failed-build evidence',
+    { skip: !sdkRoot && !required, timeout: 1200000 }, async t => {
         assert(sdkRoot, 'RELEASE_GAME_SDK_ROOT is required for explicit release acceptance');
         if (required) assert(process.env.GAME_CHROME_EXECUTABLE, 'Explicit acceptance requires real edited-game browser verification');
         const before = await fs.readFile(join(sdkRoot, 'manifest.json'));
         const manifest = JSON.parse(before);
-        assert.equal(manifest.catalog.profiles.length, 8);
-        const root = await fs.mkdtemp(join(devkit, 'build/release-development-'));
+        assert.deepEqual(manifest.catalog.profiles.map(item => `${item.target}/${item.id}/${item.variant}`).sort(),
+            targets.flatMap(target => profiles.flatMap(profile => ['debug', 'release'].map(variant => `${target}/${profile}/${variant}`))).sort());
+        const root = await fs.realpath(await fs.mkdtemp(join(devkit, 'build/release-development-')));
         const workspace = join(root, 'workspace');
         const stateRoot = join(root, 'state');
         const home = join(root, 'home');
         for (const directory of [workspace, home]) await fs.mkdir(directory, { mode: 0o700 });
-        const state = join(stateRoot, hash(workspace));
+        const state = join(stateRoot, hash(await fs.realpath(workspace)));
         const ajv = new AjvJsonSchemaValidator();
         const client = new Client({ name: 'cocos4-release-acceptance', version: '1.0.0' }, { jsonSchemaValidator: ajv });
         const transport = new StdioClientTransport({ command: process.execPath,
             args: [join(devkit, 'build/src/cli.js'), 'mcp', '--sdk-root', sdkRoot, '--workspace', workspace,
                 '--state-root', stateRoot, '--mode', 'develop', '--preview', 'true'],
-            cwd: workspace, env: { HOME: home, PATH: '', NODE_OPTIONS: '', npm_config_offline: 'true' }, stderr: 'pipe' });
+            cwd: workspace, env: { HOME: home, USERPROFILE: home, LOCALAPPDATA: join(home, 'AppData/Local'),
+                APPDATA: join(home, 'AppData/Roaming'), PATH: '', NODE_PATH: '', NODE_OPTIONS: '', npm_config_offline: 'true' }, stderr: 'pipe' });
         const evidence = { node: process.version, sdkId: manifest.sdkId, sdkManifestSha256: hash(before),
-            success: false, jobs: [], browsers: [], sourceOnlyBilibili: true, vendorOrDeviceValidated: false };
+            success: false, jobs: [], browsers: [], sourceOnlyTargets: Object.keys(sourcePreflights), vendorOrDeviceValidated: false };
         let stderr = '';
         transport.stderr.on('data', bytes => { stderr += bytes; });
         t.after(async () => {
@@ -80,7 +85,7 @@ test('official MCP builds actual edited release games for both targets/profiles 
             return page;
         };
         let completed = 0;
-        for (const target of ['HTML5', 'BILIBILI']) for (const profile of ['2d-basic', '3d-basic']) {
+        for (const target of targets) for (const profile of profiles) {
             await t.test(`${target}/${profile}/release`, async t => {
                 const project = `${target.toLowerCase()}-${profile}`;
                 const template = manifest.catalog.templates.find(item => item.target === target && item.profile === profile && item.variant === 'release');
@@ -101,13 +106,23 @@ test('official MCP builds actual edited release games for both targets/profiles 
                     + `\nexport const releaseRevision = ${JSON.stringify(project)};\n`;
                 await fs.writeFile(main, source);
                 await fs.writeFile(join(workspace, project, 'assets/release.txt'), project);
-                let gameJson;
-                if (target === 'BILIBILI') {
-                    const filename = join(workspace, project, 'game.json');
+                let gameJson, projectConfigJson;
+                if (target !== 'HTML5') {
+                    const configDirectory = target === 'BILIBILI' ? join(workspace, project)
+                        : join(workspace, project, 'platforms', target.toLowerCase());
+                    const filename = join(configDirectory, 'game.json');
                     const config = JSON.parse(await fs.readFile(filename));
-                    config.appId = 'TEST_ONLY_RELEASE_ACCEPTANCE';
+                    if (target === 'BILIBILI') config.appId = 'TEST_ONLY_RELEASE_ACCEPTANCE';
                     gameJson = ` \n${JSON.stringify(config, null, 2)}\n`;
                     await fs.writeFile(filename, gameJson);
+                    if (target !== 'BILIBILI') {
+                        const projectFilename = join(configDirectory, 'project.config.json');
+                        const projectConfig = JSON.parse(await fs.readFile(projectFilename));
+                        assert.equal(projectConfig.appid, '', 'Editable starters must require a user-owned platform appid');
+                        projectConfig.appid = `${target === 'WECHAT' ? 'wx' : 'tt'}0000000000000000`;
+                        projectConfigJson = ` \n${JSON.stringify(projectConfig, null, 2)}\n`;
+                        await fs.writeFile(projectFilename, projectConfigJson);
+                    }
                 }
                 const checkArgs = { project, target, profile, checks: ['types'], requestKey: `check-${project}`, timeoutMs: 3600000 };
                 const checked = succeeded(await finished(await call('project_check', checkArgs)));
@@ -141,9 +156,10 @@ test('official MCP builds actual edited release games for both targets/profiles 
                 assert((await fs.readFile(join(directory, 'game/main.js'), 'utf8')).includes(project));
                 assert.equal(await fs.readFile(join(directory, 'assets/game/release.txt'), 'utf8'), project);
                 const previewArgs = { artifactId: artifact.artifactId, ttlSeconds: 180, requestKey: `preview-${project}` };
-                if (target === 'BILIBILI') {
+                if (target !== 'HTML5') {
                     assert.equal(await fs.readFile(join(directory, 'game.json'), 'utf8'), gameJson);
-                    assert(built.report.validationLevels.includes('bilibiliSourcePreflight'));
+                    if (projectConfigJson) assert.equal(await fs.readFile(join(directory, 'project.config.json'), 'utf8'), projectConfigJson);
+                    assert(built.report.validationLevels.includes(sourcePreflights[target]));
                     await call('preview_start', previewArgs, 'UNSUPPORTED_PROJECT');
                 } else if (process.env.GAME_CHROME_EXECUTABLE) {
                     const previewReceipt = await call('preview_start', previewArgs);
@@ -183,7 +199,7 @@ test('official MCP builds actual edited release games for both targets/profiles 
             });
         }
         assert.deepEqual(await fs.readFile(join(sdkRoot, 'manifest.json')), before);
-        evidence.success = completed === 4;
-        assert.equal(completed, 4, 'Every target/profile must pass all acceptance steps');
+        evidence.success = completed === targets.length * profiles.length;
+        assert.equal(completed, 8, 'Every target/profile must pass all acceptance steps');
         t.diagnostic(`Retained release MCP evidence: ${root}`);
     });

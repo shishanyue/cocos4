@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { lstat, mkdir, open, opendir, realpath, rename, rm } from 'node:fs/promises';
+import { lstat, mkdir, open, opendir, rename, rm } from 'node:fs/promises';
 import { isAbsolute, join, parse, relative, resolve, sep } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { z } from 'zod';
@@ -8,6 +8,7 @@ import { AppError, artifactSchema, authorize, errorSchema, gameTimeoutSchema, jo
 import type { Artifact, Job, JobReceipt, LogicExecution, LogicResult, Operation, OperationError, OperationRequest, Permissions, WorkerRequest } from './contracts.js';
 import { commitGameOutput } from './game.js';
 import { ProcessTree, processIdentity, supervisorIdentitySchema, verifySupervisor, waitForSupervisors, type ProcessOutcome } from './process.js';
+import { acquireWindowsPath, enforceWindowsPrivate, hostRealpath as realpath, verifyWindowsTrust, type WindowsPathLease } from './windows-fs.js';
 
 // One server-lifetime lock per real workspace, independent of SDK version.
 // Records/keys are SDK-scoped; quotas and ownership remain workspace-wide.
@@ -76,6 +77,11 @@ function byteLength(value: unknown): number { return Buffer.byteLength(JSON.stri
 function hasCode(error: unknown, code: string): boolean {
     return typeof error === 'object' && error !== null && 'code' in error && error.code === code;
 }
+function renameConflict(error: unknown): boolean {
+    // MoveFileEx cannot replace a nonempty directory and Node reports EPERM
+    // for that case on Windows instead of POSIX EEXIST/ENOTEMPTY.
+    return hasCode(error, 'EEXIST') || hasCode(error, 'ENOTEMPTY') || (process.platform === 'win32' && hasCode(error, 'EPERM'));
+}
 function failure(code: OperationError['code'], message: string): OperationError {
     return { code, message, retryable: false, nextSteps: [] };
 }
@@ -106,20 +112,30 @@ function sanitizedError(error: OperationError): OperationError {
 }
 
 async function privateDirectory(path: string, create = false): Promise<void> {
+    let created = false;
     if (create) {
-        try { await mkdir(path, { mode: 0o700 }); } catch (error) { if (!hasCode(error, 'EEXIST')) throw error; }
+        try { await mkdir(path, { mode: 0o700 }); created = true; } catch (error) { if (!hasCode(error, 'EEXIST')) throw error; }
     }
     const stat = await lstat(path);
-    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== process.getuid!() || (stat.mode & 0o077)) {
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw privateError();
+    if (process.platform === 'win32') {
+        if (created) await enforceWindowsPrivate(path);
+        await verifyWindowsTrust(path, true);
+    } else if (stat.uid !== process.getuid!() || (stat.mode & 0o077)) {
         throw privateError();
     }
 }
 
 async function readPrivate(path: string, maxBytes: number): Promise<string> {
-    const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const lease = process.platform === 'win32' ? await acquireWindowsPath(path, { private: true, immutable: true }).catch(error => {
+        if (hasCode(error, 'PATH_OUTSIDE_WORKSPACE')) throw privateError();
+        throw error;
+    }) : undefined;
+    let handle: Awaited<ReturnType<typeof open>> | undefined;
     try {
+        handle = await open(lease?.absolute ?? path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
         const stat = await handle.stat();
-        if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid!() || (stat.mode & 0o077)) throw privateError();
+        if (!stat.isFile() || stat.nlink !== 1 || (process.platform !== 'win32' && (stat.uid !== process.getuid!() || (stat.mode & 0o077)))) throw privateError();
         if (stat.size > maxBytes) throw new AppError('LIMIT_EXCEEDED', 'Private job state exceeds its size limit.');
         // Do not let a file growing after fstat turn a bounded read into readFile().
         const buffer = Buffer.alloc(maxBytes + 1);
@@ -130,8 +146,9 @@ async function readPrivate(path: string, maxBytes: number): Promise<string> {
             length += bytesRead;
         }
         if (length > maxBytes) throw new AppError('LIMIT_EXCEEDED', 'Private job state exceeds its size limit.');
+        await lease?.check();
         return buffer.toString('utf8', 0, length);
-    } finally { await handle.close(); }
+    } finally { try { await handle?.close(); } finally { await lease?.close(); } }
 }
 
 export class JobManager {
@@ -191,7 +208,7 @@ export class JobManager {
     }
 
     private async initialize(): Promise<void> {
-        if (typeof process.getuid !== 'function') throw privateError();
+        if (process.platform !== 'win32' && typeof process.getuid !== 'function') throw privateError();
         const options = z.object({
             workspace: z.string().min(1), sdkRoot: z.string().min(1), sdkId: z.string().min(1).max(256),
             stateRoot: z.string().min(1), permissions: permissionsSchema.optional(), releaseId: releaseIdSchema.nullable().optional(),
@@ -222,8 +239,12 @@ export class JobManager {
                 await privateDirectory(current, true);
             }
             const stat = await lstat(current);
-            if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.uid !== 0 && stat.uid !== process.getuid())
-                || ((stat.mode & 0o022) && !(stat.uid === 0 && (stat.mode & 0o1000)))) throw privateError();
+            if (!stat.isDirectory() || stat.isSymbolicLink()) throw privateError();
+            // The Windows lease verifies the complete chain at the private
+            // root. Shared ancestors may allow creating new children without
+            // allowing replacement of this already existing owned subtree.
+            if (process.platform !== 'win32' && ((stat.uid !== 0 && stat.uid !== process.getuid!())
+                || ((stat.mode & 0o022) && !(stat.uid === 0 && (stat.mode & 0o1000))))) throw privateError();
         }
         await privateDirectory(this.options.stateRoot);
         this.directory = join(this.options.stateRoot, hash(this.options.workspace));
@@ -323,15 +344,18 @@ export class JobManager {
     private async acquireLock(): Promise<void> {
         const lock = join(this.directory, 'lock');
         const claim = join(this.directory, `.claim-${this.owner.pid}-${this.owner.token}`);
-        await mkdir(claim, { mode: 0o700 });
+        await privateDirectory(claim, true);
         try {
             const file = await open(join(claim, 'owner.json'), 'wx', 0o600);
-            try { await file.writeFile(JSON.stringify(this.owner)); await file.sync(); } finally { await file.close(); }
+            try {
+                if (process.platform === 'win32') await enforceWindowsPrivate(join(claim, 'owner.json'));
+                await file.writeFile(JSON.stringify(this.owner)); await file.sync();
+            } finally { await file.close(); }
             for (let attempt = 0; attempt < 16; attempt++) {
                 try { await privateDirectory(lock); } catch (error) {
                     if (!hasCode(error, 'ENOENT')) throw error;
                     try { await rename(claim, lock); this.locked = true; return; } catch (renameError) {
-                        if (!hasCode(renameError, 'EEXIST') && !hasCode(renameError, 'ENOTEMPTY')) throw renameError;
+                        if (!renameConflict(renameError)) throw renameError;
                     }
                 }
                 let owner: z.infer<typeof ownerSchema>;
@@ -356,7 +380,7 @@ export class JobManager {
                 // makes rename atomic and non-replacing even for a paused racer.
                 // Bounded at 128 recoveries; never auto-delete these tombstones.
                 try { await rename(lock, join(this.directory, `.retired-${owner.token}`)); } catch (error) {
-                    if (!hasCode(error, 'ENOENT') && !hasCode(error, 'EEXIST') && !hasCode(error, 'ENOTEMPTY')) throw error;
+                    if (!hasCode(error, 'ENOENT') && !renameConflict(error)) throw error;
                 }
             }
             throw new AppError('WORKSPACE_BUSY', 'Workspace ownership changed during lock acquisition.', [], true);
@@ -483,7 +507,10 @@ export class JobManager {
             await privateDirectory(this.options.stateRoot);
             await privateDirectory(this.directory);
             const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
-            try { await file.writeFile(data); await file.sync(); } finally { await file.close(); }
+            try {
+                if (process.platform === 'win32') await enforceWindowsPrivate(temporary);
+                await file.writeFile(data); await file.sync();
+            } finally { await file.close(); }
             await rename(temporary, join(this.directory, 'metadata.json'));
             // Publish lifecycle changes only after the atomic write succeeded.
             this.records = records;
@@ -509,10 +536,25 @@ export class JobManager {
         for (const [id, data] of this.logData) {
             if (!records.has(id) || data.diskBytes >= data.bytes) continue;
             const target = data.bytes;
-            const file = await open(join(this.directory, `log-${id}.txt`), constants.O_WRONLY | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+            const filename = join(this.directory, `log-${id}.txt`);
+            let lease: WindowsPathLease | undefined;
+            let file: Awaited<ReturnType<typeof open>> | undefined;
             try {
+                if (process.platform === 'win32') {
+                    try { lease = await acquireWindowsPath(filename, { private: true }); } catch (error) { if (!hasCode(error, 'ENOENT')) throw error; }
+                    // Creation is exclusive; an injected replacement is never
+                    // followed before the new private log is pinned.
+                    if (!lease) {
+                        await (await open(filename, 'wx', 0o600)).close();
+                        await enforceWindowsPrivate(filename);
+                        lease = await acquireWindowsPath(filename, { private: true });
+                    }
+                }
+                file = await open(lease?.absolute ?? filename,
+                    constants.O_WRONLY | constants.O_CREAT | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0), 0o600);
                 const stat = await file.stat();
-                if (!stat.isFile() || stat.nlink !== 1 || stat.uid !== process.getuid!() || (stat.mode & 0o077) || stat.size !== data.diskBytes) throw privateError();
+                if (!stat.isFile() || stat.nlink !== 1 || (process.platform !== 'win32' && (stat.uid !== process.getuid!() || (stat.mode & 0o077)))
+                    || stat.size !== data.diskBytes) throw privateError();
                 while (data.diskBytes < target) {
                     const index = Math.floor(data.diskBytes / LOG_BLOCK_BYTES);
                     const offset = data.diskBytes % LOG_BLOCK_BYTES;
@@ -522,7 +564,8 @@ export class JobManager {
                     data.diskBytes += bytesWritten;
                 }
                 await file.sync();
-            } finally { await file.close(); }
+                await lease?.check();
+            } finally { try { await file?.close(); } finally { await lease?.close(); } }
         }
     }
 

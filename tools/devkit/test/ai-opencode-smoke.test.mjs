@@ -17,7 +17,7 @@ const executable = '/usr/bin/opencode';
 const node = `${kit}/runtime/node`;
 const error = code => Object.assign(new Error(code), { code });
 const argsFor = (build, fs, name = 'mcp-list', argv = ['mcp', 'list']) => captureArgs(
-    name, argv, build, sdk, root, { executable }, { execPath: node }, fs, path);
+    name, argv, build, sdk, root, { executable }, { execPath: node, platform: 'linux' }, fs, path.posix);
 
 for (const [layout, build, modulesRoot, modules] of [
     ['packaged', `${kit}/app`, `${kit}/app/node_modules`, `${kit}/app/node_modules`],
@@ -48,6 +48,14 @@ for (const [layout, build, modulesRoot, modules] of [
 test('non-namespace commands do not inspect dependencies', async () => {
     assert.deepEqual(await argsFor(`${kit}/app`, {}, 'version', ['--version']),
         { command: executable, actualArgs: ['--version'] });
+});
+
+test('Windows MCP discovery launches the selected client directly without Linux namespace dependencies', async () => {
+    const executable = 'C:\\Trusted Kit\\opencode.exe';
+    const argv = ['mcp', 'list'];
+    assert.deepEqual(await captureArgs('mcp-list', argv, 'C:\\Trusted Kit\\app', 'C:\\Trusted Kit\\sdk',
+        'C:\\Private\\fixture', { executable }, { execPath: 'C:\\Trusted Kit\\runtime\\node.exe', platform: 'win32' }, {}, path.win32),
+    { command: executable, actualArgs: argv });
 });
 
 test('dependency lookup does not mask errors or search beyond the two layouts', async () => {

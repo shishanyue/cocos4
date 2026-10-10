@@ -14,6 +14,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { CallToolResultSchema, EmptyResultSchema, ErrorCode, ListResourcesResultSchema, ListToolsResultSchema,
     McpError, ReadResourceResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
+import { verifyWindowsTrust } from '../build/src/windows-fs.js';
 
 const devkit = fileURLToPath(new URL('../', import.meta.url));
 const engine = fileURLToPath(new URL('../../../', import.meta.url));
@@ -282,7 +283,7 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
         }
         const catalogTool = session.tools.find(tool => tool.name === 'cocos4_catalog');
         assert.deepEqual(catalogTool.inputSchema.properties.target.enum, [...config.platforms].sort());
-        assert.deepEqual(session.tools.find(tool => tool.name === 'cocos4_package_validate').inputSchema.properties.target.enum, ['BILIBILI']);
+        assert.deepEqual(session.tools.find(tool => tool.name === 'cocos4_package_validate').inputSchema.properties.target.enum, ['BILIBILI', 'WECHAT', 'BYTEDANCE']);
         await session.client.ping(requestOptions);
     });
 
@@ -365,7 +366,7 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
         for (const target of ['ANDROID', 'IOS', 'MAC', 'WINDOWS', 'LINUX', 'BAIDU', 'invented']) {
             await session.call('cocos4_catalog', { section: 'platforms', target }, 'INVALID_ARGUMENTS');
         }
-        for (const target of ['WECHAT', 'OPPO', 'ANDROID']) {
+        for (const target of ['HTML5', 'OPPO', 'ANDROID']) {
             await session.call('cocos4_package_validate', { directory: 'valid', target }, 'INVALID_ARGUMENTS');
         }
     });
@@ -440,7 +441,7 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
         const outside = join(env.root, 'outside');
         await mkdir(outside);
         await writeFile(join(outside, 'secret.txt'), 'OUTSIDE_DATA_MUST_NOT_APPEAR');
-        await symlink(outside, join(env.workspace, 'escape'));
+        await symlink(outside, join(env.workspace, 'escape'), process.platform === 'win32' ? 'junction' : 'dir');
         await mkdir(join(env.workspace, '.ssh'));
         const session = await connect(t, env);
         for (const project of ['../outside', '/etc', 'valid/../invalid', 'valid//x', './valid', 'valid/',
@@ -542,7 +543,7 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
         const env = await fixture();
         const session = await connect(t, env);
         const alias = join(env.root, 'workspace-alias');
-        await symlink(env.workspace, alias);
+        await symlink(env.workspace, alias, process.platform === 'win32' ? 'junction' : 'dir');
         for (const workspace of [env.workspace, alias]) {
             const result = await runCli(t, env, ['tools'], { workspace });
             assert.equal(result.code, 1);
@@ -680,8 +681,9 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
         const publicState = join(env.root, 'public-state');
         await mkdir(publicState);
         await chmod(publicState, 0o755);
+        const publicMode = (await lstat(publicState)).mode;
         const alias = join(env.root, 'state-alias');
-        await symlink(publicState, alias);
+        await symlink(publicState, alias, process.platform === 'win32' ? 'junction' : 'dir');
         for (const [override, code] of [
             [{ workspace: 'relative' }, 'INVALID_ARGUMENTS'], [{ sdkRoot: 'relative' }, 'INVALID_ARGUMENTS'],
             [{ stateRoot: 'relative' }, 'INVALID_ARGUMENTS'], [{ workspace: env.sdkRoot }, 'PERMISSION_DENIED'],
@@ -710,7 +712,9 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
         const business = ndjson(await runCli(t, env, ['call', 'cocos4_catalog', '--input', '{"section":"not-real"}']), 1);
         assert.equal(business[0].ok, false);
         assert.equal(business[0].error.code, 'INVALID_ARGUMENTS');
-        assert.equal((await lstat(publicState)).mode & 0o777, 0o755);
+        assert.equal((await lstat(publicState)).mode, publicMode);
+        if (process.platform === 'win32') await assert.rejects(verifyWindowsTrust(publicState, true), { code: 'PERMISSION_DENIED' });
+        else assert.equal(publicMode & 0o777, 0o755);
         await assert.rejects(lstat(join(env.root, 'absent-sdk')), { code: 'ENOENT' });
         assert.deepEqual(await readdir(env.home), []);
         await assert.rejects(lstat(env.marker), { code: 'ENOENT' });
@@ -762,6 +766,45 @@ test('production MCP/CLI blackbox with a prepared offline SDK', { concurrency: f
         const result = await process.closed;
         assert.ok(result.code === 0 || result.code === 1);
         await connect(t, env);
+    });
+
+    await t.test('a closed stdout reader cancels active work and releases the workspace lock', async t => {
+        const env = await fixture();
+        await slowPackage(env);
+        const process = await rawSession(t, env);
+        const response = await process.request('tools/call', { name: 'cocos4_package_validate', arguments: { target: 'BILIBILI', directory: 'valid' } });
+        const receipt = response.result.structuredContent.data;
+        assert.equal(receipt.state, 'running');
+        process.child.stdout.destroy();
+        process.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 100, method: 'tools/list' }) + '\n');
+        const result = await process.closed;
+        assert.deepEqual(result, { code: 1, signal: null });
+        const reopened = await connect(t, env);
+        const job = (await reopened.call('cocos4_job_get', { jobId: receipt.jobId })).job;
+        assert.equal(job.state, 'cancelled');
+        assert.equal(job.error.code, 'CANCELLED');
+        const stateDirectory = join(env.stateRoot, sha256(await realpath(env.workspace)));
+        assert.ok(!(await readdir(stateDirectory)).some(name => name.startsWith('staging-')));
+        await assert.rejects(lstat(env.marker), { code: 'ENOENT' });
+    });
+
+    for (const mode of ['throw', 'hang']) await t.test(`blocked output and ${mode} cleanup retain the ten-second failed-exit deadline`, {
+        skip: process.platform !== 'win32' && 'Windows filesystem output failure path',
+    }, async t => {
+        const env = await fixture();
+        const process = launch(t, env, [fileURLToPath(new URL('./fixtures/mcp-output-failure.mjs', import.meta.url)), mode], { raw: true });
+        await process.request('initialize', { protocolVersion: '2025-11-25', capabilities: {},
+            clientInfo: { name: 'shutdown-failure-probe', version: '1' } });
+        process.child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+        process.child.stdout.pause();
+        process.child.stdin.write(Array.from({ length: 16 }, (_, index) => JSON.stringify({ jsonrpc: '2.0', id: index + 100, method: 'tools/list' })).join('\n') + '\n');
+        const start = performance.now();
+        process.child.stdin.end();
+        await until(() => process.child.exitCode !== null, 'Failed shutdown remained blocked on output', 15000);
+        assert(performance.now() - start < 15000);
+        process.child.stdout.resume();
+        assert.deepEqual(await process.closed, { code: 1, signal: null });
+        assert.match(process.output().stderr, /CLOSE_ENTERED/);
     });
 
     for (const file of manifest.files) assert.equal(sha256(await readFile(join(sdkRoot, file.path))), file.sha256, `SDK payload changed: ${file.path}`);

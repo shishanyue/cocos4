@@ -24,7 +24,7 @@ function runtimeInput({ target, id, variant }) {
             : path.join(process.env.GAME_SDK_RUNTIME_ROOT ?? path.join(artifacts, 'acceptance-Js6TDR'), id);
     return { runtime, ...(bilibili ? { localReport: variant === 'release' && process.env.RELEASE_LOCAL_REPORT_ROOT
         ? path.join(process.env.RELEASE_LOCAL_REPORT_ROOT, `${id}-local/local-report.json`)
-        : `${runtime}-local/local-report.json` } : { browserReport: `${runtime}-browser/browser-report.json` }) };
+        : path.join(`${runtime}-local`, 'local-report.json') } : { browserReport: path.join(`${runtime}-browser`, 'browser-report.json') }) };
 }
 let inputs = ['HTML5', 'BILIBILI'].flatMap(target => ['2d-basic', '3d-basic'].map(id => runtimeInput({ target, id, variant: 'debug' })));
 const incomplete = error => error?.code === 'SDK_INCOMPLETE';

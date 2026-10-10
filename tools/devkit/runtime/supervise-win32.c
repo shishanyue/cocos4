@@ -12,18 +12,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+#include <io.h>
 
 /* Independent Win10 x64 trusted-code lifetime component, NOT app support or an
  * OS sandbox. Protocol v1 (frozen):
  *   --identity PID
- *   --owner PID CREATION_FILETIME --cwd ABSOLUTE_DIRECTORY -- ABSOLUTE_EXE [args]
+ *   --tree SUPERVISOR_PID CREATION_FILETIME
+ *   --owner PID CREATION_FILETIME --cwd ABSOLUTE_DIRECTORY [--ipc] -- ABSOLUTE_EXE [args]
  * Identity is {platform:"win32",pid:DWORD,creationTime:"decimal FILETIME"}.
  * stdin must be a pipe: one ASCII G permits start AFTER ready delivery; T stops.
  * EOF, any other byte, repeated G, console cancellation, or owner death stops.
  * Runner stdin is NUL; runner stdout AND stderr go only to helper stderr.
  * stdout is exclusively NDJSON, <=8 records, each <=1024 bytes including LF:
  * {version:1,platform:"win32",type:...}, with these additional fields:
- * identity: process; ready: supervisor,owner,runner (all three identities);
+ * identity: process,alive; tree: exists,activeProcesses;
+ * ready: supervisor,owner,runner (all three identities);
  * started: none; runnerExit: exitCode (unsigned DWORD, never a POSIX signal);
  * stopping: reason (stop/stdinEof/ownerExit/runnerExit/controlError/console/
  *   observationError/readyTimeout/infrastructure);
@@ -40,9 +43,13 @@
  * final flushing a 1s limit. Missing/truncated observations fail callers closed.
  * Forced helper death closes the Job but cannot emit closure evidence. Consumers
  * must independently corroborate that case, never infer closure from pipe EOF.
+ * --tree briefly opens the Job named from the supervisor identity, queries its
+ * active process count, and closes the query handle before returning. Windows
+ * destroys the Job only after its last handle closes AND its processes exit.
  * No environment is forwarded: PATH=OS system directory, SystemRoot/WINDIR=OS
- * Windows directory. No shell, PATH executable lookup, IPC, breakaway, guardian,
- * credentials, TEMP, user profile, or application protocol is provided.
+ * Windows directory. --ipc explicitly transfers the inherited CRT fd 3 pipe to
+ * runner fd 3, with fixed Node IPC environment entries. No shell, PATH executable
+ * lookup, breakaway, credentials, TEMP or user profile is provided.
  */
 enum { RECORDS = 8, RECORD_BYTES = 1024, COMMAND_CHARS = 32767 };
 int _dowildcard = 0;
@@ -115,6 +122,10 @@ static BOOL number(const wchar_t *text, unsigned long long maximum, unsigned lon
     }
     return *value != 0;
 }
+static BOOL job_name(wchar_t *name, size_t length, DWORD pid, unsigned long long created) {
+    int written = swprintf(name, length, L"Local\\cocos4-supervise-%lu-%llu", (unsigned long)pid, created);
+    return written > 0 && (size_t)written < length;
+}
 static DWORD parent_pid(void) {
     HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snapshot == INVALID_HANDLE_VALUE) return 0;
@@ -162,15 +173,18 @@ static BOOL command_line(int argc, wchar_t **argv, wchar_t *buffer) {
     }
     return TRUE;
 }
-static wchar_t *environment(void) {
+static wchar_t *environment(BOOL ipc) {
     wchar_t windows[COMMAND_CHARS], system[COMMAND_CHARS];
     UINT w = GetSystemWindowsDirectoryW(windows, COMMAND_CHARS);
     UINT s = GetSystemDirectoryW(system, COMMAND_CHARS);
     if (!w || w >= COMMAND_CHARS || !s || s >= COMMAND_CHARS || !absolute(windows) || !absolute(system)) return NULL;
-    size_t chars = 5 + s + 1 + 11 + w + 1 + 7 + w + 2;
+    const wchar_t ipc_entries[] = L"NODE_CHANNEL_FD=3\0NODE_CHANNEL_SERIALIZATION_MODE=json\0";
+    size_t ipc_chars = ipc ? sizeof(ipc_entries) / sizeof(wchar_t) - 1 : 0;
+    size_t chars = ipc_chars + 5 + s + 1 + 11 + w + 1 + 7 + w + 2;
     wchar_t *block = calloc(chars, sizeof(wchar_t));
     if (!block) return NULL;
     wchar_t *next = block;
+    if (ipc) { memcpy(next, ipc_entries, ipc_chars * sizeof(wchar_t)); next += ipc_chars; }
     wcscpy(next, L"PATH="); wcscat(next, system); next += wcslen(next) + 1;
     wcscpy(next, L"SystemRoot="); wcscat(next, windows); next += wcslen(next) + 1;
     wcscpy(next, L"WINDIR="); wcscat(next, windows);
@@ -193,19 +207,46 @@ int wmain(int argc, wchar_t **argv) {
     if (argc == 3 && !wcscmp(argv[1], L"--identity")) {
         unsigned long long pid, created;
         if (!number(argv[2], MAXDWORD, &pid)) { error_event("identityArguments", ERROR_INVALID_PARAMETER); return finish(125); }
-        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, (DWORD)pid);
         if (!process) { error_event("OpenProcess", GetLastError()); return finish(125); }
         BOOL ok = creation_time(process, &created);
         DWORD error = GetLastError();
+        DWORD wait = WaitForSingleObject(process, 0);
         CloseHandle(process);
         if (!ok) { error_event("GetProcessTimes", error); return finish(125); }
-        observation(FALSE, "\"type\":\"identity\",\"process\":{\"platform\":\"win32\",\"pid\":%lu,\"creationTime\":\"%llu\"}}\n", (unsigned long)pid, created);
+        if (wait != WAIT_OBJECT_0 && wait != WAIT_TIMEOUT) { error_event("WaitForSingleObject", ERROR_INVALID_HANDLE); return finish(125); }
+        observation(FALSE, "\"type\":\"identity\",\"process\":{\"platform\":\"win32\",\"pid\":%lu,\"creationTime\":\"%llu\"},\"alive\":%s}\n",
+            (unsigned long)pid, created, wait == WAIT_TIMEOUT ? "true" : "false");
+        return finish(0);
+    }
+    if (argc == 4 && !wcscmp(argv[1], L"--tree")) {
+        unsigned long long pid, created;
+        wchar_t name[128];
+        if (!number(argv[2], MAXDWORD, &pid) || !number(argv[3], ~0ULL, &created)
+            || !job_name(name, 128, (DWORD)pid, created)) {
+            error_event("treeArguments", ERROR_INVALID_PARAMETER); return finish(125);
+        }
+        HANDLE queried_job = OpenJobObjectW(JOB_OBJECT_QUERY, FALSE, name);
+        if (!queried_job) {
+            DWORD error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND) { error_event("OpenJobObjectW", error); return finish(125); }
+            observation(FALSE, "\"type\":\"tree\",\"exists\":false,\"activeProcesses\":0}\n");
+            return finish(0);
+        }
+        JOBOBJECT_BASIC_ACCOUNTING_INFORMATION accounting = {0};
+        BOOL queried = QueryInformationJobObject(queried_job, JobObjectBasicAccountingInformation, &accounting, sizeof(accounting), NULL);
+        DWORD error = GetLastError();
+        CloseHandle(queried_job);
+        if (!queried) { error_event("QueryInformationJobObject", error); return finish(125); }
+        observation(FALSE, "\"type\":\"tree\",\"exists\":true,\"activeProcesses\":%lu}\n", (unsigned long)accounting.ActiveProcesses);
         return finish(0);
     }
     unsigned long long owner_number, expected_created;
-    if (argc < 8 || wcscmp(argv[1], L"--owner") || wcscmp(argv[4], L"--cwd") || wcscmp(argv[6], L"--")
+    BOOL ipc = argc >= 9 && !wcscmp(argv[6], L"--ipc");
+    int executable_index = ipc ? 8 : 7;
+    if (argc <= executable_index || wcscmp(argv[1], L"--owner") || wcscmp(argv[4], L"--cwd") || wcscmp(argv[executable_index - 1], L"--")
         || !number(argv[2], MAXDWORD, &owner_number) || !number(argv[3], ~0ULL, &expected_created)
-        || !absolute(argv[5]) || !absolute(argv[7])) {
+        || !absolute(argv[5]) || !absolute(argv[executable_index])) {
         error_event("arguments", ERROR_INVALID_PARAMETER); return finish(125);
     }
     HANDLE input = GetStdHandle(STD_INPUT_HANDLE), diagnostic = GetStdHandle(STD_ERROR_HANDLE);
@@ -223,14 +264,45 @@ int wmain(int argc, wchar_t **argv) {
         if (owner) CloseHandle(owner);
         return finish(125);
     }
-    HANDLE job = NULL, child_input = INVALID_HANDLE_VALUE, child_output = NULL;
+    HANDLE job = NULL, child_input = INVALID_HANDLE_VALUE, child_output = NULL, child_ipc = NULL;
     LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
     BOOL attributes_initialized = FALSE;
     PROCESS_INFORMATION runner = {0};
     wchar_t *env = NULL, *command = NULL;
     const char *operation = "allocation";
     DWORD failure = ERROR_NOT_ENOUGH_MEMORY;
-    job = CreateJobObjectW(NULL, NULL);
+    if (ipc) {
+        /* libuv supplies the inherited descriptor table through lpReserved2.
+         * Check it before _get_osfhandle: an absent fd triggers the MSVC invalid
+         * parameter handler. Transfer only the explicit IPC pipe, never any
+         * other inherited descriptor or the parent's NODE_OPTIONS/environment. */
+        STARTUPINFOW inherited_startup = {0};
+        inherited_startup.cb = sizeof(inherited_startup);
+        GetStartupInfoW(&inherited_startup);
+        unsigned int count = 0;
+        if (inherited_startup.cbReserved2 >= sizeof(count) && inherited_startup.lpReserved2)
+            memcpy(&count, inherited_startup.lpReserved2, sizeof(count));
+        if (count < 4 || count > 2048 || inherited_startup.cbReserved2 < sizeof(count) + count * (sizeof(HANDLE) + 1)) {
+            operation = "ipcDescriptor"; failure = ERROR_INVALID_HANDLE; goto setup_failed;
+        }
+        unsigned char channel_flags = inherited_startup.lpReserved2[sizeof(count) + 3];
+        HANDLE inherited_channel = NULL;
+        memcpy(&inherited_channel, inherited_startup.lpReserved2 + sizeof(count) + count + 3 * sizeof(HANDLE), sizeof(inherited_channel));
+        if (!(channel_flags & 0x01) /* CRT FOPEN */ || !inherited_channel || inherited_channel == INVALID_HANDLE_VALUE
+            || GetFileType(inherited_channel) != FILE_TYPE_PIPE) {
+            operation = "ipcDescriptor"; failure = ERROR_INVALID_HANDLE; goto setup_failed;
+        }
+        HANDLE channel = (HANDLE)_get_osfhandle(3);
+        if (channel != inherited_channel || !noninheritable(channel) || GetFileType(channel) != FILE_TYPE_PIPE
+            || !DuplicateHandle(GetCurrentProcess(), channel, GetCurrentProcess(), &child_ipc, 0, TRUE, DUPLICATE_SAME_ACCESS)) {
+            operation = "ipcHandle"; failure = ERROR_INVALID_HANDLE; goto setup_failed;
+        }
+        _close(3);
+    }
+    wchar_t name[128];
+    if (!job_name(name, 128, GetCurrentProcessId(), self_created)) { operation = "jobName"; failure = ERROR_INVALID_NAME; goto setup_failed; }
+    job = CreateJobObjectW(NULL, name);
+    if (job && GetLastError() == ERROR_ALREADY_EXISTS) { operation = "jobNameCollision"; failure = ERROR_ALREADY_EXISTS; goto setup_failed; }
     if (!job || !noninheritable(job)) { operation = "CreateJobObjectW"; failure = GetLastError(); goto setup_failed; }
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits = {0};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
@@ -246,15 +318,15 @@ int wmain(int argc, wchar_t **argv) {
     InitializeProcThreadAttributeList(NULL, 2, 0, &size);
     attributes = malloc(size);
     command = calloc(COMMAND_CHARS, sizeof(wchar_t));
-    env = environment();
+    env = environment(ipc);
     if (!attributes || !command || !env) goto setup_failed;
-    if (!command_line(argc - 7, argv + 7, command)) { operation = "commandLine"; failure = ERROR_BAD_LENGTH; goto setup_failed; }
+    if (!command_line(argc - executable_index, argv + executable_index, command)) { operation = "commandLine"; failure = ERROR_BAD_LENGTH; goto setup_failed; }
     if (!InitializeProcThreadAttributeList(attributes, 2, 0, &size)) {
         operation = "InitializeProcThreadAttributeList"; failure = GetLastError(); goto setup_failed;
     }
     attributes_initialized = TRUE;
-    HANDLE inherited[] = {child_input, child_output};
-    if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, sizeof(inherited), NULL, NULL)
+    HANDLE inherited[] = {child_input, child_output, child_ipc};
+    if (!UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherited, (ipc ? 3 : 2) * sizeof(HANDLE), NULL, NULL)
         || !UpdateProcThreadAttribute(attributes, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job, sizeof(job), NULL, NULL)) {
         operation = "UpdateProcThreadAttribute"; failure = GetLastError(); goto setup_failed;
     }
@@ -265,8 +337,18 @@ int wmain(int argc, wchar_t **argv) {
     startup.StartupInfo.hStdOutput = child_output;
     startup.StartupInfo.hStdError = child_output;
     startup.lpAttributeList = attributes;
+    unsigned char descriptors[sizeof(unsigned int) + 4 + 4 * sizeof(HANDLE)] = {0};
+    if (ipc) {
+        unsigned int count = 4;
+        HANDLE handles[] = {child_input, child_output, child_output, child_ipc};
+        memcpy(descriptors, &count, sizeof(count));
+        for (int i = 0; i < 4; ++i) descriptors[sizeof(count) + i] = 0x09; /* CRT FOPEN | FPIPE */
+        memcpy(descriptors + sizeof(count) + 4, handles, sizeof(handles));
+        startup.StartupInfo.cbReserved2 = (WORD)sizeof(descriptors);
+        startup.StartupInfo.lpReserved2 = descriptors;
+    }
     if (WaitForSingleObject(owner, 0) != WAIT_TIMEOUT) { operation = "ownerExitBeforeCreate"; failure = ERROR_PROCESS_ABORTED; goto setup_failed; }
-    if (!CreateProcessW(argv[7], command, NULL, NULL, TRUE,
+    if (!CreateProcessW(argv[executable_index], command, NULL, NULL, TRUE,
         CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
         env, argv[5], &startup.StartupInfo, &runner)) {
         operation = "CreateProcessW"; failure = GetLastError(); goto setup_failed;
@@ -277,6 +359,7 @@ setup_failed:
     free(attributes); free(command); free(env);
     if (child_input != INVALID_HANDLE_VALUE) CloseHandle(child_input);
     if (child_output) CloseHandle(child_output);
+    if (child_ipc) CloseHandle(child_ipc);
     if (failure) {
         error_event(operation, failure);
         if (job) CloseHandle(job);

@@ -5,9 +5,16 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:net';
-import { archiveWindows, verifyWindowsArchive, WINDOWS_ARCHIVE_LIMITS as limits } from '../scripts/windows-archive.mjs';
+import { deflateRawSync } from 'node:zlib';
+import { archiveWindows, verifyWindowsArchive, extractWindowsArchive, readZipMembers, readPinnedNodeArchive,
+    WINDOWS_ARCHIVE_LIMITS as limits } from '../scripts/windows-archive.mjs';
 
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+
+async function symlink(target, filename) {
+    const directory = (await fs.lstat(target).catch(() => undefined))?.isDirectory();
+    await fs.symlink(target, filename, process.platform === 'win32' && directory ? 'junction' : directory ? 'dir' : 'file');
+}
 
 async function fixture(t, files = {}) {
     const root = await fs.mkdtemp(path.join(tmpdir(), 'cocos4-winzip-'));
@@ -111,7 +118,7 @@ test('existing files, directories, symlinks and hardlinks are retained', async t
         const output = path.join(root, kind);
         if (kind === 'directory') await fs.mkdir(output);
         else if (kind === 'hardlink') await fs.link(target, output);
-        else await fs.symlink(kind === 'dangling' ? path.join(root, 'missing') : target, output);
+        else await symlink(kind === 'dangling' ? path.join(root, 'missing') : target, output);
         const before = await fs.lstat(output, { bigint: true });
         await assert.rejects(archiveWindows(source, output, 'root'), /exists/);
         const after = await fs.lstat(output, { bigint: true });
@@ -146,7 +153,7 @@ test('failure cleanup retains an output replaced after exclusive creation', asyn
 
 test('output cannot be inside the source, including via a parent alias', async t => {
     const { root, source } = await fixture(t, { nested: null });
-    await fs.symlink(source, path.join(root, 'alias'));
+    await symlink(source, path.join(root, 'alias'));
     for (const archive of [source, path.join(source, 'out.zip'), path.join(root, 'alias/nested/out.zip')]) {
         await assert.rejects(archiveWindows(source, archive, 'root'), /outside the source/);
     }
@@ -165,25 +172,27 @@ test('archive roots reject absolute paths, traversal, DOS/ADS names and malforme
 
 test('source names reject Windows reserved/forbidden names and invalid UTF-8 bytes', async t => {
     const { source, archive } = await fixture(t);
+    const readdir = fs.readdir;
+    let entry;
+    t.mock.method(fs, 'readdir', (filename, options) => filename === source ? Promise.resolve([entry]) : readdir(filename, options));
     for (const name of ['CON', 'con.txt', 'CON .txt', 'prn', 'AUX', 'NUL.log', 'com9', 'lpt1.a',
         'COM\u00b2.log', 'LPT\u00b3', 'CLOCK$', 'CONIN$', 'CONOUT$', 'ads:stream', 'trailing.', 'trailing ',
         'back\\slash', 'new\nline', 'bad\x01name', 'a<b', 'a>b', 'a"b', 'a|b', 'a?b', 'a*b']) {
-        const filename = path.join(source, name);
-        await fs.writeFile(filename, 'bad');
+        entry = Buffer.from(name);
         await assert.rejects(archiveWindows(source, archive, 'root'), /Windows/);
         await absent(archive);
-        await fs.unlink(filename);
     }
-    const invalid = Buffer.concat([Buffer.from(`${source}/`), Buffer.from([0xff])]);
-    await fs.writeFile(invalid, 'invalid UTF-8');
+    entry = Buffer.from([0xff]);
     await assert.rejects(archiveWindows(source, archive, 'root'), /encoded data|UTF-8/i);
     await absent(archive);
 });
 
 test('case and normalization collisions cover files AND directories', async t => {
-    for (const files of [{ Readme: '', README: '' }, { Data: '', 'data/a': '' },
-        { 'Dir/a': '', 'dir/b': '' }, { Empty: null, empty: null },
-        { '\u00e9.txt': '', 'e\u0301.txt': '' }]) {
+    // NTFS already merges case-only names; the verifier mutation cases below
+    // still exercise every collision on all hosts. NFC collisions exist on NTFS.
+    const cases = process.platform === 'win32' ? [] : [{ Readme: '', README: '' }, { Data: '', 'data/a': '' },
+        { 'Dir/a': '', 'dir/b': '' }, { Empty: null, empty: null }];
+    for (const files of [...cases, { '\u00e9.txt': '', 'e\u0301.txt': '' }]) {
         const { source, archive } = await fixture(t, files);
         await assert.rejects(archiveWindows(source, archive, 'root'), /collision/);
         await absent(archive);
@@ -194,14 +203,14 @@ test('source root, nested symlinks, hardlinks and special files are rejected', a
     const { root, source, archive } = await fixture(t, { 'nested/good': 'safe' });
     const outside = path.join(root, 'outside');
     await fs.writeFile(outside, 'outside');
-    await fs.symlink(source, path.join(root, 'source-link'));
+    await symlink(source, path.join(root, 'source-link'));
     for (const input of [outside, path.join(root, 'source-link')]) {
         await assert.rejects(archiveWindows(input, archive, 'root'), /Source root/);
     }
     const bad = path.join(source, 'nested/bad');
     for (const target of [outside, source, path.join(source, 'nested/good'), path.join(root, 'missing')]) {
-        await fs.symlink(target, bad);
-        await assert.rejects(archiveWindows(source, archive, 'root'), /regular file/);
+        await symlink(target, bad);
+        await assert.rejects(archiveWindows(source, archive, 'root'), /regular file|reparse point/);
         await fs.unlink(bad);
     }
     for (const target of [outside, path.join(source, 'nested/good')]) {
@@ -209,18 +218,20 @@ test('source root, nested symlinks, hardlinks and special files are rejected', a
         await assert.rejects(archiveWindows(source, archive, 'root'), /hardlinks/);
         await fs.unlink(bad);
     }
-    const server = createServer();
-    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(bad, resolve); });
-    try {
-        await assert.rejects(archiveWindows(source, archive, 'root'), /special files/);
-    } finally {
-        await new Promise(resolve => server.close(resolve));
+    if (process.platform !== 'win32') {
+        const server = createServer();
+        await new Promise((resolve, reject) => { server.once('error', reject); server.listen(bad, resolve); });
+        try {
+            await assert.rejects(archiveWindows(source, archive, 'root'), /special files/);
+        } finally {
+            await new Promise(resolve => server.close(resolve));
+        }
     }
     await absent(archive);
 });
 
 test('per-file and total source budgets reject sparse files before reading/opening output', async t => {
-    for (const sizes of [[limits.fileBytes + 1], Array(5).fill(limits.fileBytes)]) {
+    for (const sizes of [[limits.fileBytes + 1], Array(Math.floor(limits.totalBytes / limits.fileBytes) + 1).fill(limits.fileBytes)]) {
         const { source, archive } = await fixture(t);
         for (let i = 0; i < sizes.length; i++) {
             const handle = await fs.open(path.join(source, `sparse-${i}`), 'wx');
@@ -284,6 +295,70 @@ test('bounded handle reads tolerate short reads and independently verify the res
     await verifyWindowsArchive(archive, 'root', inventory);
 });
 
+test('validator streams payloads in bounded short reads and detects archive mutation', async t => {
+    const { source, archive } = await fixture(t, { payload: Buffer.alloc(300000, 42) });
+    const inventory = await archiveWindows(source, archive, 'root');
+    const open = fs.open;
+    let reads = 0;
+    let mutate = false;
+    t.mock.method(fs, 'open', async (filename, ...args) => {
+        const handle = await open(filename, ...args);
+        if (filename === archive) {
+            const read = handle.read.bind(handle);
+            handle.read = async (buffer, offset, length, position) => {
+                assert(length <= 64 * 1024);
+                reads++;
+                if (mutate) { mutate = false; await fs.utimes(archive, 1, 1); }
+                return read(buffer, offset, Math.min(length, 997), position);
+            };
+        }
+        return handle;
+    });
+    await verifyWindowsArchive(archive, 'root', inventory);
+    assert(reads > 300);
+    mutate = true;
+    await assert.rejects(verifyWindowsArchive(archive, 'root'), /changed/);
+});
+
+test('verified extraction preserves contents and requires an absent root', async t => {
+    const { root, source, archive } = await fixture(t, { 'nested/space file': Buffer.alloc(140000, 42), empty: null });
+    const inventory = await archiveWindows(source, archive, 'root');
+    const destination = path.join(root, 'extracted');
+    assert.deepEqual(await extractWindowsArchive(archive, 'root', destination, inventory), inventory);
+    assert.deepEqual(await fs.readFile(path.join(destination, 'nested/space file')), Buffer.alloc(140000, 42));
+    assert((await fs.stat(path.join(destination, 'empty'))).isDirectory());
+    await assert.rejects(extractWindowsArchive(archive, 'root', destination), { code: 'EEXIST' });
+    const tampered = await fs.readFile(archive);
+    tampered[layout(tampered).entries.find(entry => entry.size > 0).data] ^= 1;
+    await fs.writeFile(archive, tampered);
+    const rejected = path.join(root, 'rejected');
+    await assert.rejects(extractWindowsArchive(archive, 'root', rejected), /CRC/);
+    await absent(rejected);
+});
+
+test('extraction rejects a directory replaced between output writes', async t => {
+    const { root, source, archive } = await fixture(t, { 'nested/aa': 'one', 'nested/bb': 'two' });
+    await archiveWindows(source, archive, 'root');
+    const destination = path.join(root, 'extracted');
+    const outside = path.join(root, 'outside');
+    await fs.mkdir(outside);
+    const open = fs.open;
+    t.mock.method(fs, 'open', async (filename, ...args) => {
+        const handle = await open(filename, ...args);
+        if (filename === path.join(destination, 'nested/aa')) {
+            const close = handle.close.bind(handle);
+            handle.close = async () => {
+                await close();
+                await fs.rename(path.join(destination, 'nested'), path.join(root, 'moved'));
+                await symlink(outside, path.join(destination, 'nested'));
+            };
+        }
+        return handle;
+    });
+    await assert.rejects(extractWindowsArchive(archive, 'root', destination), /directory changed/);
+    await absent(path.join(outside, 'bb'));
+});
+
 test('stable reads reject growth, truncation, same-size writes, replacement and new hardlinks', async t => {
     for (const change of ['grow', 'shrink', 'rewrite', 'replace', 'hardlink']) {
         await t.test(change, async t => {
@@ -332,7 +407,7 @@ test('in-tree ancestors are rechecked before file opens', async t => {
         const handle = await open(filename, ...args);
         if (filename === archive) {
             await fs.rename(path.join(source, 'a/b'), path.join(root, 'moved'));
-            await fs.symlink(outside, path.join(source, 'a/b'));
+            await symlink(outside, path.join(source, 'a/b'));
         }
         return handle;
     });
@@ -444,7 +519,7 @@ test('validator requires exact optional inventory and bounds its own input file'
     }
     await assert.rejects(verifyWindowsArchive(archive, 'other'), /root mismatch/);
     const link = path.join(root, 'link.zip');
-    await fs.symlink(archive, link);
+    await symlink(archive, link);
     await assert.rejects(verifyWindowsArchive(link, 'root'), /regular file/);
     await fs.unlink(link);
     await fs.link(archive, link);

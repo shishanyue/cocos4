@@ -16,14 +16,16 @@ const checker = path.join(skills, 'cocos4-minigame-dev/scripts/check-examples.mj
 async function check(script, target, profile, ...options) {
     return new Promise((resolve, reject) => {
         const child = spawn(process.execPath, [script, '--sdk-root', sdkRoot, '--target', target, '--profile', profile, ...options], {
-            shell: false, env: { PATH: '', LANG: 'C.UTF-8' }, stdio: ['ignore', 'pipe', 'pipe'],
+            shell: false, env: { PATH: '', LANG: 'C.UTF-8', ...(process.platform === 'win32'
+                ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR, TEMP: process.env.TEMP, TMP: process.env.TMP } : {}) },
+            stdio: ['ignore', 'pipe', 'pipe'],
         });
         let stdout = '';
         let stderr = '';
         const timer = setTimeout(() => child.kill('SIGKILL'), 120000);
         child.stdout.on('data', bytes => { stdout += bytes; });
         child.stderr.on('data', bytes => { stderr += bytes; });
-        child.once('error', reject);
+        child.once('error', error => { clearTimeout(timer); reject(error); });
         child.once('close', (code, signal) => { clearTimeout(timer); resolve({ code, signal, stdout, stderr }); });
     });
 }
@@ -48,7 +50,8 @@ test('all packaged Markdown links resolve within the skills payload and names ar
                 const target = match[1].split('#')[0];
                 assert.equal(/^[a-z]+:/i.test(target), false, 'Package references must not rely on online documentation.');
                 const resolved = path.resolve(directory, target);
-                assert.ok(resolved.startsWith(`${skills}/`));
+                const relative = path.relative(skills, resolved);
+                assert.ok(relative && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
                 assert.ok((await fs.stat(resolved)).isFile(), resolved);
                 links++;
             }
@@ -117,7 +120,12 @@ test('packaged checker detects a real introduced type error without stubs or dis
     const root = await fs.mkdtemp(path.join(process.env.AI_TEST_EVIDENCE_ROOT ?? path.join(devkit, 'build'), 'ai-negative-skill-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     await fs.mkdir(path.join(root, 'app'));
+    await fs.writeFile(path.join(root, 'package.json'), '{"type":"module"}\n', { flag: 'wx' });
+    await fs.symlink(await fs.realpath(path.join(devkit, 'node_modules')), path.join(root, 'app/node_modules'),
+        process.platform === 'win32' ? 'junction' : 'dir');
     await fs.cp(path.join(build, 'src'), path.join(root, 'app/src'), { recursive: true, force: false, errorOnExist: true });
+    if (process.platform === 'win32') await fs.cp(path.join(build, 'host'), path.join(root, 'app/host'),
+        { recursive: true, force: false, errorOnExist: true });
     await fs.cp(skills, path.join(root, 'skills'), { recursive: true, force: false, errorOnExist: true });
     const filename = path.join(root, 'skills/cocos4-minigame-dev/examples/TapCounter.ts');
     const text = await fs.readFile(filename, 'utf8');

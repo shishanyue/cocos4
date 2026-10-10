@@ -8,15 +8,23 @@ import { fileURLToPath } from 'node:url';
 // Maintainer/package-build step only. The installed application never invokes a
 // compiler, resolves ancestor packages, installs dependencies, or rewrites SDKs.
 const root = fileURLToPath(new URL('../', import.meta.url));
-assert.equal(process.platform, 'linux', 'Only the verified Linux supervisor is implemented.');
+assert(['linux', 'win32'].includes(process.platform), 'Only Linux and Windows supervisor builds are implemented.');
+assert.equal(process.arch, 'x64', 'Only x64 supervisor host builds are implemented.');
 assert.equal(process.argv.length, 2, 'Usage: node scripts/build-supervisor.mjs (fixed build/host output)');
 const output = path.join(root, 'build/host');
+const windows = process.platform === 'win32';
+const binaryName = `cocos4-supervise${windows ? '.exe' : ''}`;
+const sourceName = windows ? 'runtime/supervise-win32.c' : 'runtime/supervise.c';
 await fs.mkdir(output, { recursive: true, mode: 0o700 });
 const temporary = path.join(output, `.prepare-${randomUUID()}`);
 await fs.mkdir(temporary, { mode: 0o700 });
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 try {
-    await new Promise((resolve, reject) => {
+    if (windows) {
+        const { buildSupervisorWin32, detectWindowsCompiler } = await import('./build-supervisor-win32.mjs');
+        await buildSupervisorWin32({ output: path.join(temporary, binaryName), compiler: await detectWindowsCompiler() });
+    }
+    else await new Promise((resolve, reject) => {
         const child = spawn('/usr/bin/cc', ['-std=c11', '-O2', '-Wall', '-Wextra', '-Werror', '-D_FORTIFY_SOURCE=2',
             '-fstack-protector-strong', '-Wl,-z,relro,-z,now', path.join(root, 'runtime/supervise.c'), '-o', path.join(temporary, 'cocos4-supervise')],
         { shell: false, stdio: ['ignore', 'pipe', 'pipe'], env: { PATH: '/usr/bin:/bin', LANG: 'C' } });
@@ -51,12 +59,23 @@ try {
         await copy(source, destination);
     }
     await fs.writeFile(path.join(types, 'inventory.json'), JSON.stringify({ version: 1, node: '18.19.130', undici: '5.26.5', files }, null, 2) + '\n', { mode: 0o400 });
-    const binary = await fs.readFile(path.join(temporary, 'cocos4-supervise'));
+    const binary = await fs.readFile(path.join(temporary, binaryName));
     await fs.writeFile(path.join(temporary, 'supervisor.json'), JSON.stringify({ version: 1, platform: process.platform, arch: process.arch,
-        file: 'cocos4-supervise', sha256: sha256(binary), bytes: binary.length,
-        sourceSha256: sha256(await fs.readFile(path.join(root, 'runtime/supervise.c'))) }, null, 2) + '\n', { mode: 0o400 });
+        file: binaryName, sha256: sha256(binary), bytes: binary.length,
+        sourceSha256: sha256(await fs.readFile(path.join(root, sourceName))) }, null, 2) + '\n', { mode: 0o400 });
     // Only this fixed, generated host namespace is replaced. Never touch saved SDKs.
     await fs.rm(path.join(output, 'logic-types'), { recursive: true, force: true });
-    for (const name of ['logic-types', 'cocos4-supervise', 'supervisor.json']) await fs.rename(path.join(temporary, name), path.join(output, name));
+    for (const name of ['logic-types', binaryName, ...(windows ? [`${binaryName}.json`] : []), 'supervisor.json']) {
+        // Windows cannot replace a readonly metadata file with rename. Only
+        // clear that generated file's attribute, preserving the staged modes.
+        if (windows && name !== 'logic-types') {
+            try {
+                const existing = await fs.lstat(path.join(output, name));
+                assert(existing.isFile() && !existing.isSymbolicLink(), 'Expected a generated host file');
+                await fs.chmod(path.join(output, name), 0o600);
+            } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        }
+        await fs.rename(path.join(temporary, name), path.join(output, name));
+    }
     process.stdout.write(JSON.stringify({ output, supervisorSha256: sha256(binary), typeFiles: files.length }) + '\n');
 } finally { await fs.rm(temporary, { recursive: true, force: true }); }

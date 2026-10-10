@@ -20,7 +20,8 @@ test('SPDX archive checksums decode locked SRI rather than substituting a packag
     }
 });
 
-test('release archive bytes do not depend on staging names, long-path PAX headers or timestamps', async t => {
+test('release archive bytes do not depend on staging names, long-path PAX headers or timestamps',
+    { skip: process.platform !== 'linux' ? 'GNU tar packaging belongs to the Linux target; Windows ZIP reproducibility is tested separately.' : false }, async t => {
     const root = await fs.mkdtemp(fileURLToPath(new URL('../build/archive-test-', import.meta.url)));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const outputs = [];

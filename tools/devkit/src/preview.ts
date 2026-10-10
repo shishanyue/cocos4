@@ -7,6 +7,7 @@ import type { Socket } from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { AppError, artifactInventorySchema, artifactSchema, MAX_ARTIFACT_BYTES, type Artifact, type Preview } from './contracts.js';
+import { acquireWindowsPath, hostRealpath, type WindowsPathLease } from './windows-fs.js';
 
 const inventoryName = 'artifact-inventory.json';
 const chunkSize = 64 * 1024;
@@ -20,7 +21,7 @@ const mime: Record<string, string> = {
     '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.aac': 'audio/aac',
     '.flac': 'audio/flac', '.mp4': 'video/mp4', '.webm': 'video/webm', '.woff': 'font/woff', '.woff2': 'font/woff2',
 };
-type Pin = { handle: FileHandle; absolute: string; stat: BigIntStats };
+type Pin = { handle: FileHandle; absolute: string; stat: BigIntStats; lease?: WindowsPathLease };
 type FileRecord = { bytes: number; sha256: string; stat: BigIntStats };
 
 function invalid(): never {
@@ -46,32 +47,50 @@ function stamp(stat: BigIntStats): string {
     return `${identity(stat)}:${stat.nlink}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
 }
 
-function fdPath(pin: Pin): string { return `/proc/self/fd/${pin.handle.fd}`; }
+function fdPath(pin: Pin): string { return process.platform === 'win32' ? pin.absolute : `/proc/self/fd/${pin.handle.fd}`; }
+
+function samePath(left: string, right: string): boolean {
+    return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
+}
+
+async function closePin(pin: Pin): Promise<void> {
+    try { await pin.handle.close(); }
+    finally { await pin.lease?.close(); }
+}
 
 async function checkPin(pin: Pin, content = true): Promise<void> {
+    await pin.lease?.check();
     const current = await pin.handle.stat({ bigint: true });
     const linked = await fs.lstat(pin.absolute, { bigint: true });
     const signature = content ? stamp : identity;
     if (signature(current) !== signature(pin.stat) || signature(linked) !== signature(pin.stat)
-        || await fs.realpath(fdPath(pin)) !== pin.absolute || await fs.realpath(pin.absolute) !== pin.absolute) changed();
+        || !samePath(await hostRealpath(fdPath(pin)), pin.absolute) || !samePath(await hostRealpath(pin.absolute), pin.absolute)) changed();
 }
 
 async function openChild(parent: Pin, name: string, directory: boolean, privateInput = true): Promise<Pin> {
-    const filename = `${fdPath(parent)}/${name}`;
-    const before = await fs.lstat(filename, { bigint: true });
-    if (directory ? !before.isDirectory() : !before.isFile() || before.nlink !== 1n) invalid();
-    if (privateInput && (before.uid !== BigInt(process.getuid!())
-        || (directory ? (before.mode & 0o7777n) !== 0o700n : ![0o400n, 0o600n].includes(before.mode & 0o7777n)))) invalid();
-    const handle = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-        | (directory ? constants.O_DIRECTORY : 0));
+    const filename = path.join(fdPath(parent), name);
+    let lease: WindowsPathLease | undefined;
+    let handle: FileHandle | undefined;
     try {
+        // Windows leases reject reparse points/unsafe ACLs and deny delete sharing
+        // before Node resolves the path. Keep the lease for every open descriptor.
+        if (process.platform === 'win32') lease = await acquireWindowsPath(filename, { directory, private: privateInput, trusted: privateInput });
+        const before = await fs.lstat(filename, { bigint: true });
+        if (before.isSymbolicLink() || (directory ? !before.isDirectory() : !before.isFile() || before.nlink !== 1n)) invalid();
+        if (process.platform !== 'win32' && privateInput && (before.uid !== BigInt(process.getuid!())
+            || (directory ? (before.mode & 0o7777n) !== 0o700n : ![0o400n, 0o600n].includes(before.mode & 0o7777n)))) invalid();
+        handle = await fs.open(filename, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0)
+            | (directory ? (constants.O_DIRECTORY ?? 0) : 0));
         const stat = await handle.stat({ bigint: true });
         const signature = directory && !privateInput ? identity : stamp;
         if (signature(before) !== signature(stat)) changed();
-        const pin = { handle, absolute: path.join(parent.absolute, name), stat };
+        const pin = { handle, absolute: lease?.absolute ?? path.join(parent.absolute, name), stat, lease };
         await checkPin(pin, privateInput);
         return pin;
-    } catch (error) { await handle.close(); throw error; }
+    } catch (error) {
+        try { await handle?.close(); } finally { await lease?.close(); }
+        throw error;
+    }
 }
 
 function checkDeadline(deadline: number): void {
@@ -103,7 +122,9 @@ async function readVerified(pin: Pin, expected: { bytes: number; sha256: string 
 }
 
 async function closePins(pins: Pin[]): Promise<void> {
-    await Promise.all(pins.map(pin => pin.handle.close()));
+    const results = await Promise.allSettled(pins.map(closePin));
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
 }
 
 export async function startPreview(options: {
@@ -121,12 +142,12 @@ export async function startPreview(options: {
     if (artifact.bytes > MAX_ARTIFACT_BYTES || artifact.files > 10000) {
         throw new AppError('LIMIT_EXCEEDED', 'Preview artifacts are limited to 128 MiB and 10000 payload files.');
     }
-    if (process.platform !== 'linux' || !constants.O_NOFOLLOW || !constants.O_DIRECTORY || !constants.O_NONBLOCK) {
-        throw new AppError('SDK_INCOMPLETE', 'Secure preview reads require Linux no-follow opens and verified /proc/self/fd.');
+    if (process.platform !== 'win32' && (process.platform !== 'linux' || !constants.O_NOFOLLOW || !constants.O_DIRECTORY || !constants.O_NONBLOCK)) {
+        throw new AppError('SDK_INCOMPLETE', 'Secure preview reads require the Windows filesystem helper or Linux no-follow opens and verified /proc/self/fd.');
     }
     if (typeof artifactDirectory !== 'string' || !path.isAbsolute(artifactDirectory)
         || artifactDirectory !== path.resolve(artifactDirectory) || artifactDirectory.length > 4096
-        || artifactDirectory.split('/').length > 64 || path.basename(artifactDirectory) !== `artifact-${artifact.artifactId}`) {
+        || artifactDirectory.split(path.sep).length > 64 || path.basename(artifactDirectory) !== `artifact-${artifact.artifactId}`) {
         throw new AppError('INVALID_ARGUMENTS', 'Preview requires the parent-authorized private artifact directory.');
     }
     const pins: Pin[] = [];
@@ -134,21 +155,39 @@ export async function startPreview(options: {
     const directories = new Map<string, BigIntStats>();
     const deadline = performance.now() + 60000;
     try {
-        const handle = await fs.open('/', constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-        const root = { handle, absolute: '/', stat: await handle.stat({ bigint: true }) };
+        const rootPath = path.parse(artifactDirectory).root;
+        // Validate and retain the complete artifact chain first. A drive root is
+        // a system ancestor, not a payload leaf: Windows normally permits users
+        // to create directories there, and TrustedInstaller may own it. The
+        // complete-chain lease applies the helper's ancestor policy correctly.
+        const lease = process.platform === 'win32'
+            ? await acquireWindowsPath(artifactDirectory, { directory: true, private: true, trusted: true }) : undefined;
+        let handle: FileHandle;
+        try {
+            handle = await fs.open(rootPath, constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+        } catch (error) { await lease?.close(); throw error; }
+        let root: Pin;
+        try { root = { handle, absolute: rootPath, stat: await handle.stat({ bigint: true }), lease }; }
+        catch (error) { try { await handle.close(); } finally { await lease?.close(); } throw error; }
         pins.push(root);
-        if (await fs.realpath(fdPath(root)) !== '/') throw new AppError('SDK_INCOMPLETE', 'Verified procfs descriptor paths are unavailable.');
-        for (const component of artifactDirectory.split('/').filter(Boolean)) {
+        if (!samePath(await hostRealpath(fdPath(root)), root.absolute)) throw new AppError('SDK_INCOMPLETE', 'Verified filesystem descriptor paths are unavailable.');
+        const components = artifactDirectory.slice(rootPath.length).split(path.sep).filter(Boolean);
+        for (let index = 0; index < components.length; index++) {
             checkDeadline(deadline);
-            pins.push(await openChild(pins[pins.length - 1], component, true, false));
+            // On Windows the last two leases retain the private ACL policy for
+            // later HTTP checks. Parent-directory content may still change.
+            pins.push(await openChild(pins[pins.length - 1], components[index], true,
+                process.platform === 'win32' && index >= components.length - 2));
         }
-        for (const pin of pins) {
-            const owner = pin.stat.uid === 0n || pin.stat.uid === BigInt(process.getuid!());
-            const stickyRoot = pin.stat.uid === 0n && (pin.stat.mode & 0o1000n) !== 0n;
-            if (!owner || ((pin.stat.mode & 0o022n) !== 0n && !stickyRoot)) invalid();
-        }
-        for (const pin of pins.slice(-2)) {
-            if (pin.stat.uid !== BigInt(process.getuid!()) || (pin.stat.mode & 0o7777n) !== 0o700n) invalid();
+        if (process.platform !== 'win32') {
+            for (const pin of pins) {
+                const owner = pin.stat.uid === 0n || pin.stat.uid === BigInt(process.getuid!());
+                const stickyRoot = pin.stat.uid === 0n && (pin.stat.mode & 0o1000n) !== 0n;
+                if (!owner || ((pin.stat.mode & 0o022n) !== 0n && !stickyRoot)) invalid();
+            }
+            for (const pin of pins.slice(-2)) {
+                if (pin.stat.uid !== BigInt(process.getuid!()) || (pin.stat.mode & 0o7777n) !== 0o700n) invalid();
+            }
         }
         const directory = pins[pins.length - 1];
         const inventoryPin = await openChild(directory, inventoryName, false);
@@ -207,7 +246,7 @@ export async function startPreview(options: {
                                 await readVerified(child, record, scratch, false, deadline);
                                 files.set(name, { bytes: record.bytes, sha256: record.sha256, stat: child.stat });
                             }
-                        } finally { await child.handle.close(); }
+                        } finally { await closePin(child); }
                     }
                 } finally { await listing.close(); }
                 await checkPin(pin);
@@ -216,9 +255,10 @@ export async function startPreview(options: {
             if (files.size !== expected.size) invalid();
             await checkPin(inventoryPin);
             for (const pin of pins) await checkPin(pin, pin === directory);
-        } finally { await inventoryPin.handle.close(); }
+        } finally { await closePin(inventoryPin); }
     } catch (error) {
         await closePins(pins);
+        if (process.platform === 'win32' && error instanceof AppError && ['PERMISSION_DENIED', 'PATH_OUTSIDE_WORKSPACE'].includes(error.code)) invalid();
         if (error instanceof AppError) throw error;
         invalid();
     }
@@ -227,6 +267,7 @@ export async function startPreview(options: {
     const sockets = new Set<Socket>();
     const used = new WeakSet<Socket>();
     const pending = new Set<Promise<void>>();
+    const waiting: Array<{ allocation: number; start(): void; dispose(): void }> = [];
     let origin = '';
     let host = '';
     let stopping = false;
@@ -247,6 +288,7 @@ export async function startPreview(options: {
         if (!stopping) {
             stopping = true;
             clearTimeout(timer);
+            for (const request of waiting.splice(0)) request.dispose();
             const stopped = new Promise<void>(resolve => server.close(() => resolve()));
             for (const socket of sockets) socket.destroy();
             void (async () => {
@@ -256,6 +298,15 @@ export async function startPreview(options: {
             })().then(resolveClosed, rejectClosed);
         }
         return closed;
+    }
+
+    function drainWaiting(): void {
+        while (!stopping && pending.size < 8 && waiting.length) {
+            const next = waiting[0];
+            if (buffered + next.allocation > MAX_ARTIFACT_BYTES) return;
+            waiting.shift();
+            next.start();
+        }
     }
 
     function handleRequest(request: IncomingMessage, response: ServerResponse): void {
@@ -293,46 +344,79 @@ export async function startPreview(options: {
         if (!record) { reject(404); return; }
         const retain = request.method === 'GET';
         const allocation = retain ? record.bytes : Math.min(record.bytes, chunkSize);
-        if (pending.size >= 8 || buffered + allocation > MAX_ARTIFACT_BYTES) { reject(503); return; }
-        buffered += allocation;
-        const task = (async () => {
-            const requestPins: Pin[] = [];
-            try {
-                const deadline = performance.now() + 5000;
-                const root = pins[pins.length - 1];
-                for (const pin of pins) await checkPin(pin, pin === root);
-                let parent = root;
-                const parts = name.split('/');
-                for (let index = 0; index < parts.length; index++) {
-                    const directory = index < parts.length - 1;
-                    const pin = await openChild(parent, parts[index], directory);
-                    requestPins.push(pin);
-                    const expected = directory ? directories.get(parts.slice(0, index + 1).join('/'))! : record.stat;
-                    if (stamp(pin.stat) !== stamp(expected)) changed();
-                    parent = pin;
-                }
-                // Aggregate live response buffers, not just individual file sizes, are capped.
-                const body = Buffer.alloc(allocation);
-                await readVerified(parent, record, body, retain, deadline, () => stopping || response.destroyed);
-                for (const pin of requestPins) await checkPin(pin);
-                for (const pin of pins) await checkPin(pin, pin === root);
-                if (stopping || response.destroyed) return;
-                response.writeHead(200, { 'Content-Type': mime[path.extname(name).toLowerCase()] ?? 'application/octet-stream',
-                    'Content-Length': String(record.bytes) });
-                await new Promise<void>(resolve => {
-                    response.once('close', resolve);
-                    response.end(retain ? body : undefined);
-                });
-            } catch {
-                if (!response.destroyed && !response.headersSent) reject(409);
-                else response.destroy();
-            } finally {
-                await closePins(requestPins);
-                buffered -= allocation;
+        if (waiting.length >= 24) { reject(503); return; }
+        // Normal resource bursts wait without opening files or allocating payload buffers.
+        // Waiting and verification share one deadline; FIFO also prevents large-file starvation.
+        const deadline = performance.now() + 5000;
+        const dispose = (): void => {
+            clearTimeout(waitTimer);
+            response.off('close', disconnected);
+        };
+        const removeWaiting = (): boolean => {
+            const index = waiting.indexOf(queued);
+            if (index < 0) return false;
+            waiting.splice(index, 1);
+            dispose();
+            return true;
+        };
+        const disconnected = (): void => { if (removeWaiting()) drainWaiting(); };
+        const waitTimer = setTimeout(() => {
+            if (removeWaiting()) {
+                if (!response.destroyed) reject(503);
+                drainWaiting();
             }
-        })();
-        pending.add(task);
-        void task.finally(() => pending.delete(task)).catch(() => response.destroy());
+        }, 5000);
+        const queued = { allocation, dispose, start: (): void => {
+            dispose();
+            buffered += allocation;
+            const task = (async () => {
+                const requestPins: Pin[] = [];
+                try {
+                    checkDeadline(deadline);
+                    if (stopping || response.destroyed) return;
+                    const root = pins[pins.length - 1];
+                    for (const pin of pins) { checkDeadline(deadline); await checkPin(pin, pin === root); }
+                    let parent = root;
+                    const parts = name.split('/');
+                    for (let index = 0; index < parts.length; index++) {
+                        checkDeadline(deadline);
+                        if (stopping || response.destroyed) return;
+                        const directory = index < parts.length - 1;
+                        const pin = await openChild(parent, parts[index], directory);
+                        requestPins.push(pin);
+                        const expected = directory ? directories.get(parts.slice(0, index + 1).join('/'))! : record.stat;
+                        if (stamp(pin.stat) !== stamp(expected)) changed();
+                        parent = pin;
+                    }
+                    // Aggregate live response buffers, not just individual file sizes, are capped.
+                    checkDeadline(deadline);
+                    if (stopping || response.destroyed) return;
+                    const body = Buffer.alloc(allocation);
+                    await readVerified(parent, record, body, retain, deadline, () => stopping || response.destroyed);
+                    for (const pin of requestPins) { checkDeadline(deadline); await checkPin(pin); }
+                    for (const pin of pins) { checkDeadline(deadline); await checkPin(pin, pin === root); }
+                    checkDeadline(deadline);
+                    if (stopping || response.destroyed) return;
+                    response.writeHead(200, { 'Content-Type': mime[path.extname(name).toLowerCase()] ?? 'application/octet-stream',
+                        'Content-Length': String(record.bytes) });
+                    await new Promise<void>(resolve => {
+                        response.once('close', resolve);
+                        response.end(retain ? body : undefined);
+                    });
+                } catch {
+                    if (!response.destroyed && !response.headersSent) reject(409);
+                    else response.destroy();
+                } finally {
+                    try { await closePins(requestPins); }
+                    finally { buffered -= allocation; }
+                }
+            })();
+            pending.add(task);
+            void task.finally(() => { pending.delete(task); drainWaiting(); }).catch(() => response.destroy());
+        } };
+        waiting.push(queued);
+        response.once('close', disconnected);
+        drainWaiting();
     }
 
     server.on('connection', socket => {

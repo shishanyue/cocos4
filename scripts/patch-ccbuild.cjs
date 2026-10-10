@@ -32,6 +32,28 @@ export const HTML5 = !(EDITOR && NATIVE);`, 'export const HTML5 = true; // Nativ
 `, 2],
 ];
 
+// Preserve the exact previous patch as an installation migration anchor.
+const previousPrivateAliasPatch = String.raw`        function generateIdFromSourceFileName(fileName) {
+            let relativeFromRoot = path_1.default.relative(rootDir, fileName);
+            if (relativeFromRoot.startsWith('..' + path_1.default.sep) || path_1.default.isAbsolute(relativeFromRoot)) {
+                // Use the input tree's package links for names only; keep nested copies distinct.
+                const parts = fileName.split(/[\\/]node_modules[\\/]/);
+                for (let i = parts.length - 1; i > 0; --i) {
+                    const modulePath = parts.slice(i).join('/node_modules/').replace(/\.(js|ts|d\.ts)$/, '');
+                    const resolved = typescript_1.default.resolveModuleName(modulePath,
+                        path_1.default.resolve(rootDir, '__tfig__.d.ts'),
+                        { ...program.getCompilerOptions(), preserveSymlinks: true }, typescript_1.default.sys).resolvedModule;
+                    if (resolved && fs.realpathSync(resolved.resolvedFileName) === fs.realpathSync(fileName)) {
+                        relativeFromRoot = path_1.default.relative(rootDir, resolved.resolvedFileName);
+                        break;
+                    }
+                }
+            }`;
+const privateAliasPatch = previousPrivateAliasPatch.replace(
+    'if (resolved && fs.realpathSync(resolved.resolvedFileName) === fs.realpathSync(fileName)) {',
+    `// Native realpath also expands Windows 8.3 names, matching TypeScript's host.
+                    if (resolved && fs.realpathSync.native(resolved.resolvedFileName) === fs.realpathSync.native(fileName)) {`);
+
 // tfig must preserve PAL types and imports owned by relocated private declarations.
 const tfigPatches = [
     ['build/gift.js', `        return {
@@ -77,22 +99,7 @@ const tfigPatches = [
                 recastPropertyName(typeElement.name), recastParameterArray(typeElement.parameters), undefined));
         }`],
     ['build/gift.js', `        function generateIdFromSourceFileName(fileName) {
-            const relativeFromRoot = path_1.default.relative(rootDir, fileName);`, String.raw`        function generateIdFromSourceFileName(fileName) {
-            let relativeFromRoot = path_1.default.relative(rootDir, fileName);
-            if (relativeFromRoot.startsWith('..' + path_1.default.sep) || path_1.default.isAbsolute(relativeFromRoot)) {
-                // Use the input tree's package links for names only; keep nested copies distinct.
-                const parts = fileName.split(/[\\/]node_modules[\\/]/);
-                for (let i = parts.length - 1; i > 0; --i) {
-                    const modulePath = parts.slice(i).join('/node_modules/').replace(/\.(js|ts|d\.ts)$/, '');
-                    const resolved = typescript_1.default.resolveModuleName(modulePath,
-                        path_1.default.resolve(rootDir, '__tfig__.d.ts'),
-                        { ...program.getCompilerOptions(), preserveSymlinks: true }, typescript_1.default.sys).resolvedModule;
-                    if (resolved && fs.realpathSync(resolved.resolvedFileName) === fs.realpathSync(fileName)) {
-                        relativeFromRoot = path_1.default.relative(rootDir, resolved.resolvedFileName);
-                        break;
-                    }
-                }
-            }`],
+            const relativeFromRoot = path_1.default.relative(rootDir, fileName);`, privateAliasPatch, 1, previousPrivateAliasPatch],
 ];
 
 // These upstream Armature fields are exposed to the engine; pooling clears the animation to null.
@@ -115,15 +122,18 @@ function patchCcbuild(root = path.join(__dirname, '..', 'node_modules', '@cocos'
         if (dragonBonesVersion !== '1.0.1') throw new Error(`Review DragonBones patches before using ${dragonBonesVersion}`);
         allPatches.push(...dragonBonesPatches.map(([file, ...edit]) => [path.join(dragonBonesRoot, file), ...edit]));
     }
-    for (const [file, before, after, count = 1] of allPatches) {
+    for (const [file, before, after, count = 1, previous] of allPatches) {
         const original = changes.get(file) ?? fs.readFileSync(file, 'utf8');
         const patchedCount = original.split(after).length - 1;
-        const beforeCount = original.replaceAll(after, '').split(before).length - 1;
-        if (patchedCount === count && beforeCount === 0) continue;
-        if (patchedCount !== 0 || beforeCount !== count) {
+        const unpatched = original.replaceAll(after, '');
+        const previousCount = previous ? unpatched.split(previous).length - 1 : 0;
+        const beforeCount = (previous ? unpatched.replaceAll(previous, '') : unpatched).split(before).length - 1;
+        if (patchedCount === count && beforeCount === 0 && previousCount === 0) continue;
+        if (patchedCount !== 0 || !((beforeCount === count && previousCount === 0)
+            || (beforeCount === 0 && previousCount === count))) {
             throw new Error(`ccbuild patch no longer matches: ${file}`);
         }
-        changes.set(file, original.replaceAll(before, after));
+        changes.set(file, original.replaceAll(previousCount ? previous : before, after));
     }
     // Validate every patch before changing any dependency files.
     for (const [file, text] of changes) fs.writeFileSync(file, text);

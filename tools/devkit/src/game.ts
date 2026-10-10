@@ -11,6 +11,7 @@ import type { Sdk } from './sdk.js';
 import { publishGameOutput, readGameOutput, validateProjectDestination, validateRelativePath, withGameSnapshot } from './workspace.js';
 import { validateMiniGamePackage } from './bilibili.js';
 import { checkLogic } from './logic.js';
+import { enforceWindowsPrivate } from './windows-fs.js';
 
 const sharedRuntimeNames = ['loader.js', 'internal-prerequisites.js', 'import-map.json', 'settings.json', 'builtin-report.json', 'ENGINE-LICENSE'];
 const runtimeNames = {
@@ -59,8 +60,25 @@ function diagnosticsReport(values: unknown, summary: string): Report {
 async function write(root: string, name: string, bytes: Buffer | string, editable = false): Promise<void> {
     validateRelativePath(name);
     if (name === '.') throw new AppError('ARTIFACT_INVALID', 'Expected a file path.');
-    await fs.mkdir(path.dirname(path.join(root, name)), { recursive: true, mode: 0o700 });
-    await fs.writeFile(path.join(root, name), bytes, { flag: 'wx', mode: editable ? 0o600 : 0o400 });
+    const filename = path.join(root, name);
+    const directory = path.dirname(filename);
+    const created = await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    if (process.platform === 'win32' && created) {
+        // Elevated Windows creation defaults to the token's group owner.
+        // Set the private owner only on directories created by this write.
+        const relative = path.relative(path.toNamespacedPath(root), path.toNamespacedPath(created));
+        if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+            throw new AppError('ARTIFACT_INVALID', 'Created output directories must remain inside their tool-owned root.');
+        }
+        let current = path.join(root, relative);
+        await enforceWindowsPrivate(current);
+        for (const part of path.relative(current, directory).split(path.sep).filter(Boolean)) {
+            current = path.join(current, part);
+            await enforceWindowsPrivate(current);
+        }
+    }
+    await fs.writeFile(filename, bytes, { flag: 'wx', mode: editable ? 0o600 : 0o400 });
+    if (process.platform === 'win32') await enforceWindowsPrivate(filename);
 }
 
 // This guard is local to the fixed worker's compile interval. Node must not fall
@@ -394,6 +412,7 @@ export async function runGameOperation(request: WorkerRequest, sdk: Sdk, log: (t
             if (!checkOnly) {
                 compilerProject = path.join(request.staging, 'compiler-project');
                 await fs.mkdir(compilerProject, { mode: 0o700 });
+                if (process.platform === 'win32') await enforceWindowsPrivate(compilerProject);
                 for (const [name, bytes] of projectFiles) {
                     if (name === `src/${linkageSource}` || name === `src/${linkageOutput}`) {
                         throw new AppError('UNSUPPORTED_PROJECT', 'The compiler bootstrap-check filename is reserved.');

@@ -1,28 +1,40 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { constants } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import promises from 'node:fs/promises';
 import http from 'node:http';
-import { syncBuiltinESMExports } from 'node:module';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
+import { promisify } from 'node:util';
 
 // An isolated compiler output avoids racing the parent agent's integration build.
 const moduleUrl = process.env.COCOS4_PREVIEW_MODULE ? pathToFileURL(process.env.COCOS4_PREVIEW_MODULE)
     : new URL('../build/src/preview.js', import.meta.url);
 const { startPreview } = await import(moduleUrl.href);
 const { AppError, artifactInventorySchema, artifactSchema, MAX_ARTIFACT_BYTES, previewSchema } = await import(new URL('./contracts.js', moduleUrl).href);
+const windows = process.platform === 'win32';
+const { enforceWindowsPrivate } = windows ? await import(new URL('./windows-fs.js', moduleUrl).href) : {};
+const execute = promisify(execFile);
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const code = expected => error => { assert.ok(error instanceof AppError, error.stack); assert.equal(error.code, expected, error.stack); return true; };
+const isPayloadOpen = filename => path.basename(filename) === 'index.html';
+const linked = (target, destination, directory = false) => fs.symlink(target, destination, directory ? (windows ? 'junction' : 'dir') : 'file');
+const makePublic = async filename => {
+    if (!windows) return fs.chmod(filename, (await fs.stat(filename)).isDirectory() ? 0o755 : 0o644);
+    await execute(path.join(process.env.SystemRoot, 'System32/icacls.exe'), [filename, '/grant', '*S-1-1-0:(R)'], { windowsHide: true });
+};
 
-async function fixture(t, extra = {}) {
-    const root = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), 'cocos4-preview-'));
+async function fixture(t, extra = {}, prefix = 'cocos4-preview-') {
+    const root = await fs.mkdtemp(path.join(await fs.realpath(tmpdir()), prefix));
+    if (windows) await enforceWindowsPrivate(root);
     const cleanup = [];
     t.after(async () => {
         for (const close of cleanup.reverse()) await close();
@@ -32,6 +44,7 @@ async function fixture(t, extra = {}) {
         variant: 'debug', entry: 'index.html', validationLevels: ['engine-build', 'game-typecheck'] };
     const artifactDirectory = path.join(root, `artifact-${metadata.artifactId}`);
     await fs.mkdir(artifactDirectory, { mode: 0o700 });
+    if (windows) await enforceWindowsPrivate(artifactDirectory);
     const payload = new Map(Object.entries({
         'index.html': '<!doctype html><script src="loader.js"></script><script src="boot.js"></script>',
         'loader.js': '/* Static loader bytes. Never evaluated by the server. */',
@@ -47,6 +60,14 @@ async function fixture(t, extra = {}) {
     for (const [name, bytes] of payload) {
         await fs.mkdir(path.dirname(path.join(artifactDirectory, name)), { recursive: true, mode: 0o700 });
         await fs.writeFile(path.join(artifactDirectory, name), bytes, { mode: 0o600 });
+        if (windows) {
+            let directory = path.dirname(path.join(artifactDirectory, name));
+            while (directory !== artifactDirectory) {
+                await enforceWindowsPrivate(directory);
+                directory = path.dirname(directory);
+            }
+            await enforceWindowsPrivate(path.join(artifactDirectory, name));
+        }
     }
     const inventory = { ...metadata, schemaVersion: 1,
         files: [...payload].map(([name, bytes]) => ({ path: name, bytes: bytes.length, sha256: digest(bytes) })) };
@@ -56,6 +77,7 @@ async function fixture(t, extra = {}) {
     const seal = async () => {
         const raw = Buffer.from(JSON.stringify(inventory));
         await fs.writeFile(inventoryFile, raw, { mode: 0o600 });
+        if (windows) await enforceWindowsPrivate(inventoryFile);
         artifact.sha256 = digest(raw);
     };
     await seal();
@@ -310,26 +332,27 @@ test('only the exact private regular-file tree is accepted: no symlinks, hardlin
         'private directory': env => fs.mkdir(path.join(env.artifactDirectory, '.git'), { mode: 0o700 }),
         'hard-linked payload': env => fs.link(path.join(env.artifactDirectory, 'index.html'), path.join(env.root, 'external-link')),
         'hard-linked inventory': env => fs.link(env.inventoryFile, path.join(env.root, 'inventory-link')),
-        'non-private file': env => fs.chmod(path.join(env.artifactDirectory, 'index.html'), 0o644),
-        'executable payload': env => fs.chmod(path.join(env.artifactDirectory, 'index.html'), 0o700),
-        'non-private directory': env => fs.chmod(path.join(env.artifactDirectory, 'assets'), 0o755),
-        'non-private root': env => fs.chmod(env.artifactDirectory, 0o755),
-        'non-private parent': env => fs.chmod(env.root, 0o755),
+        'non-private file': env => makePublic(path.join(env.artifactDirectory, 'index.html')),
+        ...(!windows ? { 'executable payload': env => fs.chmod(path.join(env.artifactDirectory, 'index.html'), 0o700) } : {}),
+        'non-private directory': env => makePublic(path.join(env.artifactDirectory, 'assets')),
+        'non-private root': env => makePublic(env.artifactDirectory),
+        'non-private parent': env => makePublic(env.root),
         'payload symlink': async env => {
             await fs.unlink(path.join(env.artifactDirectory, 'index.html'));
-            await fs.symlink('/etc/passwd', path.join(env.artifactDirectory, 'index.html'));
+            await fs.writeFile(path.join(env.root, 'secret'), 'PRIVATE_SENTINEL');
+            await linked(path.join(env.root, 'secret'), path.join(env.artifactDirectory, 'index.html'));
         },
         'inventory symlink': async env => {
             await fs.rename(env.inventoryFile, path.join(env.root, 'inventory'));
-            await fs.symlink(path.join(env.root, 'inventory'), env.inventoryFile);
+            await linked(path.join(env.root, 'inventory'), env.inventoryFile);
         },
         'directory symlink': async env => {
             await fs.rename(path.join(env.artifactDirectory, 'game'), path.join(env.root, 'moved-game'));
-            await fs.symlink(path.join(env.root, 'moved-game'), path.join(env.artifactDirectory, 'game'));
+            await linked(path.join(env.root, 'moved-game'), path.join(env.artifactDirectory, 'game'), true);
         },
         'root symlink': async env => {
             await fs.rename(env.artifactDirectory, path.join(env.root, 'moved-artifact'));
-            await fs.symlink(path.join(env.root, 'moved-artifact'), env.artifactDirectory);
+            await linked(path.join(env.root, 'moved-artifact'), env.artifactDirectory, true);
         },
     };
     for (const [name, change] of Object.entries(changes)) {
@@ -339,7 +362,7 @@ test('only the exact private regular-file tree is accepted: no symlinks, hardlin
             await assert.rejects(env.start(), code('ARTIFACT_INVALID'));
         });
     }
-    await t.test('Unix socket in place of a listed file', async t => {
+    await t.test('Unix socket in place of a listed file', { skip: windows ? 'Unix-domain filesystem socket and procfs are Linux-specific.' : false }, async t => {
         const env = await fixture(t);
         const filename = path.join(env.artifactDirectory, 'index.html');
         await fs.unlink(filename);
@@ -368,18 +391,18 @@ test('GET and HEAD recheck metadata and bytes; post-start mutation never leaks c
         'file symlink': async (env, filename) => {
             await fs.writeFile(path.join(env.root, 'secret'), 'PRIVATE_SENTINEL', { mode: 0o600 });
             await fs.unlink(filename);
-            await fs.symlink(path.join(env.root, 'secret'), filename);
+            await linked(path.join(env.root, 'secret'), filename);
         },
         'hard link': (env, filename) => fs.link(filename, path.join(env.root, 'outside')),
         'mode change': (_env, filename) => fs.chmod(filename, 0o400),
         'missing file': (_env, filename) => fs.unlink(filename),
         'renamed directory': async env => {
             await fs.rename(path.join(env.artifactDirectory, 'game'), path.join(env.root, 'game-old'));
-            await fs.symlink(path.join(env.root, 'game-old'), path.join(env.artifactDirectory, 'game'));
+            await linked(path.join(env.root, 'game-old'), path.join(env.artifactDirectory, 'game'), true);
         },
         'renamed root': async env => {
             await fs.rename(env.artifactDirectory, path.join(env.root, 'old-artifact'));
-            await fs.symlink(path.join(env.root, 'old-artifact'), env.artifactDirectory);
+            await linked(path.join(env.root, 'old-artifact'), env.artifactDirectory, true);
         },
     };
     for (const [name, change] of Object.entries(changes)) {
@@ -388,7 +411,25 @@ test('GET and HEAD recheck metadata and bytes; post-start mutation never leaks c
             const { preview } = await env.start();
             const route = new URL('game/main.js', preview.url).pathname;
             assert.equal((await request(preview, { path: route })).status, 200);
-            await change(env, path.join(env.artifactDirectory, 'game/main.js'));
+            if (windows && name === 'renamed root') {
+                // The native lease opens with data access so Windows share
+                // accounting denies replacement throughout the preview lifetime.
+                await assert.rejects(change(env, path.join(env.artifactDirectory, 'game/main.js')),
+                    error => ['EPERM', 'EACCES', 'EBUSY'].includes(error.code));
+                assert.equal((await request(preview, { path: route })).status, 200);
+                return;
+            }
+            const mutationDeadline = Date.now() + 3000;
+            for (;;) {
+                try { await change(env, path.join(env.artifactDirectory, 'game/main.js')); break; }
+                catch (error) {
+                    // The previous HTTP response can reach the client before its
+                    // Windows request leases finish closing. Only that bounded
+                    // sharing denial may be retried; other errors still fail.
+                    if (!windows || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || Date.now() >= mutationDeadline) throw error;
+                    await new Promise(resolve => setTimeout(resolve, 25));
+                }
+            }
             for (const method of ['GET', 'HEAD']) {
                 const result = await request(preview, { path: route, method });
                 assert.equal(result.status, 409);
@@ -398,18 +439,21 @@ test('GET and HEAD recheck metadata and bytes; post-start mutation never leaks c
     }
 });
 
-test('pinned no-follow opens reject an lstat/open symlink swap before reading', async t => {
+test('pinned opens reject an lstat/open symlink swap before reading', async t => {
     const env = await fixture(t);
+    await fs.writeFile(path.join(env.root, 'secret'), 'PRIVATE_SENTINEL', { mode: 0o600 });
     const original = promises.open;
     let swapped = false;
     promises.open = async (filename, flags, ...args) => {
-        if (filename.endsWith('/index.html')) {
-            assert.match(filename, /^\/proc\/self\/fd\/\d+\/index\.html$/);
-            assert.ok(flags & constants.O_NOFOLLOW);
-            assert.ok(flags & constants.O_NONBLOCK);
+        if (isPayloadOpen(filename)) {
+            if (!windows) {
+                assert.match(filename, /^\/proc\/self\/fd\/\d+\/index\.html$/);
+                assert.ok(flags & constants.O_NOFOLLOW);
+                assert.ok(flags & constants.O_NONBLOCK);
+            }
             swapped = true;
             await fs.unlink(path.join(env.artifactDirectory, 'index.html'));
-            await fs.symlink('/etc/passwd', path.join(env.artifactDirectory, 'index.html'));
+            await linked(path.join(env.root, 'secret'), path.join(env.artifactDirectory, 'index.html'));
         }
         return original(filename, flags, ...args);
     };
@@ -428,10 +472,16 @@ test('growth during startup or HTTP reads is bounded by the receipt, never readF
             const originalReadFile = promises.readFile;
             let totalRead = 0;
             let grew = false;
-            promises.readFile = () => { throw new Error('Unbounded readFile must not be used'); };
+            promises.readFile = (...args) => {
+                // Verifying the immutable Windows host helper is independent of
+                // mutable artifact reads, which must remain length-bounded.
+                if (typeof args[0] === 'string' && (args[0].startsWith(env.artifactDirectory)
+                    || (!windows && args[0].startsWith('/proc/self/fd/')))) throw new Error('Unbounded artifact readFile must not be used');
+                return originalReadFile(...args);
+            };
             promises.open = async (filename, flags, ...args) => {
                 const handle = await original(filename, flags, ...args);
-                if (filename.endsWith('/index.html') && (flags & constants.O_NOFOLLOW)) {
+                if (isPayloadOpen(filename) && typeof flags === 'number') {
                     const read = handle.read.bind(handle);
                     handle.read = async (...args) => {
                         const result = await read(...args);
@@ -483,7 +533,7 @@ test('input budgets, TTL bounds and authorized directory shape fail closed', asy
     await assert.rejects(env.start(), code('ARTIFACT_INVALID'));
 });
 
-test('declared directory growth is bounded before walking, and non-Linux hosts fail closed', async t => {
+test('declared directory growth is bounded before walking, and unsupported hosts fail closed', async t => {
     const env = await fixture(t);
     const platform = Object.getOwnPropertyDescriptor(process, 'platform');
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
@@ -504,7 +554,7 @@ test('HTTP rehashes the bytes read, not just stat metadata', async t => {
     let altered = 0;
     promises.open = async (...args) => {
         const handle = await original(...args);
-        if (args[0].endsWith('/index.html')) {
+        if (isPayloadOpen(args[0])) {
             const read = handle.read.bind(handle);
             handle.read = async (...args) => {
                 const result = await read(...args);
@@ -525,7 +575,7 @@ test('HTTP rehashes the bytes read, not just stat metadata', async t => {
     assert.equal(altered, 2);
 });
 
-test('concurrent file verification is capped at eight requests', { timeout: 10000 }, async t => {
+test('normal resource bursts wait while file verification stays capped at eight requests', { timeout: 15000 }, async t => {
     const env = await fixture(t);
     const { preview } = await env.start();
     const original = promises.open;
@@ -534,14 +584,18 @@ test('concurrent file verification is capped at eight requests', { timeout: 1000
     let ready;
     const full = new Promise(resolve => { ready = resolve; });
     let readers = 0;
+    let reading = 0;
+    let maximumReading = 0;
     promises.open = async (...args) => {
         const handle = await original(...args);
-        if (args[0].endsWith('/index.html')) {
+        if (isPayloadOpen(args[0])) {
             const read = handle.read.bind(handle);
             handle.read = async (...args) => {
                 if (args[3] === 0) {
                     if (++readers === 8) ready();
-                    await blocked;
+                    maximumReading = Math.max(maximumReading, ++reading);
+                    try { await blocked; }
+                    finally { reading--; }
                 }
                 return read(...args);
             };
@@ -551,15 +605,132 @@ test('concurrent file verification is capped at eight requests', { timeout: 1000
     syncBuiltinESMExports();
     const active = Array.from({ length: 8 }, () => request(preview));
     const results = Promise.all(active);
+    let queuedResults;
     try {
         await full;
-        assert.equal((await request(preview)).status, 503);
+        let finished = 0;
+        queuedResults = Promise.all(Array.from({ length: 24 }, () => request(preview).then(response => { finished++; return response; })));
+        await new Promise(resolve => setTimeout(resolve, 100));
+        assert.equal(finished, 0);
         assert.equal(readers, 8);
+        unblock();
+        for (const response of await queuedResults) assert.equal(response.status, 200);
+        assert.equal(readers, 32);
+        assert.equal(maximumReading, 8);
     } finally {
         unblock();
         promises.open = original;
         syncBuiltinESMExports();
         for (const response of await results) assert.equal(response.status, 200);
+        await queuedResults;
+    }
+});
+
+test('aggregate response buffers queue large GETs and retain FIFO order for HEAD', { timeout: 30000 }, async t => {
+    const env = await fixture(t, { 'index.html': Buffer.alloc(17 * 1024 * 1024, 120) });
+    const { preview } = await env.start();
+    const original = promises.open;
+    let unblock;
+    const blocked = new Promise(resolve => { unblock = resolve; });
+    let ready;
+    const full = new Promise(resolve => { ready = resolve; });
+    let readers = 0;
+    promises.open = async (...args) => {
+        const handle = await original(...args);
+        if (isPayloadOpen(args[0])) {
+            const read = handle.read.bind(handle);
+            handle.read = async (...args) => {
+                if (args[3] === 0) {
+                    if (++readers === 7) ready();
+                    await blocked;
+                }
+                return read(...args);
+            };
+        }
+        return handle;
+    };
+    syncBuiltinESMExports();
+    const active = Promise.all(Array.from({ length: 7 }, () => request(preview)));
+    let queued;
+    try {
+        await full;
+        let finished = 0;
+        queued = Promise.all(['GET', 'HEAD'].map(method => request(preview, { method }).then(response => { finished++; return response; })));
+        await new Promise(resolve => setTimeout(resolve, 100));
+        assert.equal(finished, 0);
+        assert.equal(readers, 7, 'The eighth large GET exceeds the buffer budget; HEAD waits behind it');
+        unblock();
+        const [get, head] = await queued;
+        assert.equal(get.status, 200);
+        assert.deepEqual(get.body, env.payload.get('index.html'));
+        assert.equal(head.status, 200);
+        assert.equal(head.body.length, 0);
+        assert.equal(readers, 9);
+    } finally {
+        unblock();
+        await active;
+        await queued;
+        promises.open = original;
+        syncBuiltinESMExports();
+    }
+});
+
+test('queued preview requests release their place on disconnect, expiry and server close', { timeout: 30000 }, async t => {
+    for (const mode of ['disconnect', 'expiry', 'close']) {
+        await t.test(mode, async t => {
+            const env = await fixture(t);
+            const service = await env.start();
+            const original = promises.open;
+            let unblock;
+            const blocked = new Promise(resolve => { unblock = resolve; });
+            let ready;
+            const full = new Promise(resolve => { ready = resolve; });
+            let readers = 0;
+            promises.open = async (...args) => {
+                const handle = await original(...args);
+                if (isPayloadOpen(args[0])) {
+                    const read = handle.read.bind(handle);
+                    handle.read = async (...args) => {
+                        if (args[3] === 0) {
+                            if (++readers === 8) ready();
+                            await blocked;
+                        }
+                        return read(...args);
+                    };
+                }
+                return handle;
+            };
+            syncBuiltinESMExports();
+            const active = Promise.all(Array.from({ length: 8 }, () => request(service.preview).catch(error => ({ error }))));
+            let closing;
+            try {
+                await full;
+                const socket = await idleSocket(env, service.preview);
+                const url = new URL(service.preview.url);
+                const disconnected = new Promise(resolve => socket.once('close', resolve));
+                socket.write(`GET ${url.pathname} HTTP/1.1\r\nHost: ${url.host}\r\n\r\n`);
+                await new Promise(resolve => setTimeout(resolve, 100));
+                assert.equal(readers, 8);
+                const began = Date.now();
+                if (mode === 'disconnect') socket.destroy();
+                if (mode === 'close') closing = service.close();
+                await disconnected;
+                assert.ok(Date.now() - began < 6500, 'Queued requests retain the five-second budget');
+                // Let the server observe the close before any reader can finish.
+                await new Promise(resolve => setTimeout(resolve, 50));
+                unblock();
+                await active;
+                await closing;
+                assert.equal(readers, 8, 'Cancelled requests must never open an artifact file');
+                if (mode !== 'close') assert.equal((await request(service.preview)).status, 200);
+            } finally {
+                unblock();
+                await active;
+                await closing;
+                promises.open = original;
+                syncBuiltinESMExports();
+            }
+        });
     }
 });
 
@@ -641,3 +812,39 @@ test('terminating the owning worker kills the real HTTP listener and established
     await assert.rejects(request(preview), error => error.code === 'ECONNREFUSED');
     assert.equal(output, '');
 });
+
+test('retained artifact parent paths support Unicode and spaces without URL or shell conversion', async t => {
+    const env = await fixture(t, {}, 'cocos4-preview-中文 space-');
+    const { preview } = await env.start();
+    const result = await request(preview, { path: new URL('game/main.js', preview.url).pathname });
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body, env.payload.get('game/main.js'));
+    if (windows) {
+        const service = await startPreview({ ...env.options(), artifactDirectory: env.artifactDirectory.toLowerCase() });
+        env.cleanup.push(() => service.close());
+        assert.deepEqual((await request(service.preview)).body, env.payload.get('index.html'));
+    }
+});
+
+test('explicit host Chromium loads retained files and runs browser input through the private loopback route',
+    { skip: !process.env.COCOS4_PREVIEW_BROWSER, timeout: 60000 }, async t => {
+        const env = await fixture(t, {
+            'index.html': '<!doctype html><meta charset="utf-8"><button id="advance">Advance</button><output id="count">0</output><canvas width="40" height="40"></canvas><script src="boot.js"></script>',
+            'boot.js': 'const canvas = document.querySelector("canvas"); const ctx = canvas.getContext("2d"); ctx.fillStyle = "rgb(24, 176, 96)"; ctx.fillRect(0, 0, 40, 40); document.querySelector("button").onclick = () => { document.querySelector("output").textContent = String(Number(document.querySelector("output").textContent) + 1); };',
+        }, 'cocos4-preview-浏览器 space-');
+        const { preview } = await env.start();
+        const require = createRequire(new URL('../runtime/package.json', import.meta.url));
+        const { chromium } = require('playwright-core');
+        const browser = await chromium.launch({ executablePath: process.env.COCOS4_PREVIEW_BROWSER, headless: true });
+        try {
+            const page = await browser.newPage();
+            const errors = [];
+            page.on('pageerror', error => errors.push(String(error)));
+            assert.equal((await page.goto(preview.url)).status(), 200);
+            await page.locator('#advance').click();
+            assert.equal(await page.locator('#count').textContent(), '1');
+            assert.deepEqual(await page.locator('canvas').evaluate(canvas => [...canvas.getContext('2d').getImageData(10, 10, 1, 1).data]), [24, 176, 96, 255]);
+            assert.deepEqual(errors, []);
+            t.diagnostic(`Real ${browser.version()} verified HTTP loading, relative JavaScript, canvas pixels and input. This is preview-server evidence, not engine or vendor-device rendering acceptance.`);
+        } finally { await browser.close(); }
+    });

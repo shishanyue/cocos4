@@ -155,9 +155,11 @@ and unsigned-integer code behind `CC_ENABLE_CLUSTERED_LIGHT_CULLING`; that code
 reaches the parser even when not enabled. Stripping directives also concatenates
 mutually exclusive expression branches into invalid syntax.
 
-Patch **`glsl1-conditional-validation`, version 1** is maintained only in
+Patch **`glsl1-conditional-validation`, version 2** is maintained only in
 `compiler-patch.cjs`, with its SHA-256 and resulting `shdc-lib.js` SHA-256 locked
 in `patch-lock.json`. `source-lock.json` retains every original upstream hash.
+Version 2 accepts the reviewed glslang banner with either LF or Windows CRLF;
+it still rejects different versions, extra banner text, warnings and errors.
 All source bytes are verified before loading/applying the patch, each replacement
 anchor must occur exactly once, and the complete patched output must match its
 locked digest. Repeated preparation is idempotent; tampered destinations fail

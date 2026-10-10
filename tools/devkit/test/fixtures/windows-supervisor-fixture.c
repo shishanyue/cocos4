@@ -81,7 +81,7 @@ int wmain(int argc, wchar_t **argv) {
         CloseHandle(handle);
         return ok ? 0 : 108;
     }
-    if (!wcscmp(argv[1], L"watch") && argc == 6) {
+    if ((!wcscmp(argv[1], L"watch") || !wcscmp(argv[1], L"watchHold")) && argc == 6) {
         HANDLE handle = pinned(argv[2], argv[3], PROCESS_TERMINATE);
         FILE *out = report(argv[4]);
         identity(out, handle, (DWORD)wcstoul(argv[2], NULL, 10)); fclose(out);
@@ -90,6 +90,7 @@ int wmain(int argc, wchar_t **argv) {
         out = report(argv[5]);
         fprintf(out, "{\"exited\":%s,\"exitCode\":%lu}\n", ok ? "true" : "false", (unsigned long)code); fclose(out);
         if (!ok) TerminateProcess(handle, 109);
+        if (!wcscmp(argv[1], L"watchHold")) Sleep(2000);
         CloseHandle(handle);
         return ok ? 0 : 109;
     }

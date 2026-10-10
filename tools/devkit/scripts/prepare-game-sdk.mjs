@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify, TextDecoder } from 'node:util';
 import { browserReportSchema, canonical, compilerClosureSchema, hash, loadSdk, minigameReportSchema, parseJson,
     runtimeDescriptorSchema, runtimeValidationLevels, sdkPathSchema, summarizeBrowserReport, validateMiniGameConfigs, validateMiniGameRuntime, validateCompilerClosure, validateRuntime, validateRuntimeScripts } from '../build/src/sdk.js';
-import { publishSdk } from './prepare-sdk.mjs';
+import { publishSdk, realDirectory } from './prepare-sdk.mjs';
 import { extractRuntimeExports, generateApiIndex } from '../build/src/api-index.js';
 import { builtinIdentity } from '../runtime/builtins.cjs';
 
@@ -26,7 +26,7 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
     runtimes = runtimes.map(item => {
         assert.ok(item && typeof item.runtime === 'string', 'Expected a runtime directory or runtime.json');
         assert.ok(Object.keys(item).every(key => ['runtime', 'browserReport', 'localReport'].includes(key)), 'Unknown runtime input option');
-        const runtime = item.runtime.endsWith('/runtime.json') ? path.dirname(item.runtime) : item.runtime;
+        const runtime = path.basename(item.runtime) === 'runtime.json' ? path.dirname(item.runtime) : item.runtime;
         return { ...item, runtime };
     });
     assert.ok(Array.isArray(browserReports) && Array.isArray(localReports), 'Expected ordered CLI report lists');
@@ -36,9 +36,16 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
         ...runtimes.flatMap(item => [item.runtime, ...[item.browserReport, item.localReport].filter(value => value !== undefined)])]) {
         assert.ok(typeof value === 'string' && path.isAbsolute(value) && path.resolve(value) === value && !value.includes('\0'), 'Expected canonical absolute paths');
     }
-    const parent = path.dirname(out);
-    assert.equal(await realpath(parent), parent, 'Output parent must be canonical');
-    assert.ok((await lstat(parent)).isDirectory());
+    const parent = await realDirectory(path.dirname(out));
+    out = path.join(parent, path.basename(out));
+    base = await realDirectory(base);
+    engineRoot = await realDirectory(engineRoot);
+    const reportPath = async value => value === undefined ? undefined : path.join(await realDirectory(path.dirname(value)), path.basename(value));
+    runtimes = await Promise.all(runtimes.map(async item => ({ ...item, runtime: await realDirectory(item.runtime),
+        ...(item.browserReport === undefined ? {} : { browserReport: await reportPath(item.browserReport) }),
+        ...(item.localReport === undefined ? {} : { localReport: await reportPath(item.localReport) }) })));
+    browserReports = await Promise.all(browserReports.map(reportPath));
+    localReports = await Promise.all(localReports.map(reportPath));
     const evidenceOut = `${out}.evidence`;
     const absent = async destination => {
         try { await lstat(destination); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
@@ -50,7 +57,7 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
     assert.equal(readonly.manifest.kind, 'readonly-development', '--base must be a validated readonly-development pack');
     const observed = new Map();
     const directory = async absolute => {
-        const stat = await lstat(absolute);
+        const stat = await lstat(absolute, { bigint: true });
         assert.ok(stat.isDirectory() && await realpath(absolute) === absolute, `Unsafe directory: ${absolute}`);
         observed.set(absolute, stat);
     };
@@ -58,24 +65,26 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
         sdkPathSchema.parse(relative);
         const absolute = path.join(root, relative);
         assert.equal(await realpath(absolute), absolute, `Source symlinks are not allowed: ${relative}`);
-        const before = await lstat(absolute);
-        assert.ok(before.isFile() && before.nlink === 1 && before.size <= maximum, `Invalid source file: ${relative}`);
+        const before = await lstat(absolute, { bigint: true });
+        assert.ok(before.isFile() && before.nlink === 1n && before.size <= maximum, `Invalid source file: ${relative}`);
         const previous = observed.get(absolute);
         assert.ok(!previous || (previous.dev === before.dev && previous.ino === before.ino && previous.size === before.size
-            && previous.mtimeMs === before.mtimeMs && previous.ctimeMs === before.ctimeMs), `Source changed between reads: ${relative}`);
+            && previous.mtimeNs === before.mtimeNs && previous.ctimeNs === before.ctimeNs), `Source changed between reads: ${relative}`);
         const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         try {
-            const stat = await handle.stat();
-            assert.ok(stat.dev === before.dev && stat.ino === before.ino && stat.size === before.size, `Source replaced: ${relative}`);
-            const bytes = Buffer.alloc(stat.size + 1);
+            const stat = await handle.stat({ bigint: true });
+            assert.ok(stat.isFile() && stat.nlink === 1n && stat.dev === before.dev && stat.ino === before.ino && stat.size === before.size,
+                `Source replaced: ${relative}`);
+            const bytes = Buffer.alloc(Number(stat.size) + 1);
             let offset = 0;
             while (offset < bytes.length) {
                 const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, null);
                 if (!bytesRead) break;
                 offset += bytesRead;
             }
-            const after = await handle.stat();
-            assert.ok(offset === stat.size && after.size === stat.size && after.mtimeMs === stat.mtimeMs && after.ctimeMs === stat.ctimeMs,
+            const after = await handle.stat({ bigint: true });
+            assert.ok(BigInt(offset) === stat.size && after.nlink === 1n && after.size === stat.size
+                && after.mtimeNs === stat.mtimeNs && after.ctimeNs === stat.ctimeNs,
                 `Source changed: ${relative}`);
             observed.set(absolute, stat);
             return bytes.subarray(0, offset);
@@ -277,7 +286,9 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
                 const { compileGame } = require(${JSON.stringify(path.join(toolchainRoot, 'compiler/compile-game.cjs'))});
                 compileGame(${JSON.stringify({ toolchainDirectory: toolchainRoot, projectDirectory, typesDirectory, outDirectory, availableCCExports: [...names], variant: profile.variant })})
                     .then(result => console.log(JSON.stringify(result))).catch(error => { console.error(error); process.exitCode = 1; });
-            `], { cwd: checks, env: { PATH: '', HOME: checks, LANG: 'C', LC_ALL: 'C' }, timeout: 120000, maxBuffer: 1024 * 1024 });
+            `], { cwd: checks, env: { PATH: '', HOME: checks, LANG: 'C', LC_ALL: 'C',
+                ...(process.platform === 'win32' ? { SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' } : {}) },
+                windowsHide: true, timeout: 120000, maxBuffer: 1024 * 1024 });
             const compiled = JSON.parse(stdout);
             assert.equal(compiled.typeChecked, true);
             assert.equal(compiled.profileChecked, true);
@@ -329,10 +340,14 @@ export async function prepareGameSdk({ base, runtimes, out, engineRoot = engineD
         // Staged source files were read for static inspection; only external inputs
         // must remain unchanged while new entries are added to staging.
         for (const [absolute, before] of observed) {
-            if (absolute.startsWith(`${staging}/`) || absolute.startsWith(`${checks}/`)) continue;
-            const after = await lstat(absolute);
+            if ([staging, checks].some(root => {
+                const relative = path.relative(root, absolute);
+                return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+            })) continue;
+            const after = await lstat(absolute, { bigint: true });
             assert.ok(after.dev === before.dev && after.ino === before.ino && after.size === before.size
-                && after.mtimeMs === before.mtimeMs && after.ctimeMs === before.ctimeMs && await realpath(absolute) === absolute,
+                && after.nlink === before.nlink && after.mtimeNs === before.mtimeNs && after.ctimeNs === before.ctimeNs
+                && await realpath(absolute) === absolute,
             `Input changed while preparing SDK: ${absolute}`);
         }
         await loadSdk(staging);

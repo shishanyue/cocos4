@@ -4,11 +4,14 @@ import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import * as fs from 'node:fs/promises';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 const devkit = fileURLToPath(new URL('../', import.meta.url));
 const build = path.resolve(process.env.AI_TEST_BUILD_ROOT ?? path.join(devkit, 'build'));
@@ -20,28 +23,51 @@ const { makeOpenCodeConfig, validateOpenCodeConfig, opencodeSupport, bundledSkil
     await import(pathToFileURL(path.join(build, 'src/ai-config.js')).href);
 const { opencodeSchema } = await import(pathToFileURL(path.join(build, 'src/ai-opencode-schema.js')).href);
 const hash = value => createHash('sha256').update(value).digest('hex');
+const execute = promisify(execFile);
+const windows = process.platform === 'win32';
+const { enforceWindowsPrivate, enforceWindowsReadOnly, verifyWindowsTrust } = windows
+    ? await import(pathToFileURL(path.join(build, 'src/windows-fs.js')).href) : {};
+const hostPath = value => windows ? path.win32.join('C:\\', ...value.split('/').filter(Boolean)) : value;
 const absent = name => assert.rejects(fs.lstat(name), { code: 'ENOENT' });
-const baseArgs = ['--client', 'opencode', '--executable', '/trusted/opencode', '--workspace', '/games',
-    '--sdk-root', '/sdk', '--state-root', '/state'];
+const baseArgs = ['--client', 'opencode', '--executable', hostPath('/trusted/opencode'), '--workspace', hostPath('/games'),
+    '--sdk-root', hostPath('/sdk'), '--state-root', hostPath('/state')];
+let fakeClient;
 
 async function fixture(t) {
-    const root = await fs.mkdtemp('/tmp/opencode/cocos4-ai-');
+    // The configured task TEMP keeps fixtures independent of user client config
+    // and on the selected workspace volume; never create a drive-root fixture.
+    const root = await fs.mkdtemp(windows ? path.join(await fs.realpath(tmpdir()), 'cocos4-ai-') : '/tmp/opencode/cocos4-ai-');
+    if (windows) await enforceWindowsPrivate(root);
     const workspace = path.join(root, 'workspace with spaces \u6e38\u620f');
     const home = path.join(root, 'home');
     await fs.mkdir(workspace, { mode: 0o700 });
     await fs.mkdir(home, { mode: 0o700 });
-    const executable = path.join(root, 'fake opencode');
-    await fs.writeFile(executable, `#!${process.execPath}\n`
-        + await fs.readFile(new URL('./fixtures/ai/fake-opencode.cjs', import.meta.url), 'utf8'), { mode: 0o700 });
+    const executable = path.join(root, `fake opencode${windows ? '.exe' : ''}`);
+    const clientSource = await fs.readFile(new URL('./fixtures/ai/fake-opencode.cjs', import.meta.url), 'utf8');
+    if (windows) {
+        await enforceWindowsPrivate(workspace); await enforceWindowsPrivate(home);
+        fakeClient ??= (async () => {
+            const { compileWindowsSource, detectWindowsCompiler } = await import('../scripts/build-supervisor-win32.mjs');
+            const out = path.join(root, 'compiled-fake.exe');
+            await compileWindowsSource({ compiler: await detectWindowsCompiler(),
+                source: fileURLToPath(new URL('./fixtures/ai/fake-opencode-win32.c', import.meta.url)), output: out, reproducible: true });
+            return fs.readFile(out);
+        })();
+        await fs.writeFile(executable, await fakeClient);
+        await fs.writeFile(`${executable}.cjs`, clientSource);
+        await fs.writeFile(`${executable}.node`, process.execPath);
+    } else await fs.writeFile(executable, `#!${process.execPath}\n${clientSource}`, { mode: 0o700 });
     await fs.writeFile(`${executable}.version`, `${opencodeSupport.version}\n`);
     await fs.writeFile(`${executable}.scenario`, '0');
     const options = { client: 'opencode', executable, workspace, sdkRoot, stateRoot: path.join(root, 'state'), mode: 'read-only', preview: false };
     const env = { HOME: home, PATH: '/usr/bin:/bin', LANG: 'C.UTF-8',
+        ...(windows ? { USERPROFILE: home, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR,
+            ProgramData: path.join(root, 'managed') } : {}),
         ANTHROPIC_API_KEY: 'test-only-not-a-credential', COCOS4_TEST_PROVIDER_TOKEN: 'test-only-custom-provider' };
     const cleanup = [];
     t.after(async () => {
         for (const close of cleanup.reverse()) await close();
-        await fs.rm(root, { recursive: true, force: true });
+        await fs.rm(root, { recursive: true, force: true, maxRetries: windows ? 10 : 0, retryDelay: 100 });
     });
     return { root, options, env, cleanup, executable, workspace, home,
         args: ['ai', '--client', 'opencode', '--executable', executable, '--workspace', workspace,
@@ -63,14 +89,14 @@ function run(command, args, options = {}) {
 }
 
 test('ai accepts only explicit roots/executable and fixed startup permissions', () => {
-    assert.deepEqual(parseAiArgs(baseArgs), { client: 'opencode', executable: '/trusted/opencode',
-        workspace: '/games', sdkRoot: '/sdk', stateRoot: '/state', mode: 'read-only', preview: false });
+    assert.deepEqual(parseAiArgs(baseArgs), { client: 'opencode', executable: hostPath('/trusted/opencode'),
+        workspace: hostPath('/games'), sdkRoot: hostPath('/sdk'), stateRoot: hostPath('/state'), mode: 'read-only', preview: false });
     assert.equal(parseAiArgs([...baseArgs, '--mode', 'develop', '--preview', 'true']).preview, true);
     for (const args of [[], baseArgs.slice(0, -2), [...baseArgs, '--', '--model'], [...baseArgs, '--prompt', 'hi'],
         [...baseArgs, '--execute-tests', 'true'], [...baseArgs, '--client', 'opencode'], [...baseArgs, '--preview', 'true'],
         [...baseArgs, '--mode', 'maintainer'], [...baseArgs, '--preview', 'yes'], [...baseArgs, '--mode'],
-        baseArgs.map(value => value === '/trusted/opencode' ? 'opencode' : value),
-        baseArgs.map(value => value === '/games' ? '/games/{env:SECRET}' : value),
+        baseArgs.map(value => value === hostPath('/trusted/opencode') ? 'opencode' : value),
+        baseArgs.map(value => value === hostPath('/games') ? hostPath('/games/{env:SECRET}') : value),
         baseArgs.map(value => value === 'opencode' ? 'another-client' : value)]) assert.throws(() => parseAiArgs(args));
 });
 
@@ -86,7 +112,7 @@ test('generated config is validated offline against the frozen official 2020-12 
     assert.equal(config.mcp.cocos4.type, 'local');
     assert.deepEqual(config.mcp.cocos4.command, ['/kit/app/host/cocos4-mcp-launch', 'cocos4-mcp-launch-v1',
         '--node', '/runtime/node', '--cli', '/kit/app/src/cli.js', '--session', '/state/session',
-        '--sdk-root', '/sdk', '--workspace', '/games', '--state-root', '/state', '--mode', 'read-only', '--preview', 'false']);
+        '--sdk-root', hostPath('/sdk'), '--workspace', hostPath('/games'), '--state-root', hostPath('/state'), '--mode', 'read-only', '--preview', 'false']);
     assert.deepEqual(config.skills, { paths: ['/kit/skills'] });
     for (const mutate of [
         value => { value.mcp.cocos4.command = 'node cli.js mcp'; },
@@ -145,7 +171,7 @@ test('environment conflicts reject by name without printing values; provider env
     assert.equal(env.HOME, f.home);
     for (const key of ['ANTHROPIC_API_KEY', 'COCOS4_TEST_PROVIDER_TOKEN', 'OPENCODE_API_KEY']) assert.equal(env[key], source[key]);
     for (const key of ['NODE_OPTIONS', 'NODE_PATH', 'LD_PRELOAD', 'npm_config_registry', 'OTEL_EXPORTER_OTLP_ENDPOINT', 'GIT_WORK_TREE', 'GIT_CONFIG_COUNT']) assert.equal(env[key], undefined);
-    assert.equal(env.GIT_DIR, '/private/session/no-git');
+    assert.equal(env.GIT_DIR, path.join('/private/session', 'no-git'));
     assert.equal(env.OPENCODE_DISABLE_MODELS_FETCH, '1');
     assert.equal(env.npm_config_offline, 'true');
 });
@@ -188,11 +214,13 @@ test('startup validates roots before launching, without changing existing state 
     await assert.rejects(prepareOpenCode({ ...f.options, stateRoot: f.workspace }, f.env), { code: 'PERMISSION_DENIED' });
     await assert.rejects(prepareOpenCode({ ...f.options, executable: path.join(f.root, 'absent') }, f.env), { code: 'INVALID_ARGUMENTS' });
     await fs.mkdir(f.options.stateRoot, { mode: 0o755 });
+    if (windows) await execute(path.join(process.env.SystemRoot, 'System32/icacls.exe'),
+        [f.options.stateRoot, '/grant', '*S-1-1-0:(R)'], { windowsHide: true });
     await assert.rejects(prepareOpenCode(f.options, f.env), { code: 'PERMISSION_DENIED' });
-    assert.equal((await fs.stat(f.options.stateRoot)).mode & 0o777, 0o755);
+    if (!windows) assert.equal((await fs.stat(f.options.stateRoot)).mode & 0o777, 0o755);
     await fs.rmdir(f.options.stateRoot);
-    await fs.symlink(f.home, f.options.stateRoot);
-    await assert.rejects(prepareOpenCode(f.options, f.env), { code: 'PERMISSION_DENIED' });
+    await fs.symlink(f.home, f.options.stateRoot, windows ? 'junction' : 'dir');
+    await assert.rejects(prepareOpenCode(f.options, f.env), { code: windows ? 'PATH_OUTSIDE_WORKSPACE' : 'PERMISSION_DENIED' });
     await absent(`${f.executable}.probe`);
 });
 
@@ -211,15 +239,22 @@ test('private config, source-independent paths, auth separation, SDK binding and
     assert.match(prepared.sdkId, /^sha256-[a-f0-9]{64}$/);
     assert.deepEqual(prepared.ignoredConfigs, [globalFile]);
     assert.deepEqual(f.env, source);
-    assert.equal((await fs.stat(prepared.session)).mode & 0o777, 0o700);
-    assert.equal((await fs.stat(prepared.configFile)).mode & 0o777, 0o400);
-    assert.equal((await fs.stat(path.dirname(prepared.configFile))).mode & 0o777, 0o500);
     const toolFile = path.join(path.dirname(prepared.configFile), 'tools/cocos4.js');
-    assert.equal((await fs.stat(path.dirname(toolFile))).mode & 0o777, 0o500);
-    assert.equal((await fs.stat(toolFile)).mode & 0o777, 0o400);
+    if (windows) {
+        for (const file of [prepared.session, prepared.configFile, path.dirname(prepared.configFile), path.dirname(toolFile), toolFile]) {
+            await verifyWindowsTrust(file, true);
+        }
+        await assert.rejects(fs.writeFile(toolFile, 'unauthorized replacement'), { code: 'EPERM' });
+    } else {
+        assert.equal((await fs.stat(prepared.session)).mode & 0o777, 0o700);
+        assert.equal((await fs.stat(prepared.configFile)).mode & 0o777, 0o400);
+        assert.equal((await fs.stat(path.dirname(prepared.configFile))).mode & 0o777, 0o500);
+        assert.equal((await fs.stat(path.dirname(toolFile))).mode & 0o777, 0o500);
+        assert.equal((await fs.stat(toolFile)).mode & 0o777, 0o400);
+    }
     assert.match(await fs.readFile(toolFile, 'utf8'), /createFileTools/);
     assert.doesNotMatch(await fs.readFile(toolFile, 'utf8'), /@opencode-ai\/plugin|test-only/);
-    await assert.rejects(fs.access(path.dirname(prepared.configFile), 2), { code: 'EACCES' });
+    if (!windows) await assert.rejects(fs.access(path.dirname(prepared.configFile), 2), { code: 'EACCES' });
     const configText = await fs.readFile(prepared.configFile, 'utf8');
     assert.equal(configText.includes('test-only-not-a-credential'), false);
     assert.equal(configText.includes('do-not-copy-test-value'), false);
@@ -228,7 +263,7 @@ test('private config, source-independent paths, auth separation, SDK binding and
     assert.equal(await fs.readFile(globalFile, 'utf8'), contents);
     assert.equal((await fs.stat(globalFile)).mtimeMs, before.mtimeMs);
     const command = prepared.config.mcp.cocos4.command;
-    assert.deepEqual(command, [path.join(build, 'host/cocos4-mcp-launch'), 'cocos4-mcp-launch-v1',
+    assert.deepEqual(command, [path.join(build, `host/cocos4-mcp-launch${windows ? '.exe' : ''}`), 'cocos4-mcp-launch-v1',
         '--node', await fs.realpath(process.execPath), '--cli', cli, '--session', prepared.session,
         '--sdk-root', sdkRoot, '--workspace', f.workspace, '--state-root', f.options.stateRoot,
         '--mode', 'read-only', '--preview', 'false']);
@@ -266,12 +301,13 @@ test('startup rejects missing, unsafe or non-static shipped helpers and checks i
     const app = path.join(kit, 'app');
     await fs.cp(path.join(build, 'src'), path.join(app, 'src'), { recursive: true, errorOnExist: true, force: false });
     await fs.writeFile(path.join(kit, 'package.json'), '{"type":"module"}\n', { flag: 'wx' });
-    await fs.symlink(path.join(path.dirname(build), 'node_modules'), path.join(kit, 'node_modules'));
+    await fs.symlink(path.join(path.dirname(build), 'node_modules'), path.join(kit, 'node_modules'), windows ? 'junction' : 'dir');
     await fs.cp(path.join(path.dirname(build), 'skills'), path.join(kit, 'skills'), { recursive: true, errorOnExist: true, force: false });
     await fs.mkdir(path.join(app, 'host'));
-    const helper = path.join(app, 'host/cocos4-mcp-launch');
-    const binary = await fs.readFile(path.join(build, 'host/cocos4-mcp-launch'));
-    const metadata = await fs.readFile(path.join(build, 'host/cocos4-mcp-launch.build.json'));
+    if (windows) for (const name of ['cocos4-fs.exe', 'fs.json']) await fs.copyFile(path.join(build, 'host', name), path.join(app, 'host', name));
+    const helper = path.join(app, `host/cocos4-mcp-launch${windows ? '.exe' : ''}`);
+    const binary = await fs.readFile(path.join(build, `host/cocos4-mcp-launch${windows ? '.exe' : ''}`));
+    const metadata = await fs.readFile(`${path.join(build, `host/cocos4-mcp-launch${windows ? '.exe' : ''}`)}.build.json`);
     const { prepareOpenCode: prepare } = await import(pathToFileURL(path.join(app, 'src/ai.js')).href);
     const refused = async () => {
         await assert.rejects(prepare(f.options, f.env), { code: 'SDK_INCOMPLETE' });
@@ -288,24 +324,33 @@ test('startup rejects missing, unsafe or non-static shipped helpers and checks i
         await fs.writeFile(`${helper}.build.json`, JSON.stringify(report)); await refused();
     }
     await fs.writeFile(`${helper}.build.json`, metadata);
-    for (const mode of [0o644, 0o777, 0o4755]) { await fs.chmod(helper, mode); await refused(); }
-    await fs.chmod(helper, 0o755);
+    if (windows) {
+        await execute(path.join(process.env.SystemRoot, 'System32/icacls.exe'), [helper, '/grant', '*S-1-1-0:(M)'], { windowsHide: true });
+        await refused(); await enforceWindowsPrivate(helper);
+    } else {
+        for (const mode of [0o644, 0o777, 0o4755]) { await fs.chmod(helper, mode); await refused(); }
+        await fs.chmod(helper, 0o755);
+    }
     await fs.link(helper, `${helper}.alias`); await refused(); await fs.unlink(`${helper}.alias`);
     await fs.rename(helper, `${helper}.saved`);
     await fs.symlink(`${helper}.saved`, helper); await refused(); await fs.unlink(helper);
     await fs.rename(`${helper}.saved`, helper);
     for (const kind of [2, 3]) {
         const changed = Buffer.from(binary);
-        changed.writeUInt32LE(kind, Number(changed.readBigUInt64LE(32)));
+        if (windows) {
+            const optional = changed.readUInt32LE(0x3c) + 24;
+            if (kind === 2) changed.writeUInt16LE(0x10b, optional);
+            else changed.writeUInt16LE(0, optional + 70);
+        } else changed.writeUInt32LE(kind, Number(changed.readBigUInt64LE(32)));
         await fs.writeFile(helper, changed);
         await fs.writeFile(`${helper}.build.json`, JSON.stringify({ ...JSON.parse(metadata), binarySha256: hash(changed) }));
         await refused();
     }
     await fs.writeFile(helper, binary); await fs.writeFile(`${helper}.build.json`, metadata);
-    await fs.chmod(helper, 0o555); await fs.chmod(`${helper}.build.json`, 0o444);
+    if (!windows) { await fs.chmod(helper, 0o555); await fs.chmod(`${helper}.build.json`, 0o444); }
     const prepared = await prepare(f.options, f.env);
     f.cleanup.push(prepared.cleanup);
-    await fs.chmod(helper, 0o755);
+    if (!windows) await fs.chmod(helper, 0o755);
     await fs.appendFile(helper, '\0');
     await assert.rejects(prepared.verifyExecutable(), { code: 'INPUT_CHANGED' });
 });
@@ -332,7 +377,8 @@ test('ai CLI launches only the fixed no-argument client and propagates exit stat
     assert.deepEqual(await fs.readdir(f.workspace), []);
 });
 
-test('handled termination forwards to the client and removes only the owned temporary config', async t => {
+test('handled termination forwards to the client and removes only the owned temporary config',
+    { skip: windows ? 'Windows SIGTERM forcibly terminates Node; Windows MCP Job ownership is tested separately.' : false }, async t => {
     const f = await fixture(t);
     await fs.writeFile(`${f.executable}.scenario`, 'wait');
     const pending = run(process.execPath, [cli, ...f.args], { env: f.env, cwd: f.root });
@@ -346,7 +392,8 @@ test('handled termination forwards to the client and removes only the owned temp
     assert.deepEqual(await fs.readdir(f.options.stateRoot), []);
 });
 
-test('termination during version probing also cleans the private config without launching a client session', async t => {
+test('termination during version probing also cleans the private config without launching a client session',
+    { skip: windows ? 'Windows SIGTERM forcibly terminates Node; Windows MCP Job ownership is tested separately.' : false }, async t => {
     const f = await fixture(t);
     await fs.writeFile(`${f.executable}.version`, 'wait');
     const pending = run(process.execPath, [cli, ...f.args], { env: f.env, cwd: f.root });
@@ -380,14 +427,16 @@ test('official SDK client discovers read-only tools through the exact isolated M
         '--proc', '/proc', '--dev', '/dev', '--ro-bind', kit, kit, '--ro-bind', modules, modules,
         '--ro-bind', sdkRoot, sdkRoot, '--bind', f.root, f.root,
         '--ro-bind', await fs.realpath(process.execPath), await fs.realpath(process.execPath)];
-    const startup = await run('/usr/bin/bwrap', [...mounts, '--', process.execPath, cli, ...f.args], { env: f.env, cwd: f.workspace }).done;
+    const startup = windows
+        ? await run(process.execPath, [cli, ...f.args], { env: f.env, cwd: f.workspace }).done
+        : await run('/usr/bin/bwrap', [...mounts, '--', process.execPath, cli, ...f.args], { env: f.env, cwd: f.workspace }).done;
     assert.equal(startup.code, 0, startup.stderr);
     assert.equal(JSON.parse(startup.stdout).agent, 'cocos4');
     const namespace = [...mounts,
         '--setenv', 'NODE_OPTIONS', `--require=${preload}`, '--setenv', 'ANTHROPIC_API_KEY', f.env.ANTHROPIC_API_KEY,
         '--', ...command];
-    const transport = new StdioClientTransport({ command: '/usr/bin/bwrap', args: namespace, cwd: f.workspace,
-        env: { HOME: f.home, PATH: '', LANG: 'C.UTF-8' }, stderr: 'pipe' });
+    const transport = new StdioClientTransport({ command: windows ? command[0] : '/usr/bin/bwrap', args: windows ? command.slice(1) : namespace, cwd: f.workspace,
+        env: windows ? { ...f.env, NODE_OPTIONS: `--require=${preload}` } : { HOME: f.home, PATH: '', LANG: 'C.UTF-8' }, stderr: 'pipe' });
     let stderr = '';
     transport.stderr.on('data', bytes => { stderr += bytes; });
     const client = new Client({ name: 'cocos4-ai-deterministic-test', version: '1.0.0' });
@@ -422,6 +471,6 @@ test('official SDK client discovers read-only tools through the exact isolated M
     if (process.env.AI_TEST_EVIDENCE_ROOT) await fs.writeFile(path.join(process.env.AI_TEST_EVIDENCE_ROOT, 'stdio-evidence.json'),
         `${JSON.stringify({ sdkId: prepared.sdkId, client: client.getServerVersion(), tools: tools.map(tool => tool.name),
             catalog: catalog.structuredContent, docs: docs.structuredContent, document: document.structuredContent,
-            command, namespace, startupWithoutHostEnv: startup, hostEnvUnavailable: true, preloadExecuted: false, exitCode: 0, stderr,
+            command, namespace: windows ? null : namespace, startupWithoutHostEnv: startup, hostEnvUnavailable: !windows, preloadExecuted: false, exitCode: 0, stderr,
             modelGameplayDemonstration: false }, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
 });

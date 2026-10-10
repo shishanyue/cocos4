@@ -21,6 +21,10 @@ async function main() {
         break;
     case 'loader':
         await require(options.loader).build(options.buildOptions);
+        // TypeScript's host-default newline otherwise changes the reviewed
+        // loader bytes on Windows even though the emitted program is identical.
+        await fs.writeFile(options.buildOptions.out,
+            (await fs.readFile(options.buildOptions.out, 'utf8')).replace(/\r\n/g, '\n'));
         break;
     default:
         throw new Error('Unknown runtime build stage');

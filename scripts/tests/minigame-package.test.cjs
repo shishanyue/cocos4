@@ -272,6 +272,23 @@ test('hardlinks, including links to files outside the package, are rejected', t 
 test('special files are rejected before attempting to read them', async t => {
     const f = fixture(t);
     const filename = path.join(f.root, 'game.json');
+    if (process.platform === 'win32') {
+        // Windows named pipes are not directory entries. Exercise the same
+        // traversal boundary with a non-file stat and forbid opening its data.
+        const lstat = fs.lstatSync;
+        const open = fs.openSync;
+        t.mock.method(fs, 'lstatSync', function (file, ...args) {
+            const stat = lstat.call(this, file, ...args);
+            if (file === filename) stat.isFile = () => false;
+            return stat;
+        });
+        t.mock.method(fs, 'openSync', function (file, ...args) {
+            assert.notEqual(file, filename, 'Special files must never be opened');
+            return open.call(this, file, ...args);
+        });
+        assert.throws(f.validate, /Expected a regular file/);
+        return;
+    }
     fs.unlinkSync(filename);
     const server = net.createServer();
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(filename, resolve); });
@@ -281,13 +298,39 @@ test('special files are rejected before attempting to read them', async t => {
 
 test('cross-platform traversal spellings and ambiguous output names are rejected', t => {
     const f = fixture(t);
-    for (const name of ['..\\escape.js', 'C:escape.js', '%2e%2e%2fescape.js', 'trailing.', 'trailing ', 'NUL.txt', 'control\n.txt', 'Game.js']) {
-        f.put(name, '// not a safe name\n');
-        assert.throws(f.validate, /Unsafe output path|Ambiguous output path/, name);
-        fs.unlinkSync(path.join(f.root, name));
+    let injectedName;
+    if (process.platform === 'win32') {
+        // Windows normalizes these names or forbids creating them. Supply an
+        // exact directory entry so the validator, rather than the OS, rejects
+        // each spelling. POSIX also verifies real entries below.
+        const opendir = fs.opendirSync;
+        t.mock.method(fs, 'opendirSync', function (directory, ...args) {
+            const handle = opendir.call(this, directory, ...args);
+            if (directory !== f.root) return handle;
+            let pending = true;
+            return {
+                readSync() {
+                    const entry = handle.readSync();
+                    if (entry || !pending) return entry;
+                    pending = false;
+                    return { name: injectedName };
+                },
+                closeSync() { handle.closeSync(); },
+            };
+        });
     }
-    fs.mkdirSync(path.join(f.root, 'COCOS-JS'));
-    assert.throws(f.validate, /Ambiguous output path/);
+    for (const name of ['..\\escape.js', 'C:escape.js', '%2e%2e%2fescape.js', 'trailing.', 'trailing ', 'NUL.txt', 'control\n.txt', 'Game.js', 'COCOS-JS']) {
+        injectedName = name;
+        if (process.platform !== 'win32') {
+            if (name === 'COCOS-JS') fs.mkdirSync(path.join(f.root, name));
+            else f.put(name, '// not a safe name\n');
+        }
+        assert.throws(f.validate, /Unsafe output path|Ambiguous output path/, name);
+        if (process.platform !== 'win32') {
+            if (name === 'COCOS-JS') fs.rmdirSync(path.join(f.root, name));
+            else fs.unlinkSync(path.join(f.root, name));
+        }
+    }
 });
 
 test('directory depth is bounded even for empty trees', t => {

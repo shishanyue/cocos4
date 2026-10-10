@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { lstat, mkdir, mkdtemp, open, realpath, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify, TextDecoder } from 'node:util';
@@ -18,15 +18,36 @@ function canonical(value) {
     return JSON.stringify(value);
 }
 
-// Maintainer-only: GNU mv's renameatu (including coreutils 9.4+) has a
-// check-then-rename fallback. Call libc directly so unsupported NOREPLACE
-// fails closed. Python is a host helper, not a generated pack dependency.
-export async function publishSdk(staging, out) {
-    if (process.platform !== 'linux') throw new Error('Atomic preparation requires Linux and /usr/bin/python3 with libc renameat2.');
+// Windows TEMP often uses an 8.3 spelling. Resolve it only after rejecting every
+// symlink/junction in the supplied chain; canonicalization must not hide links.
+export async function realDirectory(absolute) {
+    if (typeof absolute !== 'string' || !path.isAbsolute(absolute) || path.resolve(absolute) !== absolute || absolute.includes('\0')) {
+        throw new Error('Expected an absolute directory path.');
+    }
+    for (let current = absolute;; current = path.dirname(current)) {
+        const stat = await lstat(current);
+        if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Directory symlinks and junctions are not allowed.');
+        if (current === path.dirname(current)) break;
+    }
+    const resolved = await realpath(absolute);
+    if (process.platform !== 'win32' && resolved !== absolute) throw new Error('Directory must be canonical.');
+    return resolved;
+}
+
+// Maintainer-only: both backends provide kernel no-replace directory renames.
+// Do not substitute fs.rename/MoveFileEx or a check-then-rename fallback.
+// These host helpers are preparation tools, not generated SDK dependencies.
+export async function publishSdk(staging, out, { publisher } = {}) {
     if (!path.isAbsolute(staging) || !path.isAbsolute(out) || path.resolve(staging) !== staging
         || path.resolve(out) !== out || path.dirname(staging) !== path.dirname(out)) {
         throw new Error('Atomic publication requires absolute sibling staging and output directories.');
     }
+    if (process.platform === 'win32') {
+        const parent = await realDirectory(path.dirname(out));
+        return publishWindowsSdk(path.join(parent, path.basename(staging)), path.join(parent, path.basename(out)), publisher);
+    }
+    if (publisher !== undefined) throw new Error('An explicit publisher is supported only for Windows preparation.');
+    if (process.platform !== 'linux') throw new Error('Atomic preparation requires a qualified Windows x64 publisher or Linux with libc renameat2.');
     await run('/usr/bin/python3', ['-I', '-S', '-X', 'utf8', '-c', `
 import ctypes, errno, os, sys
 try:
@@ -49,6 +70,70 @@ finally:
 `, staging, out], { env: { PATH: '/usr/bin:/bin', LANG: 'C', LC_ALL: 'C' }, maxBuffer: 8192 });
 }
 
+async function publishWindowsSdk(staging, out, publisher) {
+    if (process.arch !== 'x64') throw new Error('ATOMIC_PUBLISH_UNAVAILABLE: Windows SDK preparation requires the qualified x64 publisher.');
+    // A copied maintainer tool can itself be launched through Windows TEMP's
+    // 8.3 alias. Expand that directory before comparing its pinned files.
+    const devkit = await realDirectory(fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]$/, ''));
+    const executable = publisher ?? path.join(devkit, 'build/host/cocos4-publish.exe');
+    if (typeof executable !== 'string' || !path.isAbsolute(executable) || path.resolve(executable) !== executable || executable.includes('\0')) {
+        throw new Error('ATOMIC_PUBLISH_UNAVAILABLE: the qualified publisher must be an absolute canonical path.');
+    }
+    const read = async (absolute, maximum) => {
+        const before = await lstat(absolute, { bigint: true });
+        if (!before.isFile() || before.nlink !== 1n || before.size > maximum || await realpath(absolute) !== absolute) {
+            throw new Error('ATOMIC_PUBLISH_UNAVAILABLE: publisher source, binary and provenance must be ordinary bounded files.');
+        }
+        const bytes = await readFile(absolute);
+        const after = await lstat(absolute, { bigint: true });
+        if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
+            || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs || BigInt(bytes.length) !== before.size) {
+            throw new Error('ATOMIC_PUBLISH_UNAVAILABLE: publisher files changed while being verified.');
+        }
+        return bytes;
+    };
+    try {
+        const binary = await read(executable, 4 * 1024 * 1024);
+        const metadata = JSON.parse(await read(`${executable}.build.json`, 256 * 1024));
+        if (metadata.schemaVersion !== 1 || metadata.target !== 'win32-x64' || metadata.protocol !== 'cocos4-publish-v1'
+            || metadata.source !== 'runtime/publish-win32.c' || metadata.binarySha256 !== hash(binary) || metadata.bytes !== binary.length
+            || metadata.sourceSha256 !== hash(await read(path.join(devkit, 'runtime/publish-win32.c'), 256 * 1024))
+            || metadata.buildScriptSha256 !== hash(await read(path.join(devkit, 'scripts/build-publisher.mjs'), 256 * 1024))
+            || canonical(metadata.buildDependencies) !== canonical([{ path: 'scripts/build-supervisor-win32.mjs',
+                sha256: hash(await read(path.join(devkit, 'scripts/build-supervisor-win32.mjs'), 256 * 1024)) }])) {
+            throw new Error('Publisher binary, source and build provenance do not match.');
+        }
+    } catch (error) {
+        throw new Error(`ATOMIC_PUBLISH_UNAVAILABLE: build and verify the Windows publisher before SDK preparation. ${error.message}`);
+    }
+    const chain = async absolute => {
+        const paths = [];
+        for (let current = absolute;; current = path.dirname(current)) {
+            paths.unshift(current);
+            if (path.dirname(current) === current) break;
+        }
+        const pins = [];
+        for (const current of paths) {
+            const stat = await lstat(current, { bigint: true });
+            if (!stat.isDirectory() || stat.isSymbolicLink() || await realpath(current) !== current) {
+                throw new Error('Unsafe publisher directory chain.');
+            }
+            pins.push([current, stat.dev.toString(), stat.ino.toString(), stat.mode.toString()]);
+        }
+        return pins;
+    };
+    try {
+        const source = await chain(staging);
+        const destination = await chain(path.dirname(out));
+        await run(executable, ['cocos4-prepare-publish-v1', String(source.length), path.basename(out), ...source.flat(), ...destination.flat()],
+            { shell: false, windowsHide: true, timeout: 10000, maxBuffer: 8192,
+                env: { SystemRoot: process.env.SystemRoot ?? 'C:\\Windows', PATH: '' } });
+    } catch (error) {
+        if (error.code === 70) throw new Error('OUTPUT_CONFLICT: destination already exists, even if empty.');
+        throw new Error(`ATOMIC_PUBLISH_FAILED: ${error.message}; no fallback is allowed.`);
+    }
+}
+
 async function main() {
     const options = new Map();
     for (let index = 2; index < process.argv.length; index += 2) {
@@ -60,10 +145,10 @@ async function main() {
         options.set(key, value);
     }
     if (!options.has('--out')) throw new Error('--out must name an absent absolute directory.');
-    const out = path.resolve(options.get('--out'));
+    const requestedOut = path.resolve(options.get('--out'));
+    const parent = await realDirectory(path.dirname(requestedOut));
+    const out = path.join(parent, path.basename(requestedOut));
     const engine = await realpath(options.get('--engine-root') ?? fileURLToPath(new URL('../../../', import.meta.url)));
-    const parent = path.dirname(out);
-    if (await realpath(parent) !== parent || !(await lstat(parent)).isDirectory()) throw new Error('The output parent must be a real, existing directory.');
     const absent = async () => {
         try { await lstat(out); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
         throw new Error('OUTPUT_CONFLICT: destination already exists, even if empty.');
@@ -76,19 +161,29 @@ async function main() {
     for (const relative of paths) {
         const absolute = path.join(engine, relative);
         if (await realpath(absolute) !== absolute) throw new Error(`Source symlinks are not allowed: ${relative}`);
+        const before = await lstat(absolute, { bigint: true });
+        if (!before.isFile() || before.nlink !== 1n || before.size < 1n || before.size > 1024 * 1024) {
+            throw new Error(`Invalid source file: ${relative}`);
+        }
         const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         try {
-            const stat = await handle.stat();
-            if (!stat.isFile() || stat.size < 1 || stat.size > 1024 * 1024) throw new Error(`Source bounds exceeded: ${relative}`);
-            const bytes = Buffer.alloc(stat.size + 1);
+            const stat = await handle.stat({ bigint: true });
+            if (!stat.isFile() || stat.dev !== before.dev || stat.ino !== before.ino || stat.size !== before.size || stat.nlink !== 1n) {
+                throw new Error(`Source replaced while preparing: ${relative}`);
+            }
+            const bytes = Buffer.alloc(Number(stat.size) + 1);
             let length = 0;
             while (length < bytes.length) {
                 const { bytesRead } = await handle.read(bytes, length, bytes.length - length, null);
                 if (!bytesRead) break;
                 length += bytesRead;
             }
-            const after = await handle.stat();
-            if (length !== stat.size || after.size !== stat.size || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) {
+            const after = await handle.stat({ bigint: true });
+            const final = await lstat(absolute, { bigint: true });
+            if (BigInt(length) !== stat.size || after.size !== stat.size || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs
+                || !final.isFile() || final.dev !== stat.dev || final.ino !== stat.ino || final.nlink !== 1n
+                || final.size !== stat.size || final.mtimeNs !== stat.mtimeNs || final.ctimeNs !== stat.ctimeNs
+                || await realpath(absolute) !== absolute) {
                 throw new Error(`Source changed while preparing: ${relative}`);
             }
             const data = bytes.subarray(0, length);

@@ -74,8 +74,10 @@ test('ccbuild patches cover both resource loaders and declaration discovery, and
     const allPatches = [...patches, ...tfigPatches.map(([file, ...edit]) => [path.join('tfig', file), ...edit]),
         ...dragonBonesPatches.map(([file, ...edit]) => [path.join('dragonbones', file), ...edit])];
     // Test fresh-package matching even when prepare:engine already patched node_modules.
-    for (const [file, before, after] of allPatches) {
-        write(path.join(dir, file), fs.readFileSync(path.join(dir, file), 'utf8').replaceAll(after, before));
+    for (const [file, before, after, , previous] of allPatches) {
+        let source = fs.readFileSync(path.join(dir, file), 'utf8').replaceAll(after, before);
+        if (previous) source = source.replaceAll(previous, before);
+        write(path.join(dir, file), source);
     }
     const pristine = snapshot(dir);
     prepare();
@@ -87,6 +89,15 @@ test('ccbuild patches cover both resource loaders and declaration discovery, and
         const text = fs.readFileSync(path.join(dir, file), 'utf8');
         assert.equal(text.split(after).length - 1, count, file);
         assert.doesNotMatch(text, /native\/external/);
+    }
+    // Previously prepared installs must migrate exactly and remain repeatable.
+    for (const [file, , after, , previous] of allPatches) {
+        if (!previous) continue;
+        write(path.join(dir, file), fs.readFileSync(path.join(dir, file), 'utf8').replaceAll(after, previous));
+        prepare();
+        assert.deepEqual(snapshot(dir), patched);
+        prepare();
+        assert.deepEqual(snapshot(dir), patched);
     }
     for (const [file, version, error] of [['package.json', '2.3.22', /Review ccbuild patches/],
         ['tfig/package.json', '3.3.5', /Review tfig patches/],
@@ -130,7 +141,9 @@ test('declaration aliases and strict consumer types are identical across fresh s
     };
     for (const [file, text] of Object.entries(modules)) write(path.join(dependencies, file), text);
     fs.symlinkSync(path.join(root, 'node_modules/typescript'), path.join(dependencies, 'typescript'), 'dir');
-    const dependencyFiles = Object.keys(modules).map(file => path.join(dependencies, file));
+    // TypeScript's Windows host expands 8.3 directory names. Keep canonical
+    // dependency paths while the input tree retains its original spelling.
+    const dependencyFiles = Object.keys(modules).map(file => fs.realpathSync.native(path.join(dependencies, file)));
     const sources = {
         'main.ts': `export interface API {
     left: import('@fixture/left/model').Item;
@@ -319,7 +332,8 @@ test('module query classifies every configured mini-game, including WeChat, Xiao
     for (const platform of config.platforms) {
         const query = new ModuleQuery({ engine, platform });
         const group = ['HTML5', 'NODEJS'].includes(platform) ? 'web' : 'minigame';
-        assert.equal(await query.resolveExport('@test/platform'), path.join(engine, 'module', `${group}.js`));
+        // ccbuild's path helpers return forward slashes on every host.
+        assert.equal(await query.resolveExport('@test/platform'), path.join(engine, 'module', `${group}.js`).replace(/\\/g, '/'));
     }
     for (const platform of ['NATIVE', 'ANDROID', 'WEB_EDITOR', 'DEBUG', '0', 'constructor', 'UNKNOWN']) {
         assert.throws(() => new ModuleQuery({ engine, platform }), /Unsupported platform/);

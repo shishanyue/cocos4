@@ -28,8 +28,9 @@ description: Use when creating, checking, building, previewing or diagnosing Coc
 No source checkout or Creator is required for delivered code-based starters.
 An absent compiler/profile or invalid manifest is an installation/capability
 problem, not an instruction to install npm dependencies or rebuild the engine.
-The current implementation is a Linux development kit, not a certified portable
-release on every host. Ask for a separately prepared valid SDK when necessary.
+Development kits have separate Linux x64 and Windows x64 packages. Use the
+package for the current host; this is not a certified release on every host.
+Ask for a separately prepared valid SDK when necessary.
 
 ## Implement A Slice
 

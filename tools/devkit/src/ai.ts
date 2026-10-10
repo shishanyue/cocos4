@@ -10,13 +10,25 @@ import { AppError, permissionsSchema } from './contracts.js';
 import { loadSdk, parseJson } from './sdk.js';
 import { bundledSkillNames, makeOpenCodeConfig, opencodeSupport, type AiRoots } from './ai-config.js';
 import { captureFilePolicy } from './ai-files.js';
+import { acquireWindowsPath, enforceWindowsPrivate, enforceWindowsReadOnly, validateWindowsPath, verifyWindowsTrust,
+    type WindowsPathLease } from './windows-fs.js';
 
 export type AiOptions = AiRoots & { client: 'opencode'; executable: string };
 const sourceFiles = ['config', 'config.json', 'opencode.json', 'opencode.jsonc'];
 const forbiddenPath = /[\x00-\x1f\x7f*?\[\]{}\\]/;
+const windows = process.platform === 'win32';
 const missing = (error: unknown): boolean => (error as NodeJS.ErrnoException)?.code === 'ENOENT';
+const samePath = (left: string, right: string): boolean => windows ? left.toLowerCase() === right.toLowerCase() : left === right;
+const environmentValue = (environment: NodeJS.ProcessEnv, name: string): string | undefined =>
+    environment[Object.keys(environment).find(key => windows ? key.toLowerCase() === name.toLowerCase() : key === name) ?? name];
 
 function absolute(value: string, label: string): string {
+    if (windows) {
+        try {
+            if (/[\[\]{}]/.test(value)) throw new Error('Interpolation is forbidden.');
+            return validateWindowsPath(value);
+        } catch { throw new AppError('INVALID_ARGUMENTS', `${label} must be a normalized absolute local Windows path without aliases, controls or interpolation.`); }
+    }
     if (!value || value.length > 4096 || !path.isAbsolute(value) || forbiddenPath.test(value)) {
         throw new AppError('INVALID_ARGUMENTS', `${label} must be an absolute path without controls, interpolation or glob characters.`);
     }
@@ -60,11 +72,13 @@ async function present(filename: string): Promise<Stats | undefined> {
 }
 
 async function boundedText(filename: string, maxBytes = 256 * 1024): Promise<string> {
+    const lease = windows ? await acquireWindowsPath(filename, { immutable: true }) : undefined;
+    try {
     const before = await fs.lstat(filename);
-    if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes || await fs.realpath(filename) !== filename) {
+    if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes || !samePath(await fs.realpath(filename), filename)) {
         conflict(filename, 'Cannot safely inspect this regular, bounded config/skill file.');
     }
-    const handle = await fs.open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const handle = await fs.open(filename, windows ? constants.O_RDONLY : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
         const opened = await handle.stat();
         if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size) conflict(filename, 'File changed.');
@@ -77,8 +91,10 @@ async function boundedText(filename: string, maxBytes = 256 * 1024): Promise<str
         }
         const after = await handle.stat();
         if (length !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) conflict(filename, 'File changed.');
+        await lease?.check();
         return new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, length));
     } finally { await handle.close(); }
+    } finally { await lease?.close(); }
 }
 
 export function parseConfigForConflicts(text: string): Record<string, unknown> {
@@ -117,7 +133,9 @@ async function scanSkills(root: string, bundled: boolean, seen: Set<string>, bud
     if (!await present(root)) return;
     async function walk(directory: string, depth: number): Promise<void> {
         const stat = await fs.lstat(directory);
-        if (!stat.isDirectory() || await fs.realpath(directory) !== directory) conflict(directory, 'Skill directory is a link or not a directory.');
+        if (!stat.isDirectory() || !samePath(await fs.realpath(directory), directory)) conflict(directory, 'Skill directory is a link or not a directory.');
+        const lease = windows ? await acquireWindowsPath(directory, { directory: true }) : undefined;
+        try {
         if (depth > 16) conflict(root, 'Skill discovery exceeds its depth budget.');
         const entries = await fs.opendir(directory);
         for await (const entry of entries) {
@@ -130,13 +148,15 @@ async function scanSkills(root: string, bundled: boolean, seen: Set<string>, bud
                 const reserved = bundledSkillNames.some(value => value.toLowerCase() === name?.toLowerCase());
                 if (!bundled && reserved) conflict(filename, `Reserved bundled skill name ${name}.`);
                 if (bundled) {
-                    if (!reserved || seen.has(name!) || path.relative(root, filename) !== `${name}/SKILL.md`) {
+                    if (!reserved || seen.has(name!) || path.relative(root, filename) !== path.join(name!, 'SKILL.md')) {
                         conflict(filename, 'Bundled skill names must be unique, expected names with matching directories.');
                     }
                     seen.add(name!);
                 }
             } else if (!entry.isFile()) conflict(filename, 'Special files are not skill inputs.');
         }
+        await lease?.check();
+        } finally { await lease?.close(); }
     }
     await walk(root, 0);
 }
@@ -145,14 +165,15 @@ export async function checkOpenCodeConflicts(workspace: string, environment: Nod
     for (const [key, value] of Object.entries(environment)) {
         // Provider keys are authentication, not client configuration. Do not
         // print values, expand substitutions, or read credential stores.
-        if (value !== undefined && /^OPENCODE_/i.test(key) && !['OPENCODE_API_KEY', 'OPENCODE_ZEN_API_KEY'].includes(key)) {
+        if (value !== undefined && /^OPENCODE_/i.test(key) && !['OPENCODE_API_KEY', 'OPENCODE_ZEN_API_KEY'].includes(windows ? key.toUpperCase() : key)) {
             conflict(`environment variable ${key}`, 'Explicit client environment configuration is not merged.');
         }
     }
-    const home = absolute(environment.HOME || homedir(), 'HOME');
-    const configHome = absolute(environment.XDG_CONFIG_HOME || path.join(home, '.config'), 'XDG_CONFIG_HOME');
+    const home = absolute(environmentValue(environment, 'HOME') || (windows ? environmentValue(environment, 'USERPROFILE') : undefined) || homedir(), 'HOME');
+    const configHome = absolute(environmentValue(environment, 'XDG_CONFIG_HOME') || path.join(home, '.config'), 'XDG_CONFIG_HOME');
+    const managed = windows ? path.join(absolute(environmentValue(environment, 'ProgramData') || 'C:\\ProgramData', 'ProgramData'), 'opencode') : '/etc/opencode';
     for (const name of ['opencode.json', 'opencode.jsonc']) {
-        if (await present(`/etc/opencode/${name}`)) conflict(`/etc/opencode/${name}`, 'Managed configuration cannot be bypassed or merged safely.');
+        if (await present(path.join(managed, name))) conflict(path.join(managed, name), 'Managed configuration cannot be bypassed or merged safely.');
     }
     const scopes = new Set([home]);
     for (let current = workspace, depth = 0;; current = path.dirname(current)) {
@@ -207,13 +228,19 @@ async function privateState(root: string): Promise<void> {
     let current = path.parse(root).root;
     for (const part of root.slice(current.length).split(path.sep).filter(Boolean)) {
         current = path.join(current, part);
-        if (!await present(current)) await fs.mkdir(current, { mode: 0o700 });
+        if (!await present(current)) {
+            if (windows) await verifyWindowsTrust(path.dirname(current));
+            await fs.mkdir(current, { mode: 0o700 });
+            if (windows) await enforceWindowsPrivate(current);
+        }
+        if (windows) { await verifyWindowsTrust(current, samePath(current, root)); continue; }
         const stat = await fs.lstat(current);
         if (!stat.isDirectory() || (stat.uid !== 0 && stat.uid !== process.getuid!())
             || ((stat.mode & 0o022) && !(stat.uid === 0 && (stat.mode & 0o1000)))) {
             throw new AppError('PERMISSION_DENIED', 'State ancestors must be canonical directories not replaceable by other users.');
         }
     }
+    if (windows) return;
     const stat = await fs.lstat(root);
     if (stat.uid !== process.getuid!() || stat.mode & 0o077 || await fs.realpath(root) !== root) {
         throw new AppError('PERMISSION_DENIED', 'State must be a private, user-owned directory. Existing permissions are never changed.');
@@ -223,8 +250,10 @@ async function privateState(root: string): Promise<void> {
 export function openCodeEnvironment(environment: NodeJS.ProcessEnv, session: string): NodeJS.ProcessEnv {
     const env = { ...environment };
     for (const name of Object.keys(env)) {
-        if (/^(?:NODE_OPTIONS$|NODE_PATH$|BUN_OPTIONS$|BUN_ENV_FILE$|LD_|DYLD_|npm_|NPM_|OTEL_|GIT_|OPENCODE(?:_|$))/.test(name)
-            && !['OPENCODE_API_KEY', 'OPENCODE_ZEN_API_KEY'].includes(name)) delete env[name];
+        const canonical = windows ? name.toUpperCase() : name;
+        if (/^(?:NODE_OPTIONS$|NODE_PATH$|BUN_OPTIONS$|BUN_ENV_FILE$|LD_|DYLD_|npm_|NPM_|OTEL_|GIT_|OPENCODE(?:_|$))/.test(canonical)
+            && !['OPENCODE_API_KEY', 'OPENCODE_ZEN_API_KEY'].includes(canonical)) delete env[name];
+        if (windows && /^(?:XDG_(?:CONFIG|DATA|STATE|CACHE)_HOME|TEMP|TMP|TMPDIR|APPDATA|LOCALAPPDATA)$/i.test(name)) delete env[name];
     }
     return { ...env,
         OPENCODE_CONFIG: path.join(session, 'config/opencode/opencode.json'),
@@ -235,7 +264,9 @@ export function openCodeEnvironment(environment: NodeJS.ProcessEnv, session: str
         XDG_CONFIG_HOME: path.join(session, 'config'), XDG_DATA_HOME: path.join(session, 'data'),
         XDG_STATE_HOME: path.join(session, 'state'), XDG_CACHE_HOME: path.join(session, 'cache'),
         TMPDIR: path.join(session, 'tmp'),
-        GIT_DIR: path.join(session, 'no-git'), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_OPTIONAL_LOCKS: '0',
+        ...(windows ? { TEMP: path.join(session, 'tmp'), TMP: path.join(session, 'tmp'),
+            APPDATA: path.join(session, 'config'), LOCALAPPDATA: path.join(session, 'data') } : {}),
+        GIT_DIR: path.join(session, 'no-git'), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: windows ? 'NUL' : '/dev/null', GIT_OPTIONAL_LOCKS: '0',
         OPENCODE_DISABLE_PROJECT_CONFIG: '1', OPENCODE_DISABLE_EXTERNAL_SKILLS: '1', OPENCODE_DISABLE_CLAUDE_CODE: '1',
         OPENCODE_PURE: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1', OPENCODE_DISABLE_AUTOUPDATE: '1',
         OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_DISABLE_LSP_DOWNLOAD: '1',
@@ -246,7 +277,83 @@ export function openCodeEnvironment(environment: NodeJS.ProcessEnv, session: str
 
 function identity(stat: Stats): string { return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`; }
 
+function verifyMcpPe(bytes: Buffer, libraries: string[]): void {
+    const require = (condition: boolean): void => { if (!condition) throw new Error('Invalid Windows MCP image.'); };
+    require(bytes.length >= 256 && bytes.readUInt16LE(0) === 0x5a4d);
+    const header = bytes.readUInt32LE(0x3c);
+    require(header >= 64 && header + 24 <= bytes.length && bytes.readUInt32LE(header) === 0x4550
+        && bytes.readUInt16LE(header + 4) === 0x8664);
+    const count = bytes.readUInt16LE(header + 6), optional = header + 24;
+    const optionalBytes = bytes.readUInt16LE(header + 20), sections = optional + optionalBytes;
+    require(count > 0 && count <= 96 && optionalBytes >= 240 && sections + count * 40 <= bytes.length
+        && bytes.readUInt16LE(optional) === 0x20b && (bytes.readUInt16LE(optional + 70) & 0x160) === 0x160
+        && bytes.readUInt32LE(optional + 108) >= 14 && bytes.readUInt32LE(optional + 112 + 13 * 8) === 0);
+    const offset = (rva: number, length = 1): number => {
+        for (let index = 0; index < count; index++) {
+            const at = sections + index * 40, start = bytes.readUInt32LE(at + 12);
+            const size = bytes.readUInt32LE(at + 16), raw = bytes.readUInt32LE(at + 20);
+            if (rva >= start && rva - start + length <= size && raw + rva - start + length <= bytes.length) return raw + rva - start;
+        }
+        throw new Error('Invalid Windows MCP image address.');
+    };
+    for (let index = 0; index < count; index++) {
+        require((bytes.readUInt32LE(sections + index * 40 + 36) & 0xa0000000) !== 0xa0000000);
+    }
+    const imports = bytes.readUInt32LE(optional + 120), size = bytes.readUInt32LE(optional + 124);
+    require(imports > 0 && size >= 20 && size <= 65536);
+    const actual: string[] = [], allowed = new Set(['kernel32.dll', 'msvcrt.dll', 'advapi32.dll', 'shell32.dll', 'userenv.dll']);
+    let terminated = false;
+    for (let index = 0; index < Math.floor(size / 20); index++) {
+        const at = offset(imports + index * 20, 20);
+        if (bytes.subarray(at, at + 20).every(value => value === 0)) { terminated = true; break; }
+        const name = offset(bytes.readUInt32LE(at + 12));
+        let end = name;
+        while (end < bytes.length && end - name <= 256 && bytes[end] !== 0) end++;
+        require(end < bytes.length && end > name && end - name <= 256);
+        const library = bytes.toString('ascii', name, end).toLowerCase();
+        require(allowed.has(library) && !actual.includes(library)); actual.push(library);
+    }
+    require(terminated && actual.length > 0 && JSON.stringify(actual.sort()) === JSON.stringify(libraries.map(value => value.toLowerCase()).sort()));
+}
+
+async function windowsMcpLauncher(): Promise<{ filename: string; verify: () => Promise<void> }> {
+    const filename = absolute(fileURLToPath(new URL('../host/cocos4-mcp-launch.exe', import.meta.url)), 'MCP helper');
+    const stamps = new Map<string, string>();
+    const read = async (file: string, maximum: number): Promise<Buffer> => {
+        const lease = await acquireWindowsPath(file, { immutable: true, trusted: true });
+        try {
+            const before = await fs.lstat(file);
+            if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1 || before.size > maximum) throw new Error('Unsafe helper file.');
+            const bytes = await fs.readFile(file);
+            if (bytes.length !== before.size || identity(await fs.lstat(file)) !== identity(before)) throw new Error('Helper changed.');
+            await lease.check(); stamps.set(file, identity(before)); return bytes;
+        } finally { await lease.close(); }
+    };
+    try {
+        const report = z.object({ schemaVersion: z.literal(1), protocol: z.literal('cocos4-mcp-launch-v1'),
+            target: z.literal('win32-x64'), linkage: z.literal('windows-system-libraries'), source: z.literal('runtime/mcp-launch-win32.c'),
+            sourceSha256: z.string().regex(/^[a-f0-9]{64}$/), binarySha256: z.string().regex(/^[a-f0-9]{64}$/),
+            bytes: z.number().int().min(256).max(32 * 1024 * 1024), sharedLibraries: z.array(z.string()).min(1).max(16),
+            requiredVersions: z.array(z.string()).length(0),
+        }).parse(parseJson((await read(`${filename}.build.json`, 256 * 1024)).toString('utf8')));
+        const bytes = await read(filename, 32 * 1024 * 1024);
+        if (bytes.length !== report.bytes || createHash('sha256').update(bytes).digest('hex') !== report.binarySha256) throw new Error('Helper integrity mismatch.');
+        verifyMcpPe(bytes, report.sharedLibraries);
+    } catch {
+        throw new AppError('SDK_INCOMPLETE', 'AI requires the verified shipped Windows x64 cocos4-mcp-launch.exe helper and integrity report.',
+            ['Install a complete trusted kit; AI never compiles, downloads or falls back to a host executable.']);
+    }
+    const verify = async (): Promise<void> => {
+        for (const [file, stamp] of stamps) {
+            await verifyWindowsTrust(file);
+            if (identity(await fs.lstat(file)) !== stamp) throw new AppError('INPUT_CHANGED', 'The shipped MCP launcher changed after validation.');
+        }
+    };
+    await verify(); return { filename, verify };
+}
+
 async function mcpLauncher(): Promise<{ filename: string; verify: () => Promise<void> }> {
+    if (windows) return windowsMcpLauncher();
     // build/{src,host} in source, app/{src,host} in a portable kit. Never search
     // the SDK, workspace, environment or PATH for an executable replacement.
     const filename = absolute(fileURLToPath(new URL('../host/cocos4-mcp-launch', import.meta.url)), 'MCP helper');
@@ -324,8 +431,8 @@ export async function prepareOpenCode(input: AiOptions, environment: NodeJS.Proc
     const options = parseAiArgs(['--client', input.client, '--executable', input.executable,
         '--workspace', input.workspace, '--sdk-root', input.sdkRoot, '--state-root', input.stateRoot,
         '--mode', input.mode, '--preview', String(input.preview)]);
-    if (process.platform !== 'linux' || process.arch !== 'x64' || !process.getuid || process.getuid() === 0) {
-        throw new AppError('SDK_INCOMPLETE', 'The isolated AI launcher currently requires non-root Linux x64; other hosts are not verified.');
+    if (process.arch !== 'x64' || (!windows && (process.platform !== 'linux' || !process.getuid || process.getuid() === 0))) {
+        throw new AppError('SDK_INCOMPLETE', 'The isolated AI launcher requires Windows x64 or non-root Linux x64.');
     }
     const workspace = absolute(await fs.realpath(options.workspace), '--workspace');
     if (!(await fs.lstat(workspace)).isDirectory()) throw new AppError('INVALID_ARGUMENTS', 'Workspace must already be a directory.');
@@ -345,12 +452,13 @@ export async function prepareOpenCode(input: AiOptions, environment: NodeJS.Proc
     try {
         executable = absolute(await fs.realpath(options.executable), '--executable');
         if (!(await fs.lstat(executable)).isFile()) throw new Error('Not a file.');
+        if (windows) await verifyWindowsTrust(executable);
         await fs.access(executable, constants.X_OK);
     } catch { throw new AppError('INVALID_ARGUMENTS', 'Select an already installed, trusted executable by absolute path. Nothing will be downloaded.'); }
     const executableStamp = identity(await fs.lstat(executable));
     const helper = await mcpLauncher();
-    const skillsRoot = absolute(fileURLToPath(new URL('../../skills/', import.meta.url)), 'Bundled skills');
-    const appRoot = absolute(fileURLToPath(new URL('../', import.meta.url)), 'Bundled app');
+    const skillsRoot = absolute(path.resolve(fileURLToPath(new URL('../../skills/', import.meta.url))), 'Bundled skills');
+    const appRoot = absolute(path.resolve(fileURLToPath(new URL('../', import.meta.url))), 'Bundled app');
     if ([skillsRoot, appRoot, executable, process.execPath].some(root => contained(workspace, root) || contained(root, workspace))) {
         throw new AppError('PERMISSION_DENIED', 'The workspace must not overlap the trusted app, skills or executables.');
     }
@@ -362,16 +470,24 @@ export async function prepareOpenCode(input: AiOptions, environment: NodeJS.Proc
     checkCancelled();
     await privateState(roots.stateRoot);
     const session = await fs.mkdtemp(path.join(roots.stateRoot, 'ai-opencode-'));
+    if (windows) await enforceWindowsPrivate(session);
     const sessionStamp = identity(await fs.lstat(session)).split(':').slice(0, 2).join(':');
     const configDir = path.join(session, 'config/opencode');
     let closed = false;
     const cleanup = async (): Promise<void> => {
         if (closed) return;
         const stat = await fs.lstat(session);
-        if (!stat.isDirectory() || `${stat.dev}:${stat.ino}` !== sessionStamp || await fs.realpath(session) !== session) {
+        if (!stat.isDirectory() || `${stat.dev}:${stat.ino}` !== sessionStamp || !samePath(await fs.realpath(session), session)) {
             throw new AppError('INPUT_CHANGED', 'Owned AI session directory changed; refusing cleanup.');
         }
         if (await present(configDir)) {
+            if (windows) {
+                await enforceWindowsPrivate(configDir);
+                for (const name of ['opencode.json', '.gitignore', 'tools', 'tools/cocos4.js']) {
+                    const file = path.join(configDir, name);
+                    if (await present(file)) await enforceWindowsPrivate(file);
+                }
+            }
             await fs.chmod(configDir, 0o700);
             if (await present(path.join(configDir, 'tools'))) await fs.chmod(path.join(configDir, 'tools'), 0o700);
         }
@@ -381,6 +497,7 @@ export async function prepareOpenCode(input: AiOptions, environment: NodeJS.Proc
     try {
         for (const directory of ['config', 'config/opencode', 'home', 'data', 'state', 'cache', 'tmp', 'mcp-home']) {
             await fs.mkdir(path.join(session, directory), { mode: 0o700 });
+            if (windows) await enforceWindowsPrivate(path.join(session, directory));
         }
         const config = makeOpenCodeConfig(roots, absolute(await fs.realpath(process.execPath), 'Node executable'),
             absolute(fileURLToPath(new URL('./cli.js', import.meta.url)), 'CLI entry'), skillsRoot, session, helper.filename);
@@ -395,12 +512,18 @@ export async function prepareOpenCode(input: AiOptions, environment: NodeJS.Proc
             `import { createFileTools } from ${JSON.stringify(new URL('./ai-files.js', import.meta.url).href)};\n`
             + `const tools = createFileTools(${JSON.stringify(filePolicy)});\n`
             + 'export const { read, write, edit, apply_patch } = tools;\n', { flag: 'wx', mode: 0o400 });
-        await fs.chmod(toolDir, 0o500);
+        if (!windows) await fs.chmod(toolDir, 0o500);
         // v1.18.21 Npm.install returns before reify when a config directory is
         // not writable. This also prevents auto-seeding/migrating config files.
-        await fs.chmod(configDir, 0o500);
+        if (!windows) await fs.chmod(configDir, 0o500);
+        if (windows) {
+            for (const file of [configFile, path.join(configDir, '.gitignore'), path.join(toolDir, 'cocos4.js'), toolDir, configDir]) {
+                await enforceWindowsReadOnly(file);
+            }
+        }
         const env = openCodeEnvironment(environment, session);
-        const versionEnv = openCodeEnvironment({ HOME: path.join(session, 'home'), PATH: '/usr/bin:/bin', LANG: 'C.UTF-8' }, session);
+        const versionEnv = openCodeEnvironment({ HOME: path.join(session, 'home'), PATH: windows ? '' : '/usr/bin:/bin', LANG: 'C.UTF-8',
+            ...(windows ? { SystemRoot: environmentValue(environment, 'SystemRoot'), WINDIR: environmentValue(environment, 'WINDIR') } : {}) }, session);
         checkCancelled();
         const version = await new Promise<string>((resolve, reject) => {
             const child = spawn(executable, ['--version'], { cwd: session, env: versionEnv, shell: false, stdio: ['ignore', 'pipe', 'pipe'] });

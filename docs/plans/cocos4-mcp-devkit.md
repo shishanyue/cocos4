@@ -1,8 +1,10 @@
 # Cocos4 MCP 与便携开发套件
 
-状态：开发 MCP、离线 SDK、v5 产物来源记录与 Linux 候选包已实现；新增 WECHAT/BYTEDANCE 本地源码导出、四目标 16-profile SDK、新 Linux x64 候选包及 2048 双目标导出已完成。仅本地定向交付通过，不含浏览器/厂商/真机新验收；完整发行及当前两版本全量矩阵仍未通过。
+状态：独立 MCP/CLI、离线 SDK 和四目标源码导出已实现；Windows run7 本地候选已完成 16 个游戏组合的构建、4 个 HTML5 浏览器验收及当前 Codex 经发行包 CLI 的 Signal Switch 闭环。完整源码矩阵、独立客户端接入、干净机/多宿主和正式发行门槛仍未完成。
 
-初稿仅形成计划；后续已新增独立工具包、锁定依赖、离线 SDK、授权逻辑测试、临时 OpenCode 接入和本地便携候选包。候选包未获准再分发，真实模型闭环与多宿主验收未完成。
+2026-10-10 当前交付目录为 `tools/devkit/build/windows-delivery-20261010-run7`，当前执行包为 `D:/cocos4-work/devkit-win32-run7`。16 个导出来自两个独立工作区，`freshFullSingleRun: false`；四个 HTML5 2D/3D debug/release 产物有真实 Edge/SwiftShader 像素、输入、WebAudio 与十次重开证据。固定卷根修复的两版本文件系统/runtime 各 16/16 和 SDK 加载证据另记，不能合并为完整源码矩阵通过。身份与 ZIP 见 [Windows 本地交付](../../tools/devkit/ACCEPTANCE.md#windows-local-delivery-october-10)。
+
+初稿仅形成计划；后续已新增独立工具包、锁定依赖、离线 SDK、授权逻辑测试、临时 OpenCode 接入和本地便携候选包。候选包仍未获准再分发；当前 Codex CLI 闭环通过，但 Codex MCP connector 发现、独立 OpenCode/provider 会话与多宿主验收未完成。
 调研基线为分支 `v4.0.0`、引擎 `4.0.0-alpha.34`、提交 `2736376eb7`。
 下文为完整产品契约，不能全部视为已实现；当前默认十个工具、develop 模式十三个工具、另开 preview 权限十五个工具，入口见 [MCP 说明](../../tools/devkit/MCP.md)。
 逐项契约、实际证据与未完成项见 [验收清单](../../tools/devkit/ACCEPTANCE.md)；历史 P0 记录仍保留在 [工具说明](../../tools/devkit/README.md)。
@@ -264,6 +266,9 @@ portable `ai` 必须显式提供已安装客户端的 `--executable`；启动器
    根据结构化诊断迭代。修改代码由 AI 客户端自己的文件工具完成，不扩展成 MCP 任意文件写入。
 5. 用户显式选择已交付 profile 的 BILIBILI、WECHAT 或 BYTEDANCE 后生成源码目录并预检。厂商工具及账号
    未准备时，只报告目录和剩余步骤，不将其描述为已经发布或已通过真机验收。
+
+OpenCode 是可选参考适配；CLI 与标准 stdio MCP 独立运行。当前 Codex 经发行包 CLI
+完成游戏闭环的证据不代表已经安装/发现 Codex MCP connector，也不替代 OpenCode/provider 验收。
 
 OpenCode 接入须依照当前 `https://opencode.ai/config.json` 校验：`mcp` 为对象，
 本地条目用 `type: local` 和参数数组 `command`，skills 使用 `skills.paths`。
@@ -565,8 +570,9 @@ manifest/catalog、工作区策略、job/进程、游戏构建/预览。单独�
   网格/材质、输入和 UI。至少连续重开 10 次验证没有重复事件或明显资源持续增长。
 - 验证缺失资源、错误脚本、未提供的物理 API、浏览器音频限制及任务取消均给出可执行
   诊断。性能预算在 P0 记录具体硬件与基准后冻结，不能引用无硬件条件的 FPS 承诺。
-- OpenCode 记录具体版本：发现 tools/skills、查询文档、创建游戏、检查、读取失败日志、
-  修改代码再构建、预览及取消。保存临时接入下的 `opencode mcp list` 和协议证据。
+- 记录实际 AI 客户端、模型与调用路线：发现 tools/skills、查询文档、创建游戏、检查、
+  读取失败日志、修改后构建、预览及取消。Codex 经包内 CLI 的游戏证明不等同于 MCP
+  connector 发现；OpenCode 参考适配另保留具体版本、`opencode mcp list` 与协议证据。
 - 禁用客户端 resources 展示时仍能通过 docs tools 完成流程；不支持实验 Tasks 的客户端
   仍可轮询所有长任务。模型演示不代替稳定的 client 协议回归。
 - 网络隔离测试针对套件自身；AI 在线模型需另行放行或使用已有本地模型，不能将 API
@@ -613,6 +619,14 @@ git diff --check
 
 ## 12. 当前进度
 
+- [x] 2026-10-10 修复固定卷根仅作为祖先时的 ACL 语义，不修改 D 盘根 ACL；普通祖先、leaf、链接和不可信权限继续严格拒绝。选定的受保护 `D:/cocos4-work` 子树通过两版本定向文件系统/runtime 检查与真实私有 workspace/SDK 检查。后续测试、状态、浏览器 profile 和配置 TEMP 均留在选定任务子树，不再创建 C 盘根目录或用户目录测试副本。
+- [x] run7 Windows 本地整包实证：两个独立 MCP 工作区各完成 8 个编辑后游戏的严格检查/构建，共 16 个 HTML5/BILIBILI/WECHAT/BYTEDANCE 2D/3D debug/release 导出；4 个 HTML5 产物通过真实桌面/移动像素、mouse/touch、native WebAudio PCM、缺失资源及十次重开。包和 ZIP 前后摘要不变；`freshFullSingleRun: false`，不是一次同工作区 16-profile run。`tools/devkit/build/windows-delivery-20261010-run7/acceptance-summary.json` 为 success true。
+- [x] 当前 Codex 经发行包 CLI 完成 Signal Switch 创建、真实 TS2322、数字修复/严格类型检查、HTML5/2d-basic/debug 构建及 Sprite 渲染的真实浏览器玩法；胜利/失败/计时、鼠标/触摸/键盘、13 次重开和 native WebAudio PCM 通过，预览 TTL 退出 0。独立证据为同一交付目录的 `signal-switch/acceptance-summary.json`；不宣称安装/发现 Codex MCP connector 或独立 OpenCode/provider 推理通过。
+- [x] C 盘任务副本已清理，保留当前 D 盘包、游戏源码与小型证据；`tools/devkit/build/c-drive-cleanup-20261010/summary.json` 记录 C 根和用户目录两个任务范围均为 0。历史报告内原执行路径保留作来源，不意味着原副本仍存在。
+- [ ] 当前完整源码矩阵：run6 两组仅完成 6/16 后中断，当前 Node24 全矩阵 `continuation-20261010-node24/full/result.json` 为 interrupted、totals null、success false。旧 MCP 55/55、引擎和 Effect 各自输入/范围证据不与新定向结果合并成全矩阵通过。
+- [x] 2026-10-09 启动的 Windows 接手工作完成主机 helper 实现与本地回归：文件租约/ACL、原子非覆盖发布、干净 MCP 启动、Job Object IPC/进程树；固定 Node 18.20.8/24.21.0 的具体范围见 [Windows 主机检查](../../tools/devkit/ACCEPTANCE.md#windows-host-checks-october-9)。未将管理员宿主当作非管理员/全新 VM 验收。
+- [x] 新生成 Windows 四目标 16-profile SDK，16 个独立引擎哈希、真实 HTML5 桌面/移动像素与音频/重开、本地小游戏源码契约通过；换行、声明路径和真实 compiler closure 修复记录见 [Windows SDK 检查](../../tools/devkit/ACCEPTANCE.md#windows-sdk-preparation-october-9)。旧失败输入和重建来源保留。
+- [ ] 独立客户端发现与参考模型路线验收：OpenCode 是可选参考适配，MCP/CLI 独立运行。Windows OpenCode 1.18.21 / Bun 1.3.14 可连接 MCP，但不能加载只读 ACL 下的 guarded 工具脚本，保留保护与未验收状态，不将其模型账号作为 Windows MCP/CLI 交付前提。
 - [x] 确认独立引擎 MCP 和无需源码的便携发行目标。
 - [x] 梳理现有入口、副作用、skills 依赖和无 Creator 链路缺口。
 - [x] 形成工具契约、安全边界、分阶段实施及验收计划。
@@ -645,7 +659,7 @@ git diff --check
 - [x] 新增 WECHAT/BYTEDANCE 源码 exporter；`tools/devkit/build/minigame-exporters-20260930/summary.json` 保留八个 2D/3D debug/release runtime 构建及 local-report 成功。local 检查使用 host/`cc` mock 与静态引擎检查，不执行引擎或渲染；browser/vendor/device/portableSDK 仍为 false。父任务报告共享 production validator 的 26 项 focused 测试通过，不作为最终候选包通过记录。
 - [x] 2026-10-01 组装四目标 16-profile SDK 和新 Linux x64 本地候选包；`tools/devkit/build/minigame-delivery/sdk-result.json` 为 `success: true`，构建 receipt 与归档校验和见下文。不改写旧 HTML5/BILIBILI runtime 或包的身份，不等于完整候选包验收。
 - [x] `tools/devkit/examples/2048/build/run-wechat-bytedance-01/evidence/result.json` 为 `success: true`；严格类型及启用库检查的逻辑编译通过，8 项逻辑测试通过、0 failed/skipped/TODO，WECHAT/BYTEDANCE `2d-basic/release` 构建通过。`exports.json` 中两者的配置原字节和复制清单验证均为 true；未选 HTML5，`browser.performed: false`。重跑需新包内 Node 及不存在的输出目录，见 [2048 命令](../../tools/devkit/examples/2048/README.md#wechat-and-bytedance-rerun)。
-- [ ] 完整合并矩阵、候选包验收及实际模型闭环仍未完成；最新 Node 18 矩阵已中断，不是正在运行，也没有当前两版本全量通过记录。遵照用户要求不再执行全量矩阵，只做必要的 focused 检查；定向通过不代表完整发行验收。
+- [ ] 完整合并矩阵、干净机/多宿主发行验收及独立客户端/模型接入仍未完成；没有当前两版本全量通过记录。历史暂停与中断记录保持原范围；Windows 本地交付和当前 Codex CLI 闭环通过不代表 P0-P6 或完整发行验收。
 - [ ] 完成新增 CI 前置条件的干净 checkout 与 hosted rehearsal；历史 `verification-inputs` 两版本各六项通过只证明编排契约，尚未运行完整排练。
 - [ ] P0 独立启动、资源链路与工具链可行性验证。
 - [ ] P1-P2 预编译发行骨架和游戏 CLI。
@@ -656,12 +670,13 @@ git diff --check
 
 当前实现包括真实 mappings、严格 2D/3D builtin 编译、SDK 内游戏编译器、预编译 runtime，
 以及受权限约束的开发 MCP/CLI。真实浏览器验证使用软件 WebGL，不代表硬件或厂商真机验收。
-它们仍不是完整发行套件：虽然 Linux 候选包已包含 Node、编译工具和宿主辅助程序，
-但完整合并矩阵、实际模型闭环、全新 VM、多宿主和许可/来源认证仍有未完成项。
+它们仍不是完整发行套件：Linux/Windows 候选包已包含 Node、编译工具和宿主辅助程序，
+run7 本地包和当前 Codex CLI 玩法已有证据；完整源码矩阵、独立客户端/模型接入、
+全新 VM、非管理员、断网/隐藏源码/只读挂载、多宿主和许可/来源认证仍有未完成项。
 厂商编译、上传和真机仍未验证，不以本地源码包预检冒充发布成功。
 开发操作的 RequestKey 已必填，检查/构建支持有界 timeoutMs；需以当前 MCP schema 为准。
-本地新增目标交付记录如下，路径相对仓库根目录；完整身份和定向检查范围见
-[当前验收记录](../../tools/devkit/ACCEPTANCE.md#wechat-and-bytedance-delivery)：
+2026-10-01 的历史 Linux 新增目标交付记录如下，路径相对仓库根目录；该检查点身份与范围见
+[历史新增目标记录](../../tools/devkit/ACCEPTANCE.md#wechat-and-bytedance-delivery)。当前 Windows run7 的 ZIP、证据和限制见 [Windows 本地交付](../../tools/devkit/ACCEPTANCE.md#windows-local-delivery-october-10)：
 
 | 项目 | 实际记录 |
 | --- | --- |
@@ -705,12 +720,12 @@ OpenCode 1.18.21 和 `opencode/big-pickle`，收到 HTTP 403 `FreeTierError`，0
 0 工具调用；连接门禁失败后未提交玩法 prompt。它不是成功闭环，也不证明所有模型不可用。
 历史 agent 临时证据已归档到 `build/retained-*.tar.gz`，五份精确文件名和 SHA-256 见验收
 清单；归档只是保留，不是重跑。所有未完成的 P0-P6、干净源码来源、认证、许可、全新 VM、
-多宿主和真实模型要求继续保留，不能从局部通过推导完整目标完成。
+多宿主和独立客户端/模型要求继续保留，不能从局部通过推导完整目标完成。
 维护源码直接修改当前项目；需要保留的 SDK 和验收证据位于已忽略的 `tools/devkit/build/`，不以系统临时目录作为唯一存储。
 默认 worker 不运行项目代码；显式授权的逻辑测试不是沙箱。父进程通过随包 C helper、
 descriptor chains 和 renameat2 非覆盖发布，运行时不依赖 Python；Python 仍用于维护者 SDK 准备。
 发布与任务元数据并非单一事务，崩溃可能留下已创建项目或未登记产物；保留它们供核对，不自动重放或删除。
-Linux 监督不能代替 Windows Job Object/macOS 的实际实现和验收，namespace 也不是全新 VM。
+Linux 监督不能代替各宿主的实际实现和验收；Windows Job Object 和 D 盘私有子树已有定向证据，macOS 仍未验收，namespace 也不是全新 VM。
 根 MIT 许可与部分源码限制性声明、编译器/加载器的许可元数据差异需要在发行前澄清；
 新增 adapter 所属 `@cocos/engine-platforms@1.0.6` 声明 `UNLICENSED` 且无独立许可文件，
 保留 metadata/README 和引擎许可证不等于获得其再分发许可，此项仍未解决。

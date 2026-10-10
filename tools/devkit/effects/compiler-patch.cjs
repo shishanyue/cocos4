@@ -27,7 +27,7 @@ const preprocessForValidation = (() => {
         return result.stdout;
     };
     const version = run(['--version']);
-    if (version.split('\\n')[0] !== 'Glslang Version: 11:16.4.0') {
+    if (version.split(/\\r?\\n/)[0] !== 'Glslang Version: 11:16.4.0') {
         throw new Error('Unreviewed GLSL preprocessor version: ' + version);
     }
     return (code, defines, stage) => run(['--stdin', '-E', '-S', stage],

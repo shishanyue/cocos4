@@ -3,7 +3,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'n
 import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 
@@ -148,7 +148,7 @@ test('copied SDK compiler: no checkout reads, check-only, structured diagnostics
             for (const pkg of closure.packages) {
                 const source = join(engine, pkg.path);
                 await cp(source, join(toolchain, pkg.path), { recursive: true,
-                    filter: file => file === source || !file.slice(source.length + 1).split('/').includes('node_modules') });
+                    filter: file => file === source || !file.slice(source.length + 1).split(sep).includes('node_modules') });
             }
         }
         for (const profile of ['2d-basic', '3d-basic']) {

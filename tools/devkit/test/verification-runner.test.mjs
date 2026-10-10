@@ -8,12 +8,27 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
-import { auditTap } from '../scripts/verify-tests.mjs';
+import { auditTap, testEnvironment } from '../scripts/verify-tests.mjs';
 
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const readJson = async file => JSON.parse(await fs.readFile(file, 'utf8'));
 const writeJson = (file, value) => fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { flag: 'wx' });
 const complete = '# tests 2\n# pass 2\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 1.5\n';
+const windows = process.platform === 'win32';
+const nodeName = windows ? 'node.exe' : 'node';
+
+test('retained environment keeps host paths and explicit integration inputs but rejects startup injection', () => {
+    const host = { USERPROFILE: 'profile', LOCALAPPDATA: 'local', APPDATA: 'roaming', TEMP: 'temp', TMP: 'tmp',
+        SystemRoot: 'windows', WINDIR: 'windows', COMSPEC: 'cmd', PATHEXT: '.EXE', PATH: 'path', HOME: 'home' };
+    const environment = testEnvironment({ ...host, PORTABLE_STARTUP_RELEASE: 'release',
+        NODE_OPTIONS: '--require=injected.cjs', NODE_PATH: 'injected', COCOS4_SECRET: 'secret' });
+    assert.deepEqual(environment, { ...host, PORTABLE_STARTUP_RELEASE: 'release' });
+    if (windows) assert.deepEqual(testEnvironment({ Path: 'path', SYSTEMROOT: 'windows', localappdata: 'local' }),
+        { PATH: 'path', SystemRoot: 'windows', LOCALAPPDATA: 'local' });
+    if (windows) assert.deepEqual(testEnvironment({ 'PROGRAMFILES(X86)': 'tools', COCOS4_WINDOWS_COMPILER: 'compiler',
+        windowssdkdir: 'sdk', NODE_OPTIONS: 'injected' }),
+    { 'ProgramFiles(x86)': 'tools', COCOS4_WINDOWS_COMPILER: 'compiler', WindowsSdkDir: 'sdk' });
+});
 
 test('TAP auditing rejects absent/ambiguous/inconsistent totals and distinguishes skips from full success', () => {
     assert.equal(auditTap(complete).allPassed, true);
@@ -43,6 +58,10 @@ async function until(check, timeoutMs = 8000) {
 }
 
 async function processState(pid) {
+    if (windows) {
+        try { process.kill(pid, 0); return 'running'; }
+        catch (error) { if (error.code === 'ESRCH') return 'absent'; throw error; }
+    }
     try {
         const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
         return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0];
@@ -62,6 +81,12 @@ test('retained verification uses bounded real processes without shared build wri
         }
         await fs.mkdir(temporary);
         await fs.copyFile(new URL('../scripts/verify-tests.mjs', import.meta.url), path.join(source, 'scripts/verify-tests.mjs'));
+        if (windows) {
+            for (const name of ['cocos4-supervise.exe', 'supervisor.json']) {
+                await fs.copyFile(new URL(`../build/host/${name}`, import.meta.url), path.join(source, 'build/host', name));
+            }
+            await fs.copyFile(new URL('../runtime/supervise-win32.c', import.meta.url), path.join(source, 'runtime/supervise-win32.c'));
+        }
         await fs.writeFile(path.join(source, 'package.json'), '{"type":"module"}');
         for (const file of ['package-lock.json', 'tsconfig.json']) await fs.writeFile(path.join(source, file), '{}');
         await fs.writeFile(path.join(source, 'build/probes/mcp-client.js'), "import { test } from 'node:test'; test('fixture probe', () => {});\n");
@@ -72,8 +97,11 @@ test('retained verification uses bounded real processes without shared build wri
     const launch = (item, args, extra = {}) => {
         const prefix = path.join(item.directory, `launch-${sequence++}`);
         const argv = ['scripts/verify-tests.mjs', ...args];
-        const env = { PATH: process.env.PATH ?? '', HOME: item.temporary, TMPDIR: item.temporary, LANG: 'C', ...extra };
-        const child = spawn(process.execPath, argv, { cwd: item.source, env, stdio: ['ignore', 'pipe', 'pipe'] });
+        const env = { PATH: process.env.PATH ?? '', HOME: item.temporary, TMPDIR: item.temporary, LANG: 'C',
+            ...(windows ? { USERPROFILE: item.temporary, LOCALAPPDATA: item.temporary, APPDATA: item.temporary,
+                TEMP: item.temporary, TMP: item.temporary, SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR } : {}), ...extra };
+        const child = spawn(process.execPath, argv, { cwd: item.source, env, windowsHide: true,
+            stdio: windows ? ['ignore', 'pipe', 'pipe', 'ipc'] : ['ignore', 'pipe', 'pipe'] });
         let stdout = '', stderr = '';
         child.stdout.on('data', bytes => { stdout += bytes; });
         child.stderr.on('data', bytes => { stderr += bytes; });
@@ -180,7 +208,8 @@ test('retained verification uses bounded real processes without shared build wri
             const release = path.join(item.directory, 'identity-only-release');
             await fs.mkdir(path.join(release, 'runtime'), { recursive: true });
             await writeJson(path.join(release, 'release.json'), { fixture: 'identity hashing only, not a release' });
-            await fs.symlink(process.execPath, path.join(release, 'runtime/node'));
+            if (windows) await fs.copyFile(process.execPath, path.join(release, 'runtime', nodeName));
+            else await fs.symlink(process.execPath, path.join(release, 'runtime', nodeName));
             const env = { PORTABLE_STARTUP_RELEASE: release, PORTABLE_STARTUP_NODE: process.execPath };
             for (const key of ['RUNTIME_BUILTINS_2D', 'RUNTIME_BUILTINS_3D']) {
                 env[key] = path.join(item.directory, key);
@@ -195,7 +224,7 @@ test('retained verification uses bounded real processes without shared build wri
             const inputs = await readJson(path.join(receipt.evidence, 'inputs.json'));
             const after = await readJson(path.join(receipt.evidence, 'inputs-after.json'));
             for (const [key, value] of Object.entries(env)) assert.equal(command.environment[key], value);
-            for (const file of [process.execPath, path.join(release, 'release.json'), path.join(release, 'runtime/node'),
+            for (const file of [process.execPath, path.join(release, 'release.json'), path.join(release, 'runtime', nodeName),
                 path.join(env.RUNTIME_BUILTINS_2D, 'result.json'), path.join(env.RUNTIME_BUILTINS_3D, 'result.json')]) {
                 assert.match(inputs[file], /^[a-f0-9]{64}$/);
                 assert.equal(after[file], digest(await fs.readFile(file)));
@@ -203,7 +232,7 @@ test('retained verification uses bounded real processes without shared build wri
         }
     });
 
-    for (const trigger of ['SIGINT', 'SIGTERM', 'timeout']) await t.test(`${trigger}: leader exits before escalation, stubborn child cannot suppress it`, async () => {
+    for (const trigger of windows ? [] : ['SIGINT', 'SIGTERM', 'timeout']) await t.test(`${trigger}: leader exits before escalation, stubborn child cannot suppress it`, async () => {
         const item = await fixture(trigger, `import { spawn } from 'node:child_process'; import { test } from 'node:test';
             spawn(process.execPath, [process.env.TMPDIR + '/leaf.mjs', String(process.ppid)], { stdio: 'ignore' });
             process.on('SIGTERM', () => process.exit(0));
@@ -250,5 +279,60 @@ test('retained verification uses bounded real processes without shared build wri
             sentinel.kill('SIGKILL');
             await sentinelClosed;
         }
+    });
+
+    for (const trigger of windows ? ['parent-stop', 'timeout', 'owner-exit'] : []) await t.test(`${trigger}: Windows Job terminates live descendants and leaves unrelated processes alive`, async () => {
+        const item = await fixture(trigger, `import { spawn } from 'node:child_process'; import { test } from 'node:test';
+            spawn(process.execPath, [process.env.TMPDIR + '/leaf.mjs', String(process.pid), String(process.ppid)], { stdio: 'ignore', windowsHide: true });
+            test('bounded blocked fixture', () => new Promise(() => {}));`);
+        const ready = path.join(item.temporary, 'ready.json');
+        await fs.writeFile(path.join(item.temporary, 'leaf.mjs'), `import * as fs from 'node:fs/promises';
+            setTimeout(() => process.exit(90), 20000);
+            await fs.writeFile(${JSON.stringify(`${ready}.tmp`)}, JSON.stringify({ leaf: process.pid, test: Number(process.argv[2]), runner: Number(process.argv[3]) }));
+            await fs.rename(${JSON.stringify(`${ready}.tmp`)}, ${JSON.stringify(ready)});`);
+        const sentinel = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 20000)'], { detached: true, windowsHide: true, stdio: 'ignore' });
+        const sentinelClosed = new Promise(resolve => sentinel.once('close', resolve));
+        try {
+            // Include fingerprinting and Windows process creation under CI load
+            // so timeout exercises a live descendant, rather than dying before
+            // the leaf can publish the process observation.
+            const running = launch(item, ['--foreground', '--timeout-ms', trigger === 'timeout' ? '8000' : '10000', 'test/fixture.test.mjs']);
+            const receipt = await running.receipt();
+            const pids = await until(async () => {
+                try { return await readJson(ready); } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+            });
+            for (const pid of Object.values(pids)) assert.equal(await processState(pid), 'running');
+            if (trigger === 'parent-stop') running.child.send({ type: 'stop' });
+            if (trigger === 'owner-exit') running.child.kill('SIGKILL');
+            let cleanup;
+            if (trigger === 'owner-exit') {
+                const exit = await running.closed;
+                assert(exit.code !== 0 || exit.signal, 'Forcibly terminated owner cannot exit successfully');
+                await assert.rejects(fs.stat(receipt.result), { code: 'ENOENT' }, 'Owner death cannot manufacture a pass result');
+                assert.equal((await readJson(path.join(receipt.evidence, 'running.json'))).pid, running.child.pid);
+                cleanup = 'Owner death independently observed; no retained pass or cleanup receipt was fabricated';
+            } else {
+                const { exit, result } = await finish(running);
+                assert.equal(exit.code, 1, exit.stderr);
+                assert.equal(result.interruptionTrigger, trigger);
+                assert.equal(result.interrupted, true);
+                assert.equal(result.success, false); assert.equal(result.fullSuccess, false);
+                assert.equal(result.completeTotals, false);
+                assert.equal(result.jobObjectClosed, true);
+                assert.equal(result.supervisor.code, 0); assert.equal(result.supervisor.signal, null);
+                assert.equal(result.cleanupReason, 'stop');
+                assert.equal(await processState(result.supervisor.pid), 'absent');
+                assert.equal(await processState(result.supervisorRunner.pid), 'absent');
+                const protocol = await fs.readFile(path.join(receipt.evidence, 'supervisor.log'));
+                assert.equal(result.supervisorLogSha256, digest(protocol));
+                assert.equal(JSON.parse(protocol.toString().trim().split('\n').at(-1)).type, 'treeClosed');
+                assert.match(result.cleanupScope, /Own Job Object.*zero active processes/);
+                cleanup = result.cleanupScope;
+            }
+            for (const pid of Object.values(pids)) await until(async () => (await processState(pid)) === 'absent', 3000);
+            assert.equal(sentinel.exitCode, null); assert.equal(sentinel.signalCode, null);
+            assert.equal(await processState(sentinel.pid), 'running', 'An unrelated process must remain alive');
+            await writeJson(path.join(item.directory, 'process-observations.json'), { ...pids, testTree: 'absent', unrelatedSentinel: 'alive', scope: cleanup });
+        } finally { sentinel.kill('SIGKILL'); await sentinelClosed; }
     });
 });

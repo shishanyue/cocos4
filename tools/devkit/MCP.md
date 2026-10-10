@@ -1,6 +1,6 @@
 # Development MCP And CLI
 
-This is a **Linux development implementation**, not the complete portable game
+This is a **Linux and Windows development implementation**, not the complete portable game
 SDK in the [plan](../../docs/plans/cocos4-mcp-devkit.md). The official MCP SDK serves
 10 tools by default in read-only mode, 13 with `--mode develop`, and 15 with
 `--mode develop --preview true`. Permissions are startup settings, not tool inputs.
@@ -20,8 +20,13 @@ Opening a preview in a browser runs the emitted game in that browser; merely
 building or serving it is not browser, interaction or device acceptance.
 All four source exporters are implemented, but a target is available only when
 the selected SDK delivers its profile. Legacy eight-profile HTML5/BILIBILI SDKs
-remain valid; the new four-target kit is expected to have 16 profiles. Its final
-SDK, candidate and packaged demo have not yet been assembled.
+remain valid. A four-target 16-profile SDK and Windows run7 candidate have been
+assembled. Run7's local package workflow passed sixteen edited game exports in
+two independent workspaces and four actual HTML5 browser cases. Exact identity,
+download, D-drive checks and remaining gates are in
+[Windows Local Delivery](ACCEPTANCE.md#windows-local-delivery-october-10).
+The current Codex Signal Switch loop passed through the packaged CLI; it did not
+install or discover a Codex MCP connector or accept the OpenCode/provider route.
 
 ## Prepare And Start
 
@@ -38,8 +43,9 @@ uses only selected source/configuration files and the pinned JSON5 parser. No en
 dependencies, engine build or external assets are needed. Installation is the
 explicit network-using step; preparation and runtime do not download anything.
 
-Maintainer SDK preparation currently uses Linux `/usr/bin/python3` and
-libc/kernel support for `renameat2(RENAME_NOREPLACE)`. Installed game/project
+Maintainer SDK preparation uses Linux `/usr/bin/python3` and
+libc/kernel support for `renameat2(RENAME_NOREPLACE)`, or the verified Windows
+publisher helper on Windows. Installed game/project
 publication instead uses the fixed compiled `cocos4-publish` host helper, built
 by `npm run build:host` and included in portable candidates. It receives pinned
 descriptor chains, an empty environment and a five-second timeout. It has no
@@ -91,6 +97,31 @@ installed by assembly. Read [candidate instructions](packaging/README.md) and th
 `bwrap`/`tar` and explicit browser test drivers; these are not installed kit
 dependencies. Its running receipt is not a pass, and namespaces are not a new VM.
 
+On a Windows x64 maintainer host, use the reviewed Windows archive instead:
+
+```powershell
+npm run prepare:release --prefix tools/devkit -- --target win32-x64 --sdk-root 'D:\cocos4-work\verified-game-sdk' --node-archive 'D:\cocos4-work\node-v24.21.0-win-x64.zip' --out 'D:\cocos4-work\new-candidate'
+npm run verify:portable --prefix tools/devkit -- --release 'D:\cocos4-work\new-candidate' --browser 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+```
+
+Windows assembly uses `packaging/node-win32-lock.json`, an installed MSVC/Windows
+SDK (or an explicitly selected supported compiler), and private local output
+directories. Installed kits need none of those build tools. Windows verification
+extracts and relocates the ZIP and uses the bundled runtime with empty PATH; it
+does not provide Linux namespaces, a fresh VM, or network isolation. Its report
+records those limits and the actual browser/workflow results.
+
+Use the selected protected private task subtree for SDK, workspace, explicit
+state, configured TEMP and browser profiles. Fixed-volume roots have a separate
+ancestor ACL rule; ordinary shared writable ancestors, hostile ACLs and linked
+paths remain rejected. Do not create task fixtures at a drive root or in the
+user home. The run7 D-drive checks passed on Node 18.20.8 and 24.21.0. Its sixteen
+game exports and four browser cases were then verified independently from the
+interrupted source matrix and partial run6 builds. The package evidence uses
+two target-group workspaces, with `freshFullSingleRun: false`.
+OpenCode remains an optional reference adapter;
+its Windows read-only-DACL loader workflow is still unaccepted.
+
 To include BILIBILI, WECHAT or BYTEDANCE, add genuine runtime directories with
 further `--runtime` arguments, both 2D/3D for each included target/variant. They
 require sibling `<runtime>-local/local-report.json` reports, or `--local-report`
@@ -122,10 +153,19 @@ check or launch an AI client, run project code, or establish browser/device supp
 It rejects `--state-root` and execution grants unless a workspace is explicit.
 With `--workspace`, doctor retains the shared worker/job flow and private state.
 Other portable commands need an external workspace; default state is
-`$XDG_STATE_HOME/cocos4` or `$HOME/.local/state/cocos4`, overridable with `--state-root`.
+`$XDG_STATE_HOME/cocos4` or `$HOME/.local/state/cocos4` on Linux;
+Windows uses `%LOCALAPPDATA%\cocos4` or `%USERPROFILE%\AppData\Local\cocos4`.
+Both are overridable with `--state-root`. Use `cocos4.exe` on Windows.
 The portable launcher fixes the SDK to its release and rejects `--sdk-root`.
 Portable `ai` requires `--executable` for an already installed supported OpenCode;
 it neither searches PATH nor installs a client.
+
+OpenCode is an optional reference adapter, not a dependency of the CLI or stdio
+MCP server. Compatible clients can connect directly to `cocos4.exe mcp` on
+Windows. Current OpenCode 1.18.21 / Bun 1.3.14 Windows checks establish MCP
+connection and skill discovery, but its code loader rejects the read-only
+guarded tool module. That AI workflow remains unaccepted; its file ACL protection
+is retained. See the acceptance ledger for the exact client evidence.
 
 The AI-spawned MCP uses the shipped Linux x64 `cocos4-mcp-launch` helper with
 `static-no-libc` linkage, no ELF interpreter and no shared libraries. It constructs
@@ -135,6 +175,10 @@ make Node or the other helpers libc-free. The separate OpenCode/provider
 authentication environment is preserved as before; provider credentials are not
 forwarded to MCP. Existing client config, plugins and stored credentials are not
 imported. No global client configuration is changed.
+
+Windows ships `cocos4-mcp-launch.exe` for the same fixed invocation and clean
+environment contract, with PE validation and protected file handles. The host
+process supervisor uses Windows Job Objects and process creation times.
 
 ### Source Commands
 
@@ -373,8 +417,8 @@ including persisted receipts and inventories.
 
 - Read-only is the default. Develop, preview and execute-tests permissions are separately opted
   into at startup; there is no maintainer/arbitrary-command tool mode.
-- Workspace reads use pinned Linux directory descriptors, no-follow/nonblocking
-  opens, identity checks and before/after snapshot verification. Hardlinks,
+- Workspace reads use pinned Linux directory descriptors, or Windows handles
+  with ACL/reparse validation, identity checks and before/after snapshot verification. Hardlinks,
   symlinks, special files, traversal, encoded separators and Windows-special names
   are rejected. Unrelated ancestor/sibling directory churn is not an input change.
 - Inspection is capped at 1,000 entries, 8 MiB, depth 32, 1 MiB per JSON and five
@@ -407,13 +451,18 @@ including persisted receipts and inventories.
   for the current SDK. Fixed tool-owned worker threads have an empty environment
   and no inherited Node execution flags. They never publish output. Authorized
   logic uses a fixed Node runner under Linux subreaper/guardian supervision with
-  pidfds and process start-time identities. EOF, cancellation, deadlines, worker
+  pidfds, or Windows Job Objects with process creation-time identities. EOF, cancellation, deadlines, worker
   crashes and server SIGKILL have real process-tree regressions; this is not a
-  security sandbox or proof of Windows/macOS supervision. Parent-only publication
+  security sandbox or proof of macOS supervision. Parent-only publication
   uses the fixed compiled helper described above.
   Non-preview workers have a 512 MiB V8 old-space limit to revalidate the complete
   indexed SDK; preview stays at 128 MiB and does not parse it. These are heap, not
   process RSS limits. Checks are never skipped to accommodate the old heap limit.
+- Preview HTTP resource bursts use at most eight active file verifications and
+  24 waiting requests, with a 128 MiB aggregate response-buffer budget. Waiting
+  requests open no payload files; their five-second deadline includes queue time.
+  Disconnect, expiry and server close remove them before dispatch. The listener
+  retains its 32-connection limit; overload and expired requests can be rejected.
 - All instances must use the same private `--state-root`. A conservative
   server-lifetime workspace lock excludes another server, including other SDK
   versions. Job IDs/history remain SDK-scoped. Do not change state roots to run
@@ -485,11 +534,29 @@ including persisted receipts and inventories.
 
 The SDK and private state must be trusted and stable. This is not isolation from
 malicious processes running as the same OS user. Filesystem power-loss durability,
-network filesystems, real disk exhaustion and non-Linux hosts are not accepted.
+network filesystems, real disk exhaustion and macOS are not accepted.
 Kernel I/O can outlive a bounded inspection response; its reader retains and
-closes the pending descriptors. Windows Job Objects and macOS support remain work.
+closes the pending descriptors. See the acceptance ledger for exact Windows test
+coverage; implementing its host helpers does not establish every package gate.
 
 ## Verification And Remaining Work
+
+The retained [run7 summary](build/windows-delivery-20261010-run7/acceptance-summary.json)
+records local package success: standard Windows extraction/relocation, SDK-only
+doctor without HOME/state, actual official-client MCP discovery/docs/resources,
+sixteen edits/checks/builds across two independent target groups, unchanged
+package/ZIP hashes and four HTML5 browser reports. Desktop/mobile pixels,
+mouse/touch, native WebAudio PCM, missing assets and ten restarts passed on
+Edge/SwiftShader. Browser and driver are explicit external dependencies.
+
+[Signal Switch](build/windows-delivery-20261010-run7/signal-switch/acceptance-summary.json)
+separately passed the current Codex packaged-CLI create/TS2322/strict repair/build
+route and actual victory/failure/timer, keyboard/mouse/touch, thirteen restarts
+and native WebAudio PCM; preview TTL exited 0. Installed Codex MCP discovery and
+the independent reference-client/provider route remain unaccepted.
+The source full matrix remains interrupted with null totals and `success: false`.
+The local package result does not establish VM, non-admin, offline/source-hidden,
+read-only mount, hardware/device, vendor publishing or redistribution approval.
 
 ```sh
 npm run check --prefix tools/devkit
@@ -569,7 +636,8 @@ not a fresh test of this MCP session or every game emitted by the new build tool
 `build/minigame-exporters-20260930/summary.json` records eight successful new
 WECHAT/BYTEDANCE runtime/local-report combinations, not a final SDK or packaged
 game run. The local checks mock host/`cc` boundaries and do not execute the engine
-or render. The new SDK/candidate/demo proof is still pending.
+or render. That checkpoint did not include SDK/candidate/demo verification;
+current run7 scope is recorded in [Windows Local Delivery](ACCEPTANCE.md#windows-local-delivery-october-10).
 
 See the [packaged checkpoint](ACCEPTANCE.md#packaged-2048-check) for the
 earlier HTML5/BILIBILI candidate's focused 2048 result, and the
@@ -583,10 +651,11 @@ four browser reports and passing release/profile identity assertions in Linux
 namespaces, not a fresh VM or model/vendor/device run, and do not transfer to the newer candidate.
 No current full Node 18/24 pass is established. Verification-script fixes have
 [historical source/harness results](ACCEPTANCE.md#september-26-focused-verification);
-no further full matrix was run. Fresh candidate assembly supersedes "not rebuilt",
+no further full matrix was run at that checkpoint. Fresh candidate assembly supersedes "not rebuilt",
 not earlier matrix passes.
 Still open for a complete release: full merged acceptance,
-real-model gameplay, fresh-VM/multi-host acceptance, clean-source release provenance,
+installed-client discovery and independent reference-provider inference,
+fresh-VM/multi-host acceptance, clean-source release provenance,
 publisher authentication and redistribution review. Arbitrary Creator imports
 and vendor compilation/upload automation remain outside the initial local beta.
 Vendor/device acceptance is a separate unverified gate. Neither the manifest kind

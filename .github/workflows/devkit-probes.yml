@@ -9,6 +9,99 @@ permissions:
   contents: read
 
 jobs:
+  windows-host:
+    # GitHub's Windows Server runner exercises Win32 APIs and engine tooling.
+    # It is not the Windows 11 minimum-host or portable distribution acceptance.
+    name: Windows Host Regressions (Node ${{ matrix.node }})
+    runs-on: windows-2022
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18.20.8', '24.21.0']
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Create A Private Source And Evidence Directory
+        run: |
+          # Host helpers verify ancestor ACLs. Keep this run under the runner's
+          # profile instead of changing permissions on the shared checkout drive.
+          $source = Join-Path $env:USERPROFILE ('cocos4-ci-' + [guid]::NewGuid().ToString('N'))
+          New-Item -ItemType Directory -Path $source | Out-Null
+          $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          & icacls.exe $source /inheritance:r /grant:r "*${sid}:(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' | Out-Null
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem -LiteralPath $env:GITHUB_WORKSPACE -Force | Copy-Item -Destination $source -Recurse -Force
+          $temporary = Join-Path $source '.ci-tmp'
+          New-Item -ItemType Directory -Path $temporary | Out-Null
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "COCOS4_CI_SOURCE=$source"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "TEMP=$temporary"
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "TMP=$temporary"
+      - name: Prepare Engine And Real Web Artifacts
+        working-directory: ${{ env.COCOS4_CI_SOURCE }}
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run setup:external
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check Windows Platform Paths And Public Declarations
+        working-directory: ${{ env.COCOS4_CI_SOURCE }}
+        run: |
+          npm run test:platforms
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:declaration
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Check Engine Sources And Mini-Game Routes
+        working-directory: ${{ env.COCOS4_CI_SOURCE }}
+        run: |
+          npm test -- --runInBand
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:minigame -- WECHAT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:minigame -- OPPO
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Win32 Host Helpers Using The Runner MSVC Toolchain
+        working-directory: ${{ env.COCOS4_CI_SOURCE }}/tools/devkit
+        run: |
+          npm ci
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Exercise Win32 Compiler, Filesystem, Processes And Launcher
+        working-directory: ${{ env.COCOS4_CI_SOURCE }}/tools/devkit
+        run: |
+          # Explicit files also work on Node 18, without cmd.exe glob expansion.
+          # SDK/browser/portable integration remains in the provisioned job below.
+          $tests = @(
+            'test/compiler-paths.test.mjs',
+            'test/runtime-files.test.mjs',
+            'test/host-requirements.test.mjs',
+            'test/windows-archive.test.mjs',
+            'test/windows-node.test.mjs',
+            'test/process.test.mjs',
+            'test/publisher.test.mjs',
+            'test/verification-runner.test.mjs',
+            'test/windows-launcher.test.mjs'
+          )
+          node --test --test-concurrency=2 @tests
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build And Run The Explicit Windows Supervisor Harness
+        working-directory: ${{ env.COCOS4_CI_SOURCE }}/tools/devkit
+        run: |
+          node --input-type=module -e 'import path from "node:path"; import { detectWindowsCompiler, buildWindowsSupervisorFixture } from "./scripts/build-supervisor-win32.mjs"; await buildWindowsSupervisorFixture({ output: path.resolve("build/host/windows-supervisor-fixture.exe"), compiler: await detectWindowsCompiler() });'
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:COCOS4_WINDOWS_SUPERVISOR = Join-Path $PWD 'build/host/cocos4-supervise.exe'
+          $env:COCOS4_WINDOWS_FIXTURE = Join-Path $PWD 'build/host/windows-supervisor-fixture.exe'
+          node --no-global-search-paths --test test/windows-supervisor.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
   integration:
     name: Provisioned Integration (Node ${{ matrix.node }})
     runs-on: ubuntu-24.04

@@ -1,10 +1,11 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
-import { constants } from 'node:fs';
-import { lstat, open, opendir, realpath } from 'node:fs/promises';
+import { constants, type BigIntStats } from 'node:fs';
+import { lstat, open, opendir } from 'node:fs/promises';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
 import { z } from 'zod';
 import { AppError } from './contracts.js';
+import { hostRealpath as realpath } from './windows-fs.js';
 import { apiIndexDescriptorSchema, apiIndexSchema, apiMetadataSchema, documentIdSchema, exampleMetadataSchema,
     generateApiIndex, MAX_API_INDEX_BYTES, MAX_API_SOURCE_BYTES, runtimeAvailabilitySchema, sourceRangeSchema,
     type IndexedDocument } from './api-index.js';
@@ -825,33 +826,39 @@ export async function loadSdk(root: string): Promise<Sdk> {
             if (!(await lstat(current)).isDirectory()) invalidPack();
             if (current === path.dirname(current)) break;
         }
-        if (await realpath(root) !== root) invalidPack();
-        const observed = new Map<string, Awaited<ReturnType<typeof lstat>>>();
-        observed.set(root, await lstat(root));
+        const resolvedRoot = await realpath(root);
+        if (process.platform !== 'win32' && resolvedRoot !== root) invalidPack();
+        root = resolvedRoot;
+        // NTFS file indexes can exceed Number.MAX_SAFE_INTEGER. Preserve every
+        // identity bit when checking a file before/after reads and during walks.
+        const observed = new Map<string, BigIntStats>();
+        observed.set(root, await lstat(root, { bigint: true }));
         const readFile = async (relative: string, maxBytes: number, retain = true): Promise<Buffer> => {
             if (!sdkPathSchema.safeParse(relative).success) invalidPack();
             const absolute = path.join(root, relative);
-            const before = await lstat(absolute);
-            if (!before.isFile() || before.nlink !== 1 || before.size > maxBytes || await realpath(absolute) !== absolute) invalidPack();
+            const before = await lstat(absolute, { bigint: true });
+            if (!before.isFile() || before.nlink !== 1n || before.size > maxBytes || await realpath(absolute) !== absolute) invalidPack();
             const previous = observed.get(absolute);
             if (previous && (previous.dev !== before.dev || previous.ino !== before.ino || previous.size !== before.size
-                || previous.mtimeMs !== before.mtimeMs || previous.ctimeMs !== before.ctimeMs)) invalidPack();
+                || previous.mtimeNs !== before.mtimeNs || previous.ctimeNs !== before.ctimeNs)) invalidPack();
             const handle = await open(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
             try {
-                const opened = await handle.stat();
-                if (!opened.isFile() || before.dev !== opened.dev || before.ino !== opened.ino || before.size !== opened.size) invalidPack();
-                const buffer = Buffer.alloc(retain ? before.size + 1 : 64 * KiB);
+                const opened = await handle.stat({ bigint: true });
+                if (!opened.isFile() || opened.nlink !== 1n || before.dev !== opened.dev || before.ino !== opened.ino || before.size !== opened.size) invalidPack();
+                const size = Number(before.size);
+                const buffer = Buffer.alloc(retain ? size + 1 : 64 * KiB);
                 const checksum = createHash('sha256');
                 let length = 0;
-                while (length <= before.size) {
+                while (length <= size) {
                     const start = retain ? length : 0;
-                    const { bytesRead } = await handle.read(buffer, start, Math.min(buffer.length - start, before.size + 1 - length), null);
+                    const { bytesRead } = await handle.read(buffer, start, Math.min(buffer.length - start, size + 1 - length), null);
                     if (!bytesRead) break;
                     if (!retain) checksum.update(buffer.subarray(0, bytesRead));
                     length += bytesRead;
                 }
-                const after = await handle.stat();
-                if (length !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs) invalidPack();
+                const after = await handle.stat({ bigint: true });
+                if (length !== size || after.nlink !== 1n || after.size !== before.size
+                    || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) invalidPack();
                 observed.set(absolute, before);
                 return retain ? buffer.subarray(0, length) : checksum.digest();
             } finally { await handle.close(); }
@@ -887,7 +894,7 @@ export async function loadSdk(root: string): Promise<Sdk> {
         let entries = 0;
         const walk = async (relative: string): Promise<void> => {
             const absolute = path.join(root, relative);
-            const stat = await lstat(absolute);
+            const stat = await lstat(absolute, { bigint: true });
             if (!stat.isDirectory() || await realpath(absolute) !== absolute) invalidPack();
             observed.set(absolute, stat);
             const directory = await opendir(absolute);
@@ -907,7 +914,7 @@ export async function loadSdk(root: string): Promise<Sdk> {
             if (total > (game ? MAX_GAME_TOTAL : MAX_TOTAL)) invalidPack();
             const text = filePathSchema.safeParse(file.path).success;
             const bytes = await readFile(file.path, file.bytes, text);
-            if (observed.get(path.join(root, file.path))!.size !== file.bytes
+            if (observed.get(path.join(root, file.path))!.size !== BigInt(file.bytes)
                 || (text ? bytes.length !== file.bytes || hash(bytes) !== file.sha256 : bytes.toString('hex') !== file.sha256)) invalidPack();
             if (text) {
                 const decoded = decode(bytes);
@@ -1107,9 +1114,10 @@ export async function loadSdk(root: string): Promise<Sdk> {
         }
         if (referenced.size !== files.size) invalidPack();
         for (const [absolute, before] of observed) {
-            const after = await lstat(absolute);
+            const after = await lstat(absolute, { bigint: true });
             if (after.isSymbolicLink() || after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size
-                || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs || await realpath(absolute) !== absolute) invalidPack();
+                || after.nlink !== before.nlink || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs
+                || await realpath(absolute) !== absolute) invalidPack();
         }
         return makeSdk(root, manifest, content, profiles, indexedDocuments);
     } catch (error) {
