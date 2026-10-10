@@ -46,6 +46,7 @@ export class TrackEntryListeners {
             const id = ++_track_ID;
             instance.setTrackEntryListener(id, entry);
             TrackEntryListeners._trackSet.set(id, entry);
+            TrackEntryListeners._trackOwners.set(id, instance);
         }
         return entry.listener;
     }
@@ -93,6 +94,10 @@ export class TrackEntryListeners {
     static emitTrackEntryListener (id: number, entry: spine.TrackEntry, event: spine.Event, eventType: spine.EventType): void {
         const curTrack = this._trackSet.get(id);
         if (!curTrack) return;
+        const muted = (TrackEntryListeners._mutedTracks.get(id) ?? 0) > 0;
+        // Muting suppresses user callbacks only. Bookkeeping below (notably the dispose-triggered removal)
+        // must still run, otherwise the registry would keep stale entries after a muted dispose.
+        if (muted && eventType !== spine.EventType.dispose) return;
         switch (eventType) {
         case spine.EventType.start:
             if (curTrack.listener.start) {
@@ -110,10 +115,12 @@ export class TrackEntryListeners {
             }
             break;
         case spine.EventType.dispose:
-            if (curTrack.listener.dispose) {
+            if (!muted && curTrack.listener.dispose) {
                 curTrack.listener.dispose(entry);
             }
             this._trackSet.delete(id);
+            this._trackOwners.delete(id);
+            this._mutedTracks.delete(id);
             curTrack.listener = null as any;
             break;
         case spine.EventType.complete:
@@ -144,6 +151,34 @@ export class TrackEntryListeners {
 
     private static _listenerSet = new Map<number, TrackEntryListeners>();
     private static _trackSet = new Map<number, spine.TrackEntry>();
+    private static _trackOwners = new Map<number, spine.SkeletonInstance>();
+    private static _mutedTracks = new Map<number, number>();
+
+    /**
+     * @engineInternal
+     * Mutes the per-track listener callbacks registered through `instance` and returns the restore handle.
+     * Only ids owned by that instance are muted; other skeleton instances keep delivering. Muting is counted
+     * so nested seeks restore correctly, and a dispose delivered while muted still removes its registry entry.
+     */
+    public static muteTrackListeners (instance: spine.SkeletonInstance): () => void {
+        const mutedIds: number[] = [];
+        TrackEntryListeners._trackSet.forEach((entry, id): void => {
+            if (TrackEntryListeners._trackOwners.get(id) !== instance) return;
+            mutedIds.push(id);
+            TrackEntryListeners._mutedTracks.set(id, (TrackEntryListeners._mutedTracks.get(id) ?? 0) + 1);
+        });
+        return (): void => {
+            for (let i = 0; i < mutedIds.length; i++) {
+                const id = mutedIds[i];
+                const depth = (TrackEntryListeners._mutedTracks.get(id) ?? 0) - 1;
+                if (depth > 0) {
+                    TrackEntryListeners._mutedTracks.set(id, depth);
+                } else {
+                    TrackEntryListeners._mutedTracks.delete(id);
+                }
+            }
+        };
+    }
 }
 
 globalThis.TrackEntryListeners = TrackEntryListeners;

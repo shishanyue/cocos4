@@ -52,6 +52,9 @@ function isSkeletonDataValid (skeletonData: SkeletonData | null): skeletonData i
 
 const CachedFrameTime = 1 / 60;
 
+// Component-level listen depth per native instance, so nested seeks keep the outer mute in place.
+const componentListenerDepth = new Map<spine.SkeletonInstance, number>();
+
 type TrackListener = (x: spine.TrackEntry) => void;
 type TrackListener2 = (x: spine.TrackEntry, ev: spine.Event | number) => void;
 /**
@@ -250,6 +253,9 @@ export class Skeleton extends UIRenderer {
     protected _state: spine.AnimationState = null!;
     protected _textures: Texture2D[] = [];
     private _skeletonInfo: SkeletonCacheItemInfo | null = null;
+    // Asset identity held by a realtime component. Realtime skeletons share the asset's wasm data
+    // registration and must keep it alive until this component releases it.
+    private _realtimeOwnerId = '';
     // Animation name
     protected _animationName = '';
     protected _skinName = '';
@@ -279,8 +285,11 @@ export class Skeleton extends UIRenderer {
     protected _paused = false;
 
     // Below properties will effect when cache mode is SHARED_CACHE or PRIVATE_CACHE.
-    // accumulate time
+    // Accumulated phase inside the current cycle (wrapped).
     protected _accTime = 0;
+    // Unwrapped logical track time. Matches the realtime TrackEntry.trackTime contract: it keeps counting
+    // across loop boundaries and is set directly by setTrackTime, so game-side clocks stay consistent.
+    protected _trackTime = 0;
     // Play times counter
     protected _playCount = 0;
     // Skeleton cache
@@ -850,7 +859,7 @@ export class Skeleton extends UIRenderer {
             if (this._skeletonInfo !== skeletonInfo || (!this._skeletonInfo && !skeletonInfo)) {
                 this._destroySkeletonInfo(this._skeletonCache);
                 if (!skeletonInfo && this._cacheMode === SpineAnimationCacheMode.PRIVATE_CACHE) {
-                    this._animCache = this._skeletonCache!.initAnimationCache(this.skeletonData!.uuid, this._skeletonData!, this._animationName);
+                    this._animCache = this._skeletonCache!.initAnimationCache(this.skeletonData!.getId(), this._skeletonData!, this._animationName);
                 }
                 this._skeletonInfo = this._skeletonCache!.createSkeletonInfo(this._skeletonData!);
                 this._skeleton = this._skeletonInfo.skeleton!;
@@ -859,6 +868,18 @@ export class Skeleton extends UIRenderer {
             this._skeleton = this._instance!.initSkeleton(skeletonData);
             this._state = this._instance!.getAnimationState()!;
             this._instance!.setPremultipliedAlpha(this._premultipliedAlpha);
+            // Realtime components hold the wasm data registration through the same live-owner accounting the
+            // cached modes use, so destroying the asset while this component still renders cannot free it.
+            const realtimeId = this._skeletonData ? this._skeletonData.getId() : '';
+            if (this._realtimeOwnerId !== realtimeId) {
+                if (this._realtimeOwnerId) {
+                    SkeletonCache.sharedCache.releaseRealtimeOwner(this._realtimeOwnerId);
+                }
+                this._realtimeOwnerId = realtimeId;
+                if (realtimeId) {
+                    SkeletonCache.sharedCache.acquireLiveOwner(realtimeId);
+                }
+            }
         }
         if (this._isRenderable) {
             SkeletonSystem.getInstance().add(this);
@@ -938,8 +959,12 @@ export class Skeleton extends UIRenderer {
      * @param trackIndex @en Index of track. @zh 动画通道索引。
      * @param name @en The name of animation. @zh 动画名称。
      * @param loop @en Use loop mode or not. @zh 是否使用循环播放模式。
+     * @param applyPose @en Realtime only. When false, the track is bound without the immediate native pose
+     * apply; the next regular `updateAnimation` applies it once. Default true keeps the historical behaviour.
+     * @zh 仅实时模式生效。为 false 时只绑定轨道，不立即应用原生姿势，交由下一次常规 `updateAnimation`
+     * 应用一次；默认 true 保持原有行为。
      */
-    public setAnimation (trackIndex: number, name: string, loop?: boolean): spine.TrackEntry | null {
+    public setAnimation (trackIndex: number, name: string, loop?: boolean, applyPose = true): spine.TrackEntry | null {
         if (!(typeof name === 'string')) {
             logID(7511);
             return null;
@@ -958,15 +983,16 @@ export class Skeleton extends UIRenderer {
                 warnID(16412);
             }
             if (!this._skeletonCache) return null;
-            let cache = this._skeletonCache.getAnimationCache(this._skeletonData!.uuid, name);
+            let cache = this._skeletonCache.getAnimationCache(this._skeletonData!.getId(), name);
             if (!cache) {
-                cache = this._skeletonCache.initAnimationCache(this.skeletonData!.uuid, this._skeletonData!, name);
+                cache = this._skeletonCache.initAnimationCache(this.skeletonData!.getId(), this._skeletonData!, name);
                 if (cache && this._skinName) cache.setSkin(this._skinName);
             }
             if (cache) {
                 this._animationName = name;
                 this._isAniComplete = false;
                 this._accTime = 0;
+                this._trackTime = 0;
                 this._playCount = 0;
                 this._animCache = cache;
                 if (this._socketNodes.size > 0) {
@@ -977,7 +1003,14 @@ export class Skeleton extends UIRenderer {
             }
         } else {
             this._animationName = name;
-            trackEntry = this._instance!.setAnimation(trackIndex, name, loop);
+            if (applyPose) {
+                trackEntry = this._instance!.setAnimation(trackIndex, name, loop);
+            } else {
+                // Bind the track through the animation state only. The native entry, play times, render-dirty
+                // bookkeeping and event queue are identical; only the immediate pose apply is deferred to the
+                // next regular updateAnimation.
+                trackEntry = this._state.setAnimationWith(trackIndex, animation, loop);
+            }
         }
         this._markForUpdateRenderData();
         return trackEntry;
@@ -1038,6 +1071,154 @@ export class Skeleton extends UIRenderer {
             return this._state.getCurrent(trackIndex);
         }
         return null;
+    }
+
+    /**
+     * @en
+     * Returns the current track time in seconds, unwrapped: it keeps counting across loop boundaries and is
+     * set directly by `setTrackTime`. This matches the realtime `TrackEntry.trackTime` contract, so a game
+     * adapter can drive phase/deadline logic identically in both cache modes.
+     * @zh
+     * 返回当前轨道时间（秒），不随循环回绕：跨循环持续累加，并由 `setTrackTime` 直接设定。该语义
+     * 与实时模式的 `TrackEntry.trackTime` 一致，便于游戏侧适配层在两种缓存模式下统一驱动相位与时限。
+     * @param trackIndex @en Track index; cached mode supports track 0 only. @zh 轨道索引；缓存模式仅支持轨道 0。
+     */
+    public getTrackTime (trackIndex = 0): number {
+        if (!Number.isInteger(trackIndex) || trackIndex < 0) return 0;
+        if (this.isAnimationCached()) {
+            if (trackIndex !== 0) return 0;
+            return this._trackTime;
+        }
+        const entry = this._state ? this._state.getCurrent(trackIndex) : null;
+        return entry ? entry.trackTime : 0;
+    }
+
+    /**
+     * @en
+     * Sets the current animation track time and applies the pose immediately, without emitting
+     * start/interrupt/complete/end/event callbacks for the seek itself. The reported track time stays
+     * unwrapped (matching the realtime \`TrackEntry.trackTime\` contract): looping animations keep the raw
+     * value and only the cached frame phase wraps to the clip period, while one-shot animations clamp to the
+     * clip end. A later normal advance still raises the regular completion events. NaN/Infinite time and
+     * invalid track indices are ignored.
+     * @zh
+     * 设置当前动画轨道的时间并立即应用姿势，本次跳转不会触发 start/interrupt/complete/end/event 回调。
+     * 对外返回的轨道时间不随循环回绕（与实时模式的 \`TrackEntry.trackTime\` 语义一致）：循环动画保留原始
+     * 时间值，只有缓存模式的帧相位按周期回绕；单次动画钳制到片段末尾。之后的正常推进仍会触发常规完成
+     * 事件。NaN/Infinity 时间与非法轨道索引将被忽略。
+     * @param trackIndex @en Track index; cached mode supports track 0 only. @zh 轨道索引；缓存模式仅支持轨道 0。
+     * @param time @en Track time in seconds. @zh 轨道时间（秒）。
+     * @param applyPose @en When false, only the track clock is moved; the pose is applied by the next regular
+     * `updateAnimation`, which avoids a second apply when a caller drives the clock itself. Default true
+     * applies the pose immediately (the historical contract).
+     * @zh 为 false 时只移动轨道时钟，姿势由下一次常规 `updateAnimation` 应用，避免调用方自行驱动时钟时
+     * 重复应用。默认 true 立即应用姿势（原有契约）。
+     */
+    public setTrackTime (trackIndex: number, time: number, applyPose = true): void {
+        if (!Number.isInteger(trackIndex) || trackIndex < 0 || !Number.isFinite(time)) return;
+        if (this.isAnimationCached()) {
+            if (trackIndex !== 0) return;
+            this._seekCached(time, applyPose);
+            return;
+        }
+        const entry = this._state ? this._state.getCurrent(trackIndex) : null;
+        const instance = this._instance;
+        if (!entry || !instance) return;
+        // Raw unwrapped time. It must be normalized against the LIVE entry duration AFTER the unmuted drain:
+        // a callback may have replaced the track with a clip of a different length, so clamping against the
+        // captured entry old duration would write a wrong time.
+        const rawTime = Math.max(0, time);
+        if (applyPose) {
+            // First deliver whatever the native state already had queued from earlier calls (for example the
+            // START of the clip that was set before this seek); that drain must run unmuted so a seek never
+            // discards natural events. Then move the clock and apply the pose under the mute, so the jump
+            // itself raises nothing.
+            instance.updateAnimation(0);
+            // The drain runs user callbacks, which may replace or clear the track, switch the state, or even
+            // destroy the component; the captured entry may be disposed by then. Re-read the live instance,
+            // state and current entry and write only to that one, normalizing with its own duration. Embind
+            // may hand back a different JS wrapper for the same native pointer, so this must never compare
+            // wrappers with ===.
+            const liveInstance = this._instance;
+            const liveState = this._state;
+            if (!liveInstance || !liveState) return;
+            const liveEntry = liveState.getCurrent(trackIndex);
+            if (!liveEntry || !liveEntry.animation) return;
+            const liveDuration = liveEntry.animation.duration;
+            if (!(liveDuration > 0)) return;
+            // Normalize the raw seek time against the live clip, never the captured entry old duration.
+            liveEntry.trackTime = liveEntry.loop ? rawTime : Math.min(rawTime, liveDuration);
+            this._suppressNativeEventDelivery((): void => {
+                liveInstance.updateAnimation(0);
+            });
+        } else {
+            // Explicit-pose callers drive the clock themselves; no callback can run between this read and
+            // the write, so the captured entry is still current.
+            const duration = entry.animation.duration;
+            if (!(duration > 0)) return;
+            entry.trackTime = entry.loop ? rawTime : Math.min(rawTime, duration);
+        }
+        this._markForUpdateRenderData();
+    }
+
+    private _seekCached (time: number, applyPose: boolean): void {
+        const frameCache = this._animCache;
+        const skeleton = this._skeleton;
+        if (!frameCache || !frameCache.isInited() || !skeleton) return;
+        const animation = skeleton.data.findAnimation(this._animationName);
+        const duration = animation ? animation.duration : 0;
+        if (!(duration > 0)) return;
+        const frameTime = SkeletonCache.FrameTime;
+        // Unwrapped clock for the game adapter; the frame lookup uses the wrapped phase.
+        let t = Math.max(0, time);
+        t = this._playTimes > 0 ? Math.min(t, duration) : t;
+        const phase = this._playTimes > 0 ? t : t % duration;
+        this._trackTime = t;
+        this._accTime = phase;
+        this._isAniComplete = false;
+        if (!applyPose) {
+            // Explicit-pose callers let the next regular updateAnimation pick the frame from the new phase.
+            return;
+        }
+        const frameIdx = Math.floor(phase / frameTime);
+        if (!frameCache.isCompleted && frameIdx >= frameCache.frames.length) {
+            // Bake up to the requested frame on demand; the cached playback itself never advances here.
+            frameCache.updateToFrame(frameIdx);
+        }
+        const frames = frameCache.frames;
+        if (frames.length === 0) return;
+        this._curFrame = frames[Math.min(frameIdx, frames.length - 1)];
+        if (this._curFrame) {
+            this.attachUtil.updateSkeletonBones(this._curFrame.boneInfos);
+        }
+        this._markForUpdateRenderData();
+    }
+
+    private _suppressNativeEventDelivery (apply: () => void): void {
+        const instance = this._instance;
+        if (!instance) return;
+        const listenerID = this._eventListenerID;
+        // Reentrant component guard: an inner seek must not restore component delivery while the outer seek
+        // is still muted. The depth is per native instance and only the outermost call restores the id.
+        const depth = (componentListenerDepth.get(instance) ?? 0) + 1;
+        componentListenerDepth.set(instance, depth);
+        if (depth === 1 && listenerID > 0) instance.setListener(0);
+        // Scope the per-track mute to this instance only, so other components keep receiving events while
+        // this one seeks. Muting is counted, so nested seeks restore correctly.
+        const restoreTrackListeners = TrackEntryListeners.muteTrackListeners(instance);
+        try {
+            apply();
+        } finally {
+            // Per-track callbacks first, then component-level delivery when the outermost guard leaves.
+            restoreTrackListeners();
+            const remaining = (componentListenerDepth.get(instance) ?? 1) - 1;
+            if (remaining > 0) {
+                componentListenerDepth.set(instance, remaining);
+            } else {
+                componentListenerDepth.delete(instance);
+                if (listenerID > 0) instance.setListener(listenerID);
+            }
+        }
     }
 
     /**
@@ -1121,6 +1302,7 @@ export class Skeleton extends UIRenderer {
         }
 
         this._accTime += dt;
+        this._trackTime += dt;
         let frameIdx = Math.floor(this._accTime / frameTime);
         if (!frameCache.isCompleted) {
             frameCache.updateToFrame(frameIdx);
@@ -1441,7 +1623,7 @@ export class Skeleton extends UIRenderer {
     public invalidAnimationCache (): void {
         if (!this.isAnimationCached()) return;
         if (this._skeletonCache) {
-            this._skeletonCache.invalidAnimationCache(this._skeletonData!.uuid);
+            this._skeletonCache.invalidAnimationCache(this._skeletonData!.getId());
         }
     }
 
@@ -1936,6 +2118,10 @@ export class Skeleton extends UIRenderer {
     }
 
     private _destroySkeletonInfo (skeletonCache: SkeletonCache | null): void {
+        if (this._realtimeOwnerId) {
+            SkeletonCache.sharedCache.releaseRealtimeOwner(this._realtimeOwnerId);
+            this._realtimeOwnerId = '';
+        }
         if (skeletonCache && this._skeletonInfo) {
             skeletonCache.destroySkeleton(this._skeletonInfo.assetUUID);
             this._skeletonInfo = null;

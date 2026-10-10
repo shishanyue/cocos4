@@ -23,7 +23,7 @@
 */
 
 import { EDITOR_NOT_IN_PREVIEW } from 'internal:constants';
-import { CCString, Enum, error, murmurhash2_32_gc } from '../core';
+import { CCString, Enum, error, js, murmurhash2_32_gc } from '../core';
 import SkeletonCache from './skeleton-cache';
 import { Skeleton } from './skeleton';
 import spine from './lib/spine-core';
@@ -31,6 +31,19 @@ import { ccclass, serializable, type } from '../core/data/decorators';
 import { legacyCC } from '../core/global-exports';
 import { Texture2D, Asset } from '../asset/assets';
 import { Node } from '../scene-graph';
+
+/**
+ * Runtime-created skeleton data cannot use a content hash as its cache identity: the merged hash only
+ * covers the atlas text and texture ids, so two different binaries that share them would collide. Mint a
+ * unique, memoized id per instance instead; bundle/editor assets keep their uuid.
+ */
+const runtimeIdGenerator = new js.IDGenerator('SkeletonData');
+
+// Wasm registry entries are shared: several SkeletonData instances can resolve to the same registered
+// runtime data (loaded assets that reuse a uuid, or a re-created runtime data). The entry is freed only when
+// the last claiming instance is destroyed.
+const registrationRefCounts = new Map<string, number>();
+
 /**
  * @en The skeleton data of spine.
  * @zh Spine 的骨骼数据。
@@ -146,6 +159,17 @@ export class SkeletonData extends Asset {
 
     private _skeletonCache: spine.SkeletonData | null = null;
 
+    // Cache identity of runtime-created data. Empty until getId() mints it; invalidated by reset().
+    private _runtimeId = '';
+
+    // Identities retired by reset() before the instance was destroyed; cleaned exactly once by destroy().
+    private _retiredIds: string[] = [];
+
+    // Wasm data registrations owned by this instance, grouped by the cache identity they were created for.
+    // Each identity releases only its own registrations, so retiring one identity can never free the
+    // registrations another identity still needs.
+    private _registrationsByIdentity: Map<string, string[]> = new Map<string, string[]>();
+
     private _skinsEnum: { [key: string]: number } | null = null;
     private _animsEnum: { [key: string]: number } | null = null;
 
@@ -171,6 +195,13 @@ export class SkeletonData extends Asset {
      */
     public reset (): void {
         this._skeletonCache = null;
+        // Runtime data gets a fresh identity on the next getId(). Retire the previous identity so destroy()
+        // can release its bucket and pooled animation caches exactly once; components that are still alive
+        // keep their bucket until they release it themselves.
+        if (this._runtimeId) {
+            this._retiredIds.push(this._runtimeId);
+            this._runtimeId = '';
+        }
         if (EDITOR_NOT_IN_PREVIEW) {
             this._skinsEnum = null;
             this._animsEnum = null;
@@ -186,6 +217,60 @@ export class SkeletonData extends Asset {
             this._skinsEnum = null;
             this._animsEnum = null;
         }
+    }
+
+    /**
+     * @en
+     * The stable identity of this data for the skeleton cache and the wasm data registry. Bundle and editor
+     * assets return their uuid; data created at runtime gets a memoized per-instance id, because its content
+     * hash cannot tell two binaries that share an atlas and textures apart.
+     * @zh
+     * 该数据在骨骼缓存与 wasm 数据注册中的稳定标识。资源包与编辑器资源返回其 uuid；运行时创建的数据
+     * 返回记忆化的实例唯一 id，因为内容哈希无法区分共用图集与贴图的两份不同二进制。
+     */
+    public getId (): string {
+        if (this._uuid) return this._uuid;
+        if (!this._runtimeId) {
+            this._runtimeId = runtimeIdGenerator.getNewId();
+        }
+        return this._runtimeId;
+    }
+
+    /**
+     * @internal Identity currently in use, without minting a new one. destroy() must not change identity.
+     */
+    private currentId (): string {
+        return this._uuid || this._runtimeId;
+    }
+
+    /**
+     * @internal Claim one reference to the wasm registration for the given identity. This is only called on a
+     * successful registration path (a fresh factory registration or a confirmed query hit), so the entry is
+     * guaranteed to exist. Embind raw pointers can alias different JS wrappers for the same native object, so
+     * this intentionally never compares wrapper identity with ===.
+     */
+    private trackRegisteredUUID (identity: string, uuid: string): void {
+        if (!uuid) return;
+        registrationRefCounts.set(uuid, (registrationRefCounts.get(uuid) ?? 0) + 1);
+        const registrations = this._registrationsByIdentity.get(identity);
+        if (registrations) {
+            registrations.push(uuid);
+        } else {
+            this._registrationsByIdentity.set(identity, [uuid]);
+        }
+    }
+
+    /**
+     * @internal Release one reference to a wasm registration; the last owner frees the native entry.
+     */
+    private releaseRegisteredUUID (uuid: string): void {
+        const remaining = (registrationRefCounts.get(uuid) ?? 1) - 1;
+        if (remaining > 0) {
+            registrationRefCounts.set(uuid, remaining);
+            return;
+        }
+        registrationRefCounts.delete(uuid);
+        spine.wasmUtil.destroySpineSkeletonDataWithUUID(uuid);
     }
 
     /**
@@ -208,10 +293,14 @@ export class SkeletonData extends Asset {
             return null;
         }
 
+        const identity = this.getId();
         const uuid = this.mergedUUID();
         const spData = spine.wasmUtil.querySpineSkeletonDataByUUID(uuid);
         if (spData) {
             this._skeletonCache = spData;
+            // A query hit shares the registration with its creator; claim a reference so the creator cannot
+            // free it while this instance is still using it.
+            this.trackRegisteredUUID(identity, uuid);
         } else {
             const size = this.textures.length;
             const textureUUIDs: string[] = [];
@@ -222,6 +311,7 @@ export class SkeletonData extends Asset {
             if (this._skeletonJson) {
                 this._skeletonCache = spine.wasmUtil.createSpineSkeletonDataWithJson(this.skeletonJsonStr, this._atlasText, this.textureNames, textureUUIDs);
                 spine.wasmUtil.registerSpineSkeletonDataWithUUID(this._skeletonCache, uuid);
+                this.trackRegisteredUUID(identity, uuid);
             } else {
                 const rawData = new Uint8Array(this._nativeAsset);
                 const byteSize = rawData.length;
@@ -230,6 +320,7 @@ export class SkeletonData extends Asset {
                 wasmMem.set(rawData);
                 this._skeletonCache = spine.wasmUtil.createSpineSkeletonDataWithBinary(byteSize, this._atlasText, this.textureNames, textureUUIDs);
                 spine.wasmUtil.registerSpineSkeletonDataWithUUID(this._skeletonCache, uuid);
+                this.trackRegisteredUUID(identity, uuid);
                 spine.wasmUtil.freeStoreMemory();
             }
         }
@@ -286,8 +377,10 @@ export class SkeletonData extends Asset {
             ...this.textures.map((texture) => texture.getId()),
         ].join('');
 
-        // merge asset's uuid & hashContent
-        return `${this._uuid}${murmurhash2_32_gc(hashContent, 668)}`;
+        // Merge the stable identity and hashContent. The identity is the asset uuid for bundle/editor assets
+        // and a unique per-instance id for runtime-created data, so distinct binaries that share an atlas and
+        // textures can no longer register over each other in the wasm data map.
+        return `${this.getId()}${murmurhash2_32_gc(hashContent, 668)}`;
     }
 
     /**
@@ -295,8 +388,42 @@ export class SkeletonData extends Asset {
      * @zh 销毁 skeleton data。
      */
     public destroy (): boolean {
-        SkeletonCache.sharedCache.destroyCachedAnimations(this._uuid);
-        spine.wasmUtil.destroySpineSkeletonDataWithUUID(this.mergedUUID());
+        // Release every identity this instance used. destroyCachedAnimations() keeps buckets that still have
+        // live owners, so this can never strand or prematurely dispose another component's skeleton.
+        const sharedCache = SkeletonCache.sharedCache;
+        const identities: string[] = [];
+        const cacheId = this.currentId();
+        if (cacheId) identities.push(cacheId);
+        for (let i = 0; i < this._retiredIds.length; i++) {
+            identities.push(this._retiredIds[i]);
+        }
+        // Registrations whose identity is not current/retired can only come from a direct identity mutation;
+        // include them so they are never leaked.
+        this._registrationsByIdentity.forEach((_registrations, identity): void => {
+            if (identities.indexOf(identity) < 0) identities.push(identity);
+        });
+        for (let i = 0; i < identities.length; i++) {
+            sharedCache.destroyCachedAnimations(identities[i]);
+        }
+        // Release each identity independently: freeing one identity's registrations must never free another
+        // identity that still has live owners. Each identity's release runs once, when its own owners left.
+        for (let i = 0; i < identities.length; i++) {
+            const identity = identities[i];
+            const release = (): void => {
+                const registrations = this._registrationsByIdentity.get(identity);
+                if (!registrations) return;
+                this._registrationsByIdentity.delete(identity);
+                for (let j = 0; j < registrations.length; j++) {
+                    this.releaseRegisteredUUID(registrations[j]);
+                }
+            };
+            if (SkeletonCache.hasLiveOwners(identity)) {
+                sharedCache.deferRelease(identity, release);
+            } else {
+                release();
+            }
+        }
+        this._retiredIds.length = 0;
         return super.destroy();
     }
 

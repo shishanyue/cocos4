@@ -32,6 +32,7 @@ import { warn } from '../core/platform/debug';
 const MaxCacheTime = 30;
 const FrameTime = 1 / 60;
 const _useTint = true;
+type DeferredRelease = () => void;
 const _byteStrideOneColor = getAttributeStride(vfmtPosUvColor4B);
 const _byteStrideTwoColor = getAttributeStride(vfmtPosUvTwoColor4B);
 
@@ -319,6 +320,12 @@ class SkeletonCache {
     protected _animationPool: { [key: string]: AnimationCache };
     //for shared mode only, key is asset uuid and value is ref count.
     private _sharedCacheMap: Map<string, number> = new Map<string, number>();
+
+    // Releases (wasm data registrations) that must wait until the last live cache owner of an identity leaves.
+    private _deferredReleases: Map<string, DeferredRelease[]> = new Map<string, DeferredRelease[]>();
+
+    // Live component owners per asset identity, across shared and private cache instances.
+    private static _liveOwners: Map<string, number> = new Map<string, number>();
     constructor () {
         this._privateMode = false;
         this._animationPool = {};
@@ -332,6 +339,86 @@ class SkeletonCache {
     public clear (): void {
         this._animationPool = {};
         this._skeletonCache = {};
+        this._deferredReleases.clear();
+    }
+
+    /**
+     * @engineInternal
+     * Whether any component still owns a cache bucket for the identity.
+     */
+    public static hasLiveOwners (assetUuid: string): boolean {
+        return (SkeletonCache._liveOwners.get(assetUuid) ?? 0) > 0;
+    }
+
+    private static addLiveOwnerInternal (assetUuid: string): void {
+        SkeletonCache._liveOwners.set(assetUuid, (SkeletonCache._liveOwners.get(assetUuid) ?? 0) + 1);
+    }
+
+    private static releaseLiveOwnerInternal (assetUuid: string): void {
+        const remaining = (SkeletonCache._liveOwners.get(assetUuid) ?? 1) - 1;
+        if (remaining > 0) {
+            SkeletonCache._liveOwners.set(assetUuid, remaining);
+        } else {
+            SkeletonCache._liveOwners.delete(assetUuid);
+        }
+    }
+
+    /**
+     * @engineInternal
+     * Realtime components hold their wasm data registration through this counter even though they never
+     * create a cache bucket; the asset may only free the registration after the last such owner releases it.
+     */
+    public acquireLiveOwner (assetUuid: string): void {
+        SkeletonCache.addLiveOwnerInternal(assetUuid);
+    }
+
+    /**
+     * @engineInternal
+     * Releases a realtime component's hold. When it was the last owner, any release the asset deferred while
+     * owners were alive is flushed (and the retired identity's pooled frames are cleaned).
+     */
+    public releaseRealtimeOwner (assetUuid: string): void {
+        SkeletonCache.releaseLiveOwnerInternal(assetUuid);
+        if (SkeletonCache.hasLiveOwners(assetUuid)) return;
+        // Clean pooled frames and flush the deferred registration release only when the asset side actually
+        // queued one; an ordinary owner leaving must keep the pool available for reuse.
+        if (!this._deferredReleases.has(assetUuid)) return;
+        this.destroyPoolEntries(assetUuid);
+        this.flushDeferredReleases(assetUuid);
+    }
+
+    /**
+     * @engineInternal
+     * Defers a release (usually a wasm data registration) until the identity has no live owners left.
+     */
+    public deferRelease (assetUuid: string, release: () => void): void {
+        const list = this._deferredReleases.get(assetUuid);
+        if (list) {
+            list.push(release);
+        } else {
+            this._deferredReleases.set(assetUuid, [release]);
+        }
+    }
+
+    private flushDeferredReleases (assetUuid: string): void {
+        const list = this._deferredReleases.get(assetUuid);
+        if (!list) return;
+        this._deferredReleases.delete(assetUuid);
+        for (let i = 0; i < list.length; i++) {
+            list[i]();
+        }
+    }
+
+    private destroyPoolEntries (assetUuid: string): void {
+        const animationPool = this._animationPool;
+        for (const key in animationPool) {
+            // Exact pool key match: a plain substring test would evict the entries of another asset whose
+            // identity merely starts with this one (e.g. SkeletonData.1 vs SkeletonData.11).
+            if (key.startsWith(`${assetUuid}#`)) {
+                animationPool[key].destroy();
+                delete animationPool[key];
+            }
+        }
     }
 
     public invalidAnimationCache (uuid: string): void {
@@ -347,6 +434,7 @@ class SkeletonCache {
     }
 
     public destroySkeleton (assetUuid: string): void {
+        SkeletonCache.releaseLiveOwnerInternal(assetUuid);
         if (!this._privateMode) {
             let refCount = this._sharedCacheMap.get(assetUuid);
             if (refCount) {
@@ -360,7 +448,19 @@ class SkeletonCache {
         }
 
         const skeletonInfo = this._skeletonCache[assetUuid];
-        if (!skeletonInfo) return;
+        if (!skeletonInfo) {
+            // The bucket is already gone; a deferred release must still run exactly once, but only once no
+            // owner (cached or realtime, shared or private) is left. Deferred releases are always queued on
+            // the shared cache, so route the flush there even when this is a private cache instance.
+            if (!SkeletonCache.hasLiveOwners(assetUuid)) {
+                const sharedCache = SkeletonCache.sharedCache;
+                if (sharedCache._deferredReleases.has(assetUuid)) {
+                    sharedCache.destroyPoolEntries(assetUuid);
+                    sharedCache.flushDeferredReleases(assetUuid);
+                }
+            }
+            return;
+        }
 
         const sharedOperate = (aniKey: string, animationCache: AnimationCache): void => {
             this._animationPool[`${assetUuid}#${aniKey}`] = animationCache;
@@ -383,10 +483,23 @@ class SkeletonCache {
             spine.wasmUtil.destroySpineSkeleton(skeletonInfo.skeleton);
         }
         delete this._skeletonCache[assetUuid];
+        // The asset was destroyed while this bucket was still owned: its pooled frames and wasm registration
+        // must not outlive the last owner.
+        if (!SkeletonCache.hasLiveOwners(assetUuid)) {
+            // Private caches destroy their own animation instances above; when the asset side queued a release
+            // (it was destroyed while owners were alive), the shared cache flushes it and drops its pooled
+            // frames. A normal owner release keeps the pool for reuse.
+            const sharedCache = SkeletonCache.sharedCache;
+            if (sharedCache._deferredReleases.has(assetUuid)) {
+                sharedCache.destroyPoolEntries(assetUuid);
+                sharedCache.flushDeferredReleases(assetUuid);
+            }
+        }
     }
 
     public createSkeletonInfo (skeletonAsset: SkeletonData): SkeletonCacheItemInfo {
-        const uuid = skeletonAsset.uuid;
+        const uuid = skeletonAsset.getId();
+        SkeletonCache.addLiveOwnerInternal(uuid);
         const runtimeData = skeletonAsset.getRuntimeData();
         if (!this._privateMode) {
             let refCount = this._sharedCacheMap.get(uuid);
@@ -421,7 +534,7 @@ class SkeletonCache {
     }
 
     public getSkeletonInfo (skeletonAsset: SkeletonData): null | SkeletonCacheItemInfo {
-        const uuid = skeletonAsset.uuid;
+        const uuid = skeletonAsset.getId();
         return this._skeletonCache[uuid];
     }
 
@@ -460,12 +573,11 @@ class SkeletonCache {
 
     public destroyCachedAnimations (uuid?: string): void {
         if (uuid) {
-            const animationPool = this._animationPool;
-            for (const key in animationPool) {
-                if (key.includes(uuid)) {
-                    animationPool[key].destroy();
-                    delete animationPool[key];
-                }
+            this.destroyPoolEntries(uuid);
+            // Live owners keep their bucket: destroySkeleton() releases it exactly once when the last owner
+            // leaves. Force-destroying here would strand skeletons that are still registered and rendering.
+            if (this._sharedCacheMap.has(uuid)) {
+                return;
             }
             const skeletonInfo = this._skeletonCache[uuid];
             const skeleton = skeletonInfo && skeletonInfo.skeleton;
