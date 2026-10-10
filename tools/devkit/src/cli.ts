@@ -8,6 +8,7 @@ Usage:
   node cli.js tools --sdk-root PATH --workspace PATH --state-root PATH
   node cli.js call TOOL --input JSON --sdk-root PATH --workspace PATH --state-root PATH
   node cli.js doctor --sdk-root PATH --workspace PATH --state-root PATH
+  node cli.js apk tools|export|verify|doctor|build|build-direct [options; export/build require --mode develop]
   node cli.js ai --client opencode --executable ABSOLUTE_PATH --sdk-root PATH --workspace PATH --state-root PATH [--mode read-only|develop] [--preview true|false]
 All roots must be absolute and disjoint. Private state is created outside the SDK/workspace.
 CLI job calls wait for terminal state and emit all pages as NDJSON in the same session.
@@ -28,6 +29,15 @@ async function main(): Promise<void> {
         process.stdout.write(usage); return;
     }
     const command = args.shift();
+    if (command === 'apk') {
+        try { await (await import('./android-cli.js')).runAndroidCli(args); }
+        catch (error) {
+            const failure = error as NodeJS.ErrnoException;
+            process.stderr.write(`${JSON.stringify({ success: false, code: failure.code ?? 'APK_FAILED', message: failure.message })}\n`);
+            process.exitCode = 1;
+        }
+        return;
+    }
     if (command === 'ai') { await (await import('./ai.js')).launchAi(args); return; }
     if (!['mcp', 'tools', 'call', 'doctor'].includes(command!)) throw new AppError('INVALID_ARGUMENTS', 'Unknown CLI command.');
     const tool = command === 'call' ? args.shift() : command === 'doctor' ? 'cocos4_doctor' : undefined;

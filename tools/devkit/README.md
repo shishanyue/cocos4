@@ -16,6 +16,12 @@ queries](API-DOCS.md), not invented API/feature mappings.
 This is **not** a complete portable release, Creator replacement, or completion
 of the full MCP/game goal.
 
+The source-only [Android WebView exporter](android/README.md) packages an existing
+static HTML5 client and its assets in an APK shell with a configurable backend.
+It emits a Gradle project, validates local references and provides explicit
+Android toolchain diagnostics/build commands. This is a post-export packaging
+step; it does not add an engine target or alter a delivered SDK/run9 release.
+
 The [acceptance checklist](ACCEPTANCE.md) maps the complete contract to current
 evidence. Linux candidate assembly, bundled Node 24.21.0, SPDX/file inventories and
 offline namespace verification are implemented; candidate status is not formal
@@ -65,6 +71,14 @@ exact runtime artifacts, not newly emitted MCP builds. Successful compilation or
 an HTTP-ready preview alone does not establish browser rendering or interaction.
 
 ## Run
+
+HTML5 clients can be packaged with the [APK CLI](android/README.md):
+`npm run apk -- tools`, or `node build/src/cli.js apk tools` after building this
+package. New portable candidates include the verified tools under `app/android/`
+and expose `cocos4.exe apk` / `cocos4 apk`; immutable run9 predates that route.
+APK export/build require `--mode develop` and explicit external Android SDK/JDK
+paths. This is a Java WebView shell for HTML5, not a native engine target or MCP
+game-build profile.
 
 From an extracted Linux candidate:
 

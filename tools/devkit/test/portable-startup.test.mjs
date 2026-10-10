@@ -138,6 +138,7 @@ test('packaged launcher help and strict arguments need no HOME; invalid grants/c
         assert.equal(help.code, 0, help.stderr);
         assert.equal(help.stderr, '');
         assert.match(help.stdout, /doctor without --workspace.*no state or HOME/);
+        assert.match(help.stdout, /apk export\|build\|build-direct requires --mode develop/);
         const cases = [
             ['unknown command', ['repair'], /Unknown command/],
             ['managed SDK', ['doctor', '--sdk-root', '/tmp/sdk'], /--sdk-root is managed/],
@@ -191,6 +192,46 @@ test('SDK-only packaged doctor fails closed on missing inventory instead of requ
         const error = startupFailure(await command(fixture, ['doctor']), /release.json/);
         assert.equal(error.causeCode, 'ENOENT');
         assert.deepEqual(await snapshot(fixture), before);
+    });
+
+test('APK routing verifies the package first and forwards its own arguments without SDK, workspace or state injection',
+    { skip: portableSkip }, async () => {
+        const before = await snapshot(fixture);
+        const denied = startupFailure(await command(fixture, ['apk', 'doctor', '--sdk', path.join(root, 'android-sdk')]), /release.json/);
+        assert.equal(denied.causeCode, 'ENOENT');
+        assert.deepEqual(await snapshot(fixture), before);
+
+        // This isolated routing fixture stubs verification and the APK runner, not a valid release or an APK build.
+        const verifier = path.join(fixture, 'app/verify-portable.mjs');
+        const originalVerifier = await fs.readFile(verifier);
+        const bridgeDirectory = path.join(fixture, 'app/src');
+        const bridge = path.join(bridgeDirectory, 'android-cli.js');
+        await fs.mkdir(bridgeDirectory);
+        await fs.writeFile(bridge, `export async function runAndroidCli(args) {
+    process.stdout.write(JSON.stringify({ args, checks: globalThis.routingChecks }) + '\\n');
+}
+`);
+        try {
+            await fs.writeFile(verifier, `export async function verifyInventory(root) {
+    globalThis.routingChecks = ['inventory'];
+    return { releaseRoot: root };
+}
+export async function verifyHost(root, manifest) {
+    if (manifest.releaseRoot !== root) throw new Error('Wrong release passed to host verification');
+    globalThis.routingChecks.push('host');
+}
+`);
+            const args = ['export', '--input', path.join(root, 'web 游戏'), '--output', path.join(root, 'apk project'),
+                '--config', path.join(root, 'game.json'), '--mode', 'develop'];
+            const result = await command(fixture, ['apk', ...args]);
+            assert.equal(result.code, 0, result.stderr);
+            assert.equal(result.stderr, '');
+            assert.deepEqual(JSON.parse(result.stdout), { args, checks: ['inventory', 'host'] });
+        } finally {
+            await fs.writeFile(verifier, originalVerifier);
+            await fs.unlink(bridge);
+            await fs.rmdir(bridgeDirectory);
+        }
     });
 
 test('current real package: readonly relocation, SDK-only doctor, explicit-workspace jobs and unchanged grants',

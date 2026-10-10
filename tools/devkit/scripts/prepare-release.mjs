@@ -12,7 +12,7 @@ import { loadSdk } from '../build/src/sdk.js';
 import { buildHostTool, buildHostToolWin32, buildPublisherWin32 } from './build-publisher.mjs';
 import { buildMcpLauncher } from './build-mcp-launch.mjs';
 import { publishSdk } from './prepare-sdk.mjs';
-import { archiveChecksums, canonical, hash, readRegular, safePath, verifyInventory, verifyReleaseProfiles } from './verify-portable.mjs';
+import { androidToolFiles, archiveChecksums, canonical, hash, readRegular, safePath, verifyInventory, verifyReleaseProfiles } from './verify-portable.mjs';
 import { archiveWindows, verifyWindowsArchive } from './windows-archive.mjs';
 import { extractWindowsNode, requireWindowsNodePin } from './prepare-windows-components.mjs';
 import { buildSupervisorWin32, detectWindowsCompiler, inspectPeWin32 } from './build-supervisor-win32.mjs';
@@ -43,6 +43,33 @@ async function walk(directory, prefix = '', files = []) {
         else files.push(name);
     }
     return files;
+}
+
+export async function readAndroidReleaseInputs(directory = root) {
+    const androidDirectory = path.join(directory, 'android');
+    assert.equal(await fs.realpath(androidDirectory), androidDirectory, 'Android source directory aliases are not allowed');
+    const entries = await fs.readdir(androidDirectory, { withFileTypes: true });
+    const names = entries.map(entry => entry.name).sort(compare);
+    assert(entries.every(entry => entry.isFile()) && names.length >= androidToolFiles.length && names.length <= 64
+        && names.every(name => name === 'README.md' || /^[a-z0-9-]+\.mjs$/.test(name)),
+    'Only reviewed Android ESM tools and README.md belong in a portable release');
+    for (const name of androidToolFiles) assert(names.includes(name), `Missing Android tool source: ${name}`);
+    const inputs = [];
+    for (const name of names) {
+        const sourcePath = `android/${name}`;
+        const data = await readRegular(directory, sourcePath);
+        assert(data.length > 0, `Empty Android tool source: ${name}`);
+        inputs.push({ name, data, source: { path: sourcePath, bytes: data.length, sha256: hash(data) } });
+    }
+    return inputs;
+}
+
+export async function deliverAndroidReleaseInputs(inputs, write) {
+    for (const { name, data, source } of inputs) {
+        assert(source.path === `android/${name}` && data.length === source.bytes && hash(data) === source.sha256,
+            `Android tool source changed before delivery: ${name}`);
+        await write(`app/android/${name}`, data, { kind: 'reviewed-source', path: source.path });
+    }
 }
 
 export async function archiveRelease(source, archive, archiveRoot) {
@@ -85,6 +112,8 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
     assert.equal(hash(await readRegular(path.dirname(nodeArchive), path.basename(nodeArchive))), lock.sha256, 'Node archive does not match the reviewed official pin');
     const packageLock = JSON.parse(await readRegular(root, 'package-lock.json'));
     const sourceInputs = [];
+    const androidInputs = await readAndroidReleaseInputs();
+    sourceInputs.push(...androidInputs.map(input => input.source));
     for (const directory of ['src', 'skills', 'packaging']) for (const file of await walk(path.join(root, directory))) {
         const name = `${directory}/${file}`, bytes = await readRegular(root, name);
         sourceInputs.push({ path: name, bytes: bytes.length, sha256: hash(bytes) });
@@ -141,6 +170,7 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
             assert(file.endsWith('.js'), 'Only compiled JavaScript belongs in app/src');
             await copy(path.join(work, 'compiled/src'), file, `app/src/${file}`, { kind: 'compiled-application', source: `src/${file.slice(0, -3)}.ts` });
         }
+        await deliverAndroidReleaseInputs(androidInputs, write);
         const roots = ['@modelcontextprotocol/sdk', 'zod', 'ajv'];
         await write('app/package.json', json({ private: true, type: 'module', version: kitVersion, cocos4Portable: true,
             dependencies: Object.fromEntries(roots.map(name => [name, packageLock.packages[''].devDependencies[name]])) }), { kind: 'generated-app-manifest' });
@@ -345,7 +375,9 @@ export async function prepareRelease({ sdkRoot, nodeArchive, out, kitVersion = '
                 ...(windows ? { minimumRelease: '10.0.22000' } : {}), libraries: hostLibraries },
             runtime: { node: { version: lock.version, bundled: true, sha256: hash(nodeBytes), archiveSha256: lock.sha256 } },
             sdk: { sdkId: sdk.sdkId, manifestSha256: sdkManifest.sha256, profiles: combinations }, source: { revision, dirty: !!status,
-                inputsSha256: hash(canonical(sourceInputs)) }, contractVersion: 1, blockers,
+                inputsSha256: hash(canonical(sourceInputs)) },
+            tools: { android: { schemaVersion: 1, directory: 'app/android', files: androidInputs.map(input => input.name) } },
+            contractVersion: 1, blockers,
             files: files.sort((a, b) => compare(a.path, b.path)) };
         manifest.releaseId = `sha256-${hash(canonical(manifest))}`;
         await fs.writeFile(path.join(staging, 'release.json'), json(manifest), { flag: 'wx', mode: 0o444 });

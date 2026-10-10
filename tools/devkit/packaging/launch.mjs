@@ -29,7 +29,9 @@ try {
     const args = process.argv.slice(2);
     if (!args.length || (args.length === 1 && ['--help', '-h'].includes(args[0]))) {
         process.stdout.write(`Cocos4 ${windows ? 'Windows' : 'Linux'} x64 portable candidate (local only, not cleared for distribution).\n`
-            + `Usage: ${windows ? 'cocos4.exe' : 'cocos4'} doctor|tools|mcp|call TOOL|ai [options]\n`
+            + `Usage: ${windows ? 'cocos4.exe' : 'cocos4'} doctor|tools|mcp|call TOOL|ai|apk [options]\n`
+            + 'apk export|build|build-direct requires --mode develop; apk doctor|verify is read-only.\n'
+            + 'APK commands use their own input/output/Android SDK/work paths, with no Cocos SDK or workspace/state injection.\n'
             + 'SDK is fixed to this release. doctor without --workspace checks only the SDK/host, with no state or HOME.\n'
             + 'Other commands default workspace to cwd; use a workspace outside the release.\n'
             + 'Options: --workspace ABSOLUTE --state-root ABSOLUTE --mode read-only|develop --preview true|false\n'
@@ -40,7 +42,12 @@ try {
             + 'No Node/npm installation, downloads, postinstall, Creator or engine checkout is needed.\n');
     } else {
         const command = args.shift();
-        assert(['mcp', 'tools', 'doctor', 'call', 'ai'].includes(command), 'Unknown command');
+        assert(['mcp', 'tools', 'doctor', 'call', 'ai', 'apk'].includes(command), 'Unknown command');
+        if (command === 'apk') {
+            await verifyHost(root, await verifyInventory(root));
+            const { runAndroidCli } = await import('./src/android-cli.js');
+            await runAndroidCli(args);
+        } else {
         const tool = command === 'call' ? args.shift() : undefined;
         if (command === 'call') assert(/^cocos4_[a-z0-9_]+$/.test(tool ?? ''), 'Expected a cocos4 tool name');
         const flags = new Map();
@@ -103,6 +110,7 @@ try {
                 ...[...flags].flat(), '--sdk-root', path.join(root, 'sdk'), '--workspace', workspace, '--state-root', state,
                 '--mode', mode, '--preview', preview];
             await import('./src/cli.js');
+        }
         }
     }
 } catch (error) {

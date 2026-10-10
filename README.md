@@ -5,6 +5,11 @@ This fork targets mini games and vendor quick games. It keeps the TypeScript
 TypeScript WebGPU backend. Native application publishing, JSB, native platform
 backends and the native simulator have been removed from the source tree.
 
+Existing HTML5 games can also be packaged as an [Android WebView APK](tools/devkit/android/README.md)
+with local client assets and a separately deployed backend. This optional source
+tool uses an external Android SDK/JDK; the engine still builds as HTML5 with
+`NATIVE=false` and `JSB=false`. It is not included in the immutable run9 devkit.
+
 See [中文说明](README.zh-CN.md) and [development boundaries](AGENTS.md).
 The [development skills](.opencode/skills/README.md) cover engine maintenance and
 game-project development, with source references and type-checked examples.

@@ -14,6 +14,29 @@ export const canonical = value => Array.isArray(value) ? `[${value.map(canonical
 export const safePath = value => typeof value === 'string' && value.length > 0 && value.length <= 1024
     && value.split('/').every(part => /^[A-Za-z0-9_@.+=,-]+$/.test(part) && !['.', '..'].includes(part) && !part.endsWith('.'));
 
+export const androidToolFiles = Object.freeze([
+    'README.md', 'apk-file.mjs', 'cli.mjs', 'direct-build.mjs', 'export-apk.mjs',
+    'hosting.mjs', 'module-references.mjs', 'templates.mjs', 'toolchain.mjs', 'zip-name-normalizer.mjs',
+]);
+
+export function verifyAndroidTools(manifest) {
+    const tools = manifest.tools?.android;
+    // Older candidates did not deliver APK tools; their existing inventories remain valid.
+    if (tools === undefined) return;
+    assert(tools && tools.schemaVersion === 1 && tools.directory === 'app/android', 'Unsupported Android tool layout');
+    assert(Array.isArray(tools.files) && tools.files.length >= androidToolFiles.length && tools.files.length <= 64
+        && tools.files.every(name => typeof name === 'string' && (name === 'README.md' || /^[a-z0-9-]+\.mjs$/.test(name))),
+    'Android tools must be reviewed ESM files and their README');
+    assert.deepEqual(tools.files, [...new Set(tools.files)].sort(), 'Android tool inventory must be sorted without duplicates');
+    for (const name of androidToolFiles) assert(tools.files.includes(name), `Missing Android tool: ${name}`);
+    const delivered = manifest.files.filter(file => file.path.startsWith('app/android/'));
+    assert.deepEqual(delivered.map(file => file.path.slice('app/android/'.length)).sort(), tools.files, 'Android tool payload mismatch');
+    for (const file of delivered) assert(file.bytes > 0 && file.mode === '0444'
+        && file.origin?.kind === 'reviewed-source' && file.origin.path === file.path.slice('app/'.length),
+    `Invalid Android tool provenance: ${file.path}`);
+    assert(manifest.files.some(file => file.path === 'app/src/android-cli.js'), 'Missing portable Android CLI bridge');
+}
+
 export function portablePaths(platform) {
     assert(['linux', 'win32'].includes(platform), 'Unsupported portable host');
     const extension = platform === 'win32' ? '.exe' : '';
@@ -89,6 +112,7 @@ export async function verifyInventory(root) {
     assert.equal(expected.size, manifest.files.length);
     assert.equal(new Set(manifest.files.map(file => file.path.toLowerCase())).size, expected.size);
     assert.deepEqual(manifest.files.map(file => file.path), [...expected.keys()].sort());
+    verifyAndroidTools(manifest);
     const directories = new Set(['']);
     let total = 0;
     for (const file of manifest.files) {

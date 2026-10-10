@@ -4,6 +4,10 @@
 浏览器预览、WebGL/WebGL2 和 TypeScript WebGPU 后端。
 原生应用发布、JSB、原生平台后端和原生模拟器已从源码中移除。
 
+现有 HTML5 游戏可通过 [Android WebView APK 套壳工具](tools/devkit/android/README.md)
+将客户端素材打入 APK，服务器仅部署后端。该工具使用外部 Android SDK/JDK，
+引擎仍是 HTML5，`NATIVE=false`、`JSB=false`；完整性保护的 run9 包不做原地修改。
+
 后续开发边界见 [AGENTS.md](AGENTS.md)。不要依据旧版 Cocos 的原生架构补回已删除的实现。
 引擎本体开发和小游戏项目开发分别提供独立的 [开发 skills](.opencode/skills/README.md)，
 包含源码索引、验证流程、组件示例及跨项目使用说明。
