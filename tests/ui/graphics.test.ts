@@ -5,6 +5,48 @@ import { MeshRenderData, RenderData } from '../../cocos/2d/renderer/render-data'
 import { Node } from '../../cocos/scene-graph/node';
 
 describe('Graphics render-data lifecycle', () => {
+    test('small shapes allocate small GPU buffers that grow for larger redraws', () => {
+        class UploadGraphics extends Graphics {
+            public upload (): void { this._uploadData(); }
+        }
+        const node = new Node('Growing Graphics');
+        const graphics = node.addComponent(UploadGraphics);
+        graphics.onLoad();
+        graphics.onEnable();
+        try {
+            graphics.rect(0, 0, 10, 10);
+            graphics.fill();
+            graphics.activeSubModel(0);
+            graphics.upload();
+            const ia = graphics.model!.subModels[0].inputAssembler;
+            const vertices = ia.vertexBuffers[0];
+            const indices = ia.indexBuffer!;
+            const growVertices = jest.spyOn(vertices, 'resize');
+            const growIndices = jest.spyOn(indices, 'resize');
+            expect(vertices.size).toBeLessThan(64 * 1024);
+            expect(indices.size).toBeLessThan(16 * 1024);
+            graphics.clear();
+            for (let i = 0; i < 500; i++) {
+                graphics.rect(i * 2, 0, 1, 1);
+                graphics.fill();
+            }
+            graphics.upload();
+            expect(ia.vertexCount).toBe(2000);
+            expect(ia.indexCount).toBe(3000);
+            // The headless EmptyDevice has no backing GPU storage; verify its requested growth.
+            expect(growVertices.mock.calls[0][0]).toBeGreaterThanOrEqual(2000 * vertices.stride);
+            expect(growIndices.mock.calls[0][0]).toBeGreaterThanOrEqual(3000 * 2);
+            growVertices.mockRestore();
+            growIndices.mockRestore();
+            graphics.clear();
+            expect(ia.vertexCount).toBe(0);
+            expect(ia.indexCount).toBe(0);
+        } finally {
+            graphics.onDestroy();
+            node._destroyImmediate();
+        }
+    });
+
     test('clear erases geometry and redraws in the same mesh buffers, released once on destruction', () => {
         const node = new Node('Redrawn Graphics');
         const graphics = node.addComponent(Graphics);

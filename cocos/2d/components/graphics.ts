@@ -613,16 +613,17 @@ export class Graphics extends UIRenderer {
 
         if (this.model.subModels.length <= idx) {
             const gfxDevice: Device = deviceManager.gfxDevice;
+            const renderData = this.impl?.getRenderDataList()[idx];
             const vertexBuffer = gfxDevice.createBuffer(new BufferInfo(
                 BufferUsageBit.VERTEX | BufferUsageBit.TRANSFER_DST,
                 MemoryUsageBit.DEVICE,
-                65536 * stride, // Uint16 can address 65536 vertices (indices 0–65535)
+                Math.max(256, renderData?.vertexStart ?? 0) * stride,
                 stride,
             ));
             const indexBuffer = gfxDevice.createBuffer(new BufferInfo(
                 BufferUsageBit.INDEX | BufferUsageBit.TRANSFER_DST,
                 MemoryUsageBit.DEVICE,
-                65536 * Uint16Array.BYTES_PER_ELEMENT * 2,  // Uint16 can address 65536 vertices (indices 0–65535)
+                Math.max(512, renderData?.indexStart ?? 0) * Uint16Array.BYTES_PER_ELEMENT,
                 Uint16Array.BYTES_PER_ELEMENT,
             ));
 
@@ -654,10 +655,21 @@ export class Graphics extends UIRenderer {
             }
 
             const vb = new Float32Array(renderData.vData.buffer, 0, renderData.vertexStart * componentPerVertex);
-            ia.vertexBuffers[0].update(vb);
+            const vertexBuffer = ia.vertexBuffers[0];
+            if (vb.byteLength > vertexBuffer.size) {
+                vertexBuffer.resize(Math.min(65536 * stride, Math.max(vb.byteLength, vertexBuffer.size * 2)));
+            }
+            vertexBuffer.update(vb);
             ia.vertexCount = renderData.vertexStart;
             const ib = new Uint16Array(renderData.iData.buffer, 0, renderData.indexStart);
-            ia.indexBuffer!.update(ib);
+            const indexBuffer = ia.indexBuffer!;
+            if (ib.byteLength > indexBuffer.size) {
+                indexBuffer.resize(Math.min(
+                    65536 * Uint16Array.BYTES_PER_ELEMENT * 2,
+                    Math.max(ib.byteLength, indexBuffer.size * 2),
+                ));
+            }
+            indexBuffer.update(ib);
             ia.indexCount = renderData.indexStart;
             renderData.lastFilledVertex = renderData.vertexStart;
             renderData.lastFilledIndex = renderData.indexStart;
