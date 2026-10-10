@@ -162,14 +162,13 @@ export class Impl {
         this._curPath!.complex = false;
     }
 
-    public clear (): void {
+    public clear (releaseBuffers = false): void {
         this.pathLength = 0;
         this.pathOffset = 0;
         this.pointsOffset = 0;
         this.dataOffset = 0;
         this._curPath = null;
-        this.paths.length = 0;
-        this._points.length = 0;
+        this.updatePathOffset = false;
 
         const dataList = this._renderDataList;
         for (let i = 0, l = dataList.length; i < l; i++) {
@@ -178,10 +177,17 @@ export class Impl {
                 continue;
             }
 
-            MeshRenderData.remove(data);
+            // Redrawing a Graphics component is common for gauges and combat effects. Keep its
+            // high-water buffers and reset the used ranges; destruction releases the retained storage.
+            if (releaseBuffers) MeshRenderData.remove(data);
+            else data.reset();
         }
 
-        this._renderDataList.length = 0;
+        if (releaseBuffers) {
+            this.paths.length = 0;
+            this._points.length = 0;
+            this._renderDataList.length = 0;
+        }
     }
 
     public close (): void {

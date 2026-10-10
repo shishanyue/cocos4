@@ -248,7 +248,7 @@ export class Graphics extends UIRenderer {
     protected override get _keepRenderData (): boolean {
         // Graphics is a retained-mode renderer: its MeshRenderData is the result of the
         // user's previous fill()/stroke() calls. Destroying it here would leave Impl's
-        // render-data list pointing at cleared geometry. Keep it until clear() or onDestroy().
+        // render-data list pointing at cleared geometry. clear() resets used ranges; onDestroy() frees it.
         return true;
     }
 
@@ -269,7 +269,7 @@ export class Graphics extends UIRenderer {
 
         if (this.impl) {
             this._isDrawing = false;
-            this.impl.clear();
+            this.impl.clear(true);
             this.impl = null;
         }
 
